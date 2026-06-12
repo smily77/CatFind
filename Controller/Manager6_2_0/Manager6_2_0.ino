@@ -1,4 +1,4 @@
-#include <xComDef.h>
+#include <xComDef6_2.h>
 #include "hwDef.h"
 #include <FastLED.h>
 
@@ -14,7 +14,7 @@ unsigned long timer;
 bool blinkOn = false;
 bool targetAlarm = false;
 
-#include <xComProc.h>
+#include <xComProc6_2.h>
 
 void setup() {
   Serial.begin(115200);
