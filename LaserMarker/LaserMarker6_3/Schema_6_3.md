@@ -32,14 +32,18 @@ Board: **ESP32-C3 Super Mini**. Handgezeichnetes Original:
 
 | GPIO | Signal (hwDef) | Richtung | Gegenstelle | Bemerkung |
 |---:|---|---|---|---|
-| 3 | mainLaser | OUT | TTL-Laser-Modul (IN) | HIGH = Laser an |
-| 21 | subLaser | OUT | BS170-Gate über 440 Ω | HIGH = Laserdiode an |
-| 7 | Aux | OUT | Aux-Stecker | HIGH = an, frei verwendbar |
+| 3 | mainLaserPin | OUT | TTL-Laser-Modul (IN) | HIGH = Laser an |
+| 21 | subLaserPin | OUT | BS170-Gate über 440 Ω | HIGH = Laserdiode an |
+| 7 | auxPin | OUT | Aux-Stecker | HIGH = an, frei verwendbar |
 | 10 | pixelPin | OUT | WS2812 DIN über 100 Ω | 1 Pixel, RGB |
-| 0 | SDA | — | I2C-Stecker | reserviert, ungenutzt |
-| 1 | SCL | — | I2C-Stecker | reserviert, ungenutzt |
-| 20 | TxD | — | UART-Stecker | reserviert, ungenutzt |
-| 4 | RxD | — | UART-Stecker | reserviert, ungenutzt |
+| 0 | pinSDA | — | I2C-Stecker | reserviert, ungenutzt |
+| 1 | pinSCL | — | I2C-Stecker | reserviert, ungenutzt |
+| 20 | pinTxD | — | UART-Stecker | reserviert, ungenutzt |
+| 4 | pinRxD | — | UART-Stecker | reserviert, ungenutzt |
+
+> Hinweis: Die Pin-Makros heissen bewusst `...Pin`, damit sie nicht mit den
+> gleichnamigen Zustandsfeldern (`mainLaser`, `subLaser`, `aux`) in
+> `markerHbPayload` kollidieren.
 
 ## Hinweise
 

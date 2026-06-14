@@ -10,12 +10,12 @@ void writeComment(String comment) {
 
 void initHw() {
   Serial.begin(115200);
-  pinMode(mainLaser, OUTPUT);
-  pinMode(subLaser,  OUTPUT);
-  pinMode(Aux,       OUTPUT);
-  digitalWrite(mainLaser, LOW);
-  digitalWrite(subLaser,  LOW);
-  digitalWrite(Aux,       LOW);
+  pinMode(mainLaserPin, OUTPUT);
+  pinMode(subLaserPin,  OUTPUT);
+  pinMode(auxPin,       OUTPUT);
+  digitalWrite(mainLaserPin, LOW);
+  digitalWrite(subLaserPin,  LOW);
+  digitalWrite(auxPin,       LOW);
 
   pixels.begin();
   pixels.clear();
