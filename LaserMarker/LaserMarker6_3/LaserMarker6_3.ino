@@ -34,9 +34,9 @@ unsigned long HBtimer;
 
 // Wendet den Inhalt von 'state' auf die Hardware an
 void applyOutputs() {
-  digitalWrite(mainLaser, state.mainLaser ? HIGH : LOW);
-  digitalWrite(subLaser,  state.subLaser  ? HIGH : LOW);
-  digitalWrite(Aux,       state.aux       ? HIGH : LOW);
+  digitalWrite(mainLaserPin, state.mainLaser ? HIGH : LOW);
+  digitalWrite(subLaserPin,  state.subLaser  ? HIGH : LOW);
+  digitalWrite(auxPin,       state.aux       ? HIGH : LOW);
   pixels.setPixelColor(0, pixels.Color(state.r, state.g, state.b));
   pixels.show();
 }
