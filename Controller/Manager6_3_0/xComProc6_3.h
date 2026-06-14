@@ -335,6 +335,13 @@ void printSensorData(const xMsg &m) {
     }
     radarHbPayload rhb;
     if (getPayload(m, rhb)) Serial << " deadZone: " << rhb.deadZoneDist;
+    markerHbPayload mhb;
+    if (getPayload(m, mhb)) {
+      Serial << " mainLaser: " << mhb.mainLaser;
+      Serial << " subLaser: " << mhb.subLaser;
+      Serial << " aux: " << mhb.aux;
+      Serial << " RGB: " << mhb.r << "," << mhb.g << "," << mhb.b;
+    }
     Serial << endl;
   }
   else if ((m.header.msgCode == catObserved) || (m.header.msgCode == measurement) || (m.header.msgCode == catHit)) {
