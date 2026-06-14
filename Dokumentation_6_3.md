@@ -73,6 +73,7 @@ In `xComDef6_3.h` ist jedes Gerät mit einer festen ID (Array-Index) eingetragen
 | 12 | CYD35Z | Screen | DHCP | CYD 3.5" |
 | 13 | Wave7z | Screen | DHCP | Waveshare 7" |
 | 14 | Sim | MananagementDevice | DHCP | M5 Cardputer (neu in 6_3) |
+| 15 | LaserMarker | Marker | 182 | ESP32-C3, Laser-Marker (siehe LaserMarker/API_LaserMarker6_3.md) |
 
 - Das Feld `IP` enthält das **letzte Oktett** der Adresse (Netz ist fest
   192.168.0.x). Bei Geräten mit Eintrag 150–195 konfiguriert `setUpWifi()`
