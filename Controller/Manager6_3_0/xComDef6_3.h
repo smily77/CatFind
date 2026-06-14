@@ -13,7 +13,7 @@
 //1.x - 2 HostName in device dB
 //6_3 - Fixer Header + variabler Payload:
 //      * msgHeader (version, sender, msgCode, payloadLen, timeStamp) wird beim Senden automatisch gefüllt
-//      * pro Nachrichtenart ein eigener Payload-Struct (posPayload, hbPayload, pa2HbPayload, radarHbPayload, cmdPayload)
+//      * pro Nachrichtenart ein eigener Payload-Struct (posPayload, hbPayload, pa2HbPayload, radarHbPayload, markerHbPayload, cmdPayload)
 //      * der alte Union mcDataStruct und ucDataStruct entfallen - Kommandos laufen als commandMsg im selben Format
 //      * Broadcast (Multicast) und Unicast verwenden dasselbe Nachrichtenformat (broadcastMsg / unicastMsg)
 //      * Pakete werden über Version + payloadLen validiert, getPayload() liest typsicher aus
@@ -48,6 +48,7 @@ struct stationDefinitions {
 #define CYD35Z 12
 #define Wave7z 13
 #define Sim 14
+#define LaserMarker 15
 //Types
 #define MananagementDevice 1
 #define HLK 2
@@ -56,8 +57,9 @@ struct stationDefinitions {
 #define Controller 5
 #define Lidar 6
 #define onOffSchalter 7
+#define Marker 8
 //  {MananagementDevice,180,0x01},
-stationDefinitions device[15] = {
+stationDefinitions device[16] = {
   {MananagementDevice,180,0x01,"Manager_Dev"},  //Manager
   {HLK,0,0,"Dome"},                             //Dome
   {HLK,0,0,"Mini_Dome"},                        //MiniDome
@@ -72,7 +74,8 @@ stationDefinitions device[15] = {
   {Screen,0,0,"Tab5"},                           //Tab5
   {Screen,0,0,"CYD35Zoll"},                      //CYD35Zoll
   {Screen,0,0,"Wavetec_7inch"},                  //Wavetec
-  {MananagementDevice,0,0,"Simulator"}           //Simulator (Cardputer)
+  {MananagementDevice,0,0,"Simulator"},          //Simulator (Cardputer)
+  {Marker,182,0x03,"Laser_Marker"}               //LaserMarker (ESP32-C3, feste IP .182)
 };
 
 // call -> device[ident].type
@@ -140,6 +143,19 @@ struct __attribute__((packed)) radarHbPayload {
   float     deadZoneDist;   // nicht "deadZone": kollidiert mit #define in hwDef
 };
 
+// HB des LaserMarkers (Basis + aktueller Zustand aller Ausgaenge)
+// Wird zyklisch gebroadcastet und nach jedem Kommando sofort -> der aktuelle
+// Geraetezustand ist damit jederzeit von aussen ablesbar.
+struct __attribute__((packed)) markerHbPayload {
+  hbPayload hb;
+  uint8_t   mainLaser;   // 0 = aus, 1 = an
+  uint8_t   subLaser;    // 0 = aus, 1 = an
+  uint8_t   aux;         // 0 = aus, 1 = an
+  uint8_t   r;           // Pixel-Rot   0..255
+  uint8_t   g;           // Pixel-Gruen 0..255
+  uint8_t   b;           // Pixel-Blau  0..255
+};
+
 // commandMsg (ersetzt ucDataStruct) - typischerweise per Unicast
 struct __attribute__((packed)) cmdPayload {
   uint8_t cmd;
@@ -157,6 +173,12 @@ struct __attribute__((packed)) cmdPayload {
 #define cmdSetFarLimit             8
 #define cmdSetNearLimit            9
 #define cmdChangeLimitActivation  10
+// LaserMarker-Kommandos
+#define cmdMainLaser              11   // info: 0 = aus, 1 = an
+#define cmdSubLaser               12   // info: 0 = aus, 1 = an
+#define cmdAux                    13   // info: 0 = aus, 1 = an
+#define cmdPixelColor             14   // info: 0x00RRGGBB (24-Bit Farbe)
+#define cmdMarkerState            15   // info: ignoriert - erzwingt sofortigen HB
 
 //---------------------------------------------------------------------------------------
 IPAddress multiCastIP (239,0,0,57);
