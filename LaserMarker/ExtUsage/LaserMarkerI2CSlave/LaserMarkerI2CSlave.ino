@@ -26,8 +26,10 @@ static constexpr uint8_t I2C_SCL_PIN    = 1;   // GPIO1  -> I2C SCL connector pi
 
 // ------------------------------- I2C protocol -------------------------------
 static constexpr uint8_t I2C_ADDRESS = 0x2A;       // 7-bit slave address
-static constexpr uint32_t HEARTBEAT_PERIOD_MS = 5000;
 static constexpr uint8_t PROTOCOL_VERSION = 0x01;
+static constexpr uint16_t MAIN_LASER_BLINK_INTERVAL_MS = 500;
+static constexpr uint8_t MAIN_LASER_INDICATOR_LEVEL = 25;
+static constexpr uint8_t SUB_LASER_INDICATOR_LEVEL = 255;
 
 // Command codes deliberately match the original CatFind UDP API.
 static constexpr uint8_t CMD_MAIN_LASER  = 11;     // info: 0=off, non-zero=on
@@ -61,6 +63,9 @@ struct PendingCommand {
 Adafruit_NeoPixel pixels(1, PIXEL_PIN, NEO_RGB + NEO_KHZ800);
 MarkerState state = {0, 0, 0, 0, 0, 0};
 PendingCommand pendingCommand = {false, 0, 0};
+uint8_t renderedPixelR = 255;
+uint8_t renderedPixelG = 255;
+uint8_t renderedPixelB = 255;
 
 volatile uint32_t commandCounter = 0;
 volatile uint32_t errorCounter = 0;
@@ -90,8 +95,46 @@ static void applyOutputs() {
   digitalWrite(MAIN_LASER_PIN, state.mainLaser ? HIGH : LOW);
   digitalWrite(SUB_LASER_PIN, state.subLaser ? HIGH : LOW);
   digitalWrite(AUX_PIN, state.aux ? HIGH : LOW);
-  pixels.setPixelColor(0, pixels.Color(state.r, state.g, state.b));
+}
+
+static bool commandedPixelIsOff() {
+  return state.r == 0 && state.g == 0 && state.b == 0;
+}
+
+static void renderPixel(uint8_t r, uint8_t g, uint8_t b) {
+  if (r == renderedPixelR && g == renderedPixelG && b == renderedPixelB) {
+    return;
+  }
+
+  renderedPixelR = r;
+  renderedPixelG = g;
+  renderedPixelB = b;
+  pixels.setPixelColor(0, pixels.Color(r, g, b));
   pixels.show();
+}
+
+static void updatePixelOutput() {
+  // Priority:
+  // 1. Explicit pixel command: any non-black commanded color is shown exactly.
+  // 2. mainLaser indicator: if no pixel color is active, blink weak red.
+  // 3. subLaser indicator: if no pixel color and no mainLaser are active, show full white.
+  if (!commandedPixelIsOff()) {
+    renderPixel(state.r, state.g, state.b);
+    return;
+  }
+
+  if (state.mainLaser) {
+    const bool blinkOn = (millis() / MAIN_LASER_BLINK_INTERVAL_MS) % 2 == 0;
+    renderPixel(blinkOn ? MAIN_LASER_INDICATOR_LEVEL : 0, 0, 0);
+    return;
+  }
+
+  if (state.subLaser) {
+    renderPixel(SUB_LASER_INDICATOR_LEVEL, SUB_LASER_INDICATOR_LEVEL, SUB_LASER_INDICATOR_LEVEL);
+    return;
+  }
+
+  renderPixel(0, 0, 0);
 }
 
 static void recordEvent(uint8_t event, uint8_t command, bool isError) {
@@ -203,6 +246,7 @@ void setup() {
   pixels.begin();
   pixels.clear();
   applyOutputs();
+  updatePixelOutput();
 
   Wire.begin(static_cast<uint8_t>(I2C_ADDRESS), I2C_SDA_PIN, I2C_SCL_PIN, 100000);
   Wire.onReceive(receiveI2C);
@@ -220,6 +264,7 @@ void loop() {
   portEXIT_CRITICAL(&i2cMux);
 
   if (!command.available) {
+    updatePixelOutput();
     delay(1);
     return;
   }
@@ -229,4 +274,6 @@ void loop() {
   } else {
     recordEvent(EVENT_UNKNOWN_COMMAND, command.cmd, true);
   }
+
+  updatePixelOutput();
 }

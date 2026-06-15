@@ -22,6 +22,19 @@ Dieser Ordner enthält ein eigenständiges Arduino-Programm, das die LaserMarker
 
 > Wichtig: Der I2C-Bus benötigt passende Pull-up-Widerstände auf SDA und SCL. Viele Controller-Boards haben diese bereits integriert; sonst müssen sie extern ergänzt werden.
 
+## Pixel-Anzeige und Prioritäten
+
+Der NeoPixel hat zwei Aufgaben: Er kann direkt per Pixel-Befehl gesetzt werden und dient zusätzlich als Sicherheits-/Statusanzeige für aktive Laser, wenn kein Pixel-Farbwert aktiv ist.
+
+Die Priorität ist:
+
+1. **Pixel-Befehl:** Wenn per `cmd = 14` eine Farbe ungleich `0x000000` gesetzt wurde, zeigt der Pixel exakt diese Farbe. Laser-Indikatoren werden dann nicht eingeblendet.
+2. **mainLaser-Indikator:** Wenn der Pixel per Befehl aus ist (`0x000000`) und `mainLaser` eingeschaltet ist, blinkt der Pixel schwach rot mit Wert `25`.
+3. **subLaser-Indikator:** Wenn der Pixel per Befehl aus ist, `mainLaser` aus ist und `subLaser` eingeschaltet ist, leuchtet der Pixel voll weiß mit Wert `255`.
+4. **Alles aus:** Wenn kein Pixel-Befehl aktiv ist und kein Laser eingeschaltet ist, bleibt der Pixel aus.
+
+Bei gleichzeitig eingeschaltetem `mainLaser` und `subLaser` gewinnt der `mainLaser`-Indikator, solange kein aktiver Pixel-Befehl gesetzt ist.
+
 ## I2C-Grunddaten
 
 | Eigenschaft | Wert |
@@ -93,6 +106,8 @@ Der Master kann jederzeit 16 Bytes von Adresse `0x2A` lesen. Der LaserMarker lie
 | 9 | `lastCommand` | `uint8_t` | zuletzt akzeptierter oder fehlerhafter Befehl |
 | 10..11 | reserviert | `uint8_t[2]` | aktuell `0`, für spätere Erweiterungen |
 | 12..15 | `messageCounter` | `uint32_t`, Little-Endian | Summe aus erfolgreichen Befehlen und Fehlern seit Boot |
+
+Die Statusfelder `r`, `g` und `b` enthalten den zuletzt per Pixel-Befehl gesetzten Sollwert. Bei `0,0,0` kann der tatsächlich sichtbare Pixel trotzdem temporär als Laser-Indikator blinken oder weiß leuchten, siehe „Pixel-Anzeige und Prioritäten“.
 
 ### Ereigniscodes
 
