@@ -71,7 +71,9 @@ uint8_t BRIGHTNESS = 10;
 // (als long berechnet im Programm)
 
 // --- Winkel/Distanz-Bereich (wie PA2, PA-Welt 0..4096, 2048 = geradeaus) ---
-#define maxAngle     60      // nutzbarer Halbwinkel in Grad -> systemAngle = maxAngle*4096/360
+// maxAngle 180 -> systemAngle = 180*4096/360 = 2048 -> Default-Limits 2048+-2048
+// = voller Kreis [0..4096]. Der Drehturm kann +-180 Grad um geradeaus schwenken.
+#define maxAngle     180     // nutzbarer Halbwinkel in Grad -> systemAngle = maxAngle*4096/360
 #define maxDist      8000    // mm
 #define initDeadZone 500     // mm
 #define fireDuration 500     // ms Wasserstoss
