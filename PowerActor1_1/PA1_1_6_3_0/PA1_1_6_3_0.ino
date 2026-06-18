@@ -1,5 +1,5 @@
 // =============================================================================
-//  PA1_1_6_3 - PowerActor1_1 in der CatFind-6_3-Familie
+//  PA1_1_6_3_0 - PowerActor1_1 in der CatFind-6_3-Familie
 //
 //  Funktion wie PowerActor2 (PA2i): empfaengt catObserved, richtet den Aktor
 //  auf das Ziel und feuert Wasser, wenn scharfgeschaltet und das Ziel innerhalb

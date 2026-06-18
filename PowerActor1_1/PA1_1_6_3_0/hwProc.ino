@@ -1,4 +1,4 @@
-// PA1_1_6_3 - geraetespezifische Funktionen
+// PA1_1_6_3_0 - geraetespezifische Funktionen
 
 void writelnComment(String comment) { if (DEBUG) Serial << comment << endl; }
 void writeComment(String comment)   { if (DEBUG) Serial << comment; }
