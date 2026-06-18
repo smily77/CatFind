@@ -145,14 +145,13 @@ void initWinkel() {
 }
 
 // ---------------------------------------------------------------------------
-//  Homing des Drehturms
+//  Homing des Drehturms  (wie PA2, Schwenkbereich +-180 Grad)
 //
-//  >>> GEOMETRIE NOCH ZU BESTAETIGEN (Rueckfrage Q2 "Turm-Nullung") <<<
-//  Aktuelle Annahme (anpassbar): die beiden Reed-Kontakte sind die Endlagen
-//  eines begrenzten Schwenkbereichs. Es wird nach links bis reedLeft und nach
-//  rechts bis reedRight gefahren, die Mitte = "geradeaus" (PA 2048) und dort
-//  globalPosition = 0 gesetzt. Falls der Turm frei dreht / nur ein Reed als
-//  Nullmarke dient / geradeaus an einem Reed liegt, hier anpassen.
+//  Die beiden Reed-Kontakte sind die Endlagen des Schwenkbereichs. Es wird nach
+//  links bis reedLeft und nach rechts bis reedRight gefahren, die Mitte =
+//  "geradeaus" (PA 2048) und dort globalPosition = 0 gesetzt. Mit maxAngle 180
+//  spannt der nutzbare Bereich +-180 Grad um geradeaus (voller Kreis), die
+//  Limits sind per Default 0..4096 (in der hwDef/Vault anpassbar).
 // ---------------------------------------------------------------------------
 void homeTurret() {
   setMicrostep(defaultMicrostep);
