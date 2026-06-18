@@ -49,6 +49,7 @@ struct stationDefinitions {
 #define Wave7z 13
 #define Sim 14
 #define LaserMarker 15
+#define PA1_1 16
 //Types
 #define MananagementDevice 1
 #define HLK 2
@@ -59,7 +60,7 @@ struct stationDefinitions {
 #define onOffSchalter 7
 #define Marker 8
 //  {MananagementDevice,180,0x01},
-stationDefinitions device[16] = {
+stationDefinitions device[17] = {
   {MananagementDevice,180,0x01,"Manager_Dev"},  //Manager
   {HLK,0,0,"Dome"},                             //Dome
   {HLK,0,0,"Mini_Dome"},                        //MiniDome
@@ -75,7 +76,8 @@ stationDefinitions device[16] = {
   {Screen,0,0,"CYD35Zoll"},                      //CYD35Zoll
   {Screen,0,0,"Wavetec_7inch"},                  //Wavetec
   {MananagementDevice,0,0,"Simulator"},          //Simulator (Cardputer)
-  {Marker,182,0x03,"Laser_Marker"}               //LaserMarker (ESP32-C3, feste IP .182)
+  {Marker,182,0x03,"Laser_Marker"},              //LaserMarker (ESP32-C3, feste IP .182)
+  {PowerActor,183,0x04,"PowerActor1_1"}          //PA1_1 (älterer PA mit Stepper/PCF8574/A4988, feste IP .183)
 };
 
 // call -> device[ident].type
@@ -179,6 +181,9 @@ struct __attribute__((packed)) cmdPayload {
 #define cmdAux                    13   // info: 0 = aus, 1 = an
 #define cmdPixelColor             14   // info: 0x00RRGGBB (24-Bit Farbe)
 #define cmdMarkerState            15   // info: ignoriert - erzwingt sofortigen HB
+// PowerActor1_1-Relais (zusaetzlich zu den PA-Kommandos; water = Feuer, automatisch)
+#define cmdWirelessPower          16   // info: 0 = aus, 1 = an (Strom fuer Turm-Sensoren)
+#define cmdExtPower               17   // info: 0 = aus, 1 = an (externe Versorgung)
 
 //---------------------------------------------------------------------------------------
 IPAddress multiCastIP (239,0,0,57);
