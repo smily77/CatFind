@@ -1,5 +1,5 @@
 // =============================================================================
-//  PA1_1_6_3 - Hardware-Definition
+//  PA1_1_6_3_0 - Hardware-Definition
 //  Aelterer PowerActor (PA1b): ESP32, Drehturm ueber Schrittmotor.
 //  Stepper-Treiber A4988, angesteuert ueber Port-Expander PCF8574 (I2C).
 //  Winkelgeber AS5600 am selben I2C-Bus (aktuell auf der Stepper-Welle).

@@ -165,7 +165,7 @@ struct __attribute__((packed)) cmdPayload {
 };
 
 //cmd Codes für cmdPayload
-#define cmdRichtung                1
+#define cmdRichtung                1   // info: absoluten PA-Winkel 0..4096 anfahren (Jog/Encoder-Test)
 #define cmdLaser                   2
 #define cmdAdjustAngle             3
 #define cmdTaste                   4
