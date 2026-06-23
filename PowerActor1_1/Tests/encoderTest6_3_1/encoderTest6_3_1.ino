@@ -14,6 +14,7 @@
 #include <FastLED.h>
 #include <Wire.h>
 #include <PCF8574.h>
+
 #include "AS5600.h"
 
 #define DEBUG true
