@@ -84,7 +84,7 @@ void initHw() {
   initPixel();
   pinMode(water,         OUTPUT);  digitalWrite(water,         LOW);
   pinMode(extPower,      OUTPUT);  digitalWrite(extPower,      LOW);
-  pinMode(wirelessPower, OUTPUT);  digitalWrite(wirelessPower, HIGH);  // Turm-Sensoren versorgen
+  pinMode(wirelessPower, OUTPUT);  digitalWrite(wirelessPower, LOW);  // Turm-Sensoren noch nicht versorgen
   pinMode(laser,         OUTPUT);  digitalWrite(laser,         LOW);
   pinMode(taster,    INPUT_PULLUP);
   pinMode(reedLeft,  INPUT_PULLUP);
