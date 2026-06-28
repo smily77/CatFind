@@ -1,0 +1,10 @@
+services:
+  dashboard:
+    build: .
+    image: catfinder-dashboard:latest
+    container_name: catfinder-dashboard
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    environment:
+      MAP_URL: "https://raw.githubusercontent.com/smily77/CatFind/main/Map/RasenKarte.csv"

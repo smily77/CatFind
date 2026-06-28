@@ -128,3 +128,24 @@ Weiteres
 - **No-Shot/Point-in-Polygon:** generischer Loader + In/Out-Test (innerhalb = schießbar) als gemeinsame Prozedur in `xComProc6_3.h`; Karte aus LittleFS, sonst per `requestMap` vom Manager (Bausteine bereits vorhanden), sonst alte Karte.
 - **catObserved:** bei Treffer im schießbaren Bereich Broadcast mit relativen (x/y, radius/angle) **und** Welt-Koordinaten (`worldX/worldY`, `worldValid=1`).
 - **Status:** Pixel zeigen Init-Phasen (WiFi/Kalibrierung/Lokalisierung/Karte) und leuchten bei Detektion im schießbaren Bereich; nach Init ein knapper Text-Multicast (`sendUdpTextln`, Port 8300).
+
+Aufgabe: Treffervisualisierung
+Grobkonzept. Der VPS stellt eine Webserver bereit auf dem man die CatObserved event sehen kann. Die Inforamtion dafür sendet der Master an den VPS - Zu beachten lokal läuft das CatFinder Netzwerk auch wenn der Master nicht zur Verfügung steht (ausnahme No-Shot Karte laden).
+Anzeige des VPS Webservers:
+1. Ein Fenster das die letzten paar System ereignisse zeigt - scrollend (nicht Funktion wie CatObserved etc. sondern Statusinformationen wie z.B. von der Initialisierund -> die als Debug Text gebroadcastet werden) - Dises kleine Fenster ist immer auf dem Schirm
+2. Kleine Anzeige welche Geräte in der letzten 1- 3 Minuten einen HB gesenet haben (Dise kleine Anzeige bleibt auch immer auf dem Schirm 
+3a. Eine scrollbare Liste mit allen CatObserved events - zusammengefast, so dass max. ein Eintrag pro Minute. Der Eintrag enthält Zeit und welche Sensoren ihn alles gemeldet haben (ID-Nr. des Sensors genügt)
+3b. Karte - worldKoordinaten (RasenKarte) auf der alle CatObserved eingetragen werden. Jeder Sensor mit einer anderen Farbe (Achtung Radarsensoren können bis zu 3 Ziele verfolgen die sollten dann auch eine eigene Farbe haben. Die Karte hat einen Resetbutton - Alle CatObserved werden kummuliert bis der Resetbutton gedrückt wird
+3c. Karte wie 3b aber in relativ Koordinaten der Koordinatenngruppe 1
+3d. Karte wie 3b aber in relativ Koordinaten der Koordinatenngruppe 2
+3e. Karte wie 3b aber in relativ Koordinaten der Koordinatenngruppe 3 (die gruppe gibts noch nicht, aber wirds noch geben
+Die anzeige 3a - 3e können umgeschalzten werden so das der Bildschirm die Debug Msg, die HB Liste immer zeigt und die Ereigniss liste order Karten druchgeschalten werden können.
+
+**Festlegungen (Umsetzung):**
+
+- **Master als Gateway:** Der Manager lauscht ohnehin auf Multicast (catObserved, HB) und Text-Multicast (Debug, Port 8300). Er puffert diese und schickt sie **gebündelt per HTTP-POST** an den VPS (`ipVPS:80/ingest`, ~alle 1,5 s; Burst-Schutz mit Begrenzung pro Push). Fällt der Master aus, läuft das lokale Netz weiter (nur die Visualisierung pausiert). Pro Event überträgt der Master `sender, sensor, worldX/Y/valid, x/y` **und** `group` (= `device[sender].group`) — damit kann der VPS Welt- (3b) und relative Karten (3c–3e) zeichnen. Zeitstempel setzt der VPS beim Empfang (der Master braucht keine NTP-Zeit).
+- **VPS-Webserver:** zweiter Docker-Container `VPS/dashboard/` auf **Port 80** (extern erreichbar als `http://<VPS-IP>/`). Single-Page-UI (Debug-Fenster + HB-Liste immer sichtbar; umschaltbar Liste 3a / Welt-Karte 3b / Gruppen-Karten 3c–3e; Reset-Button). State im RAM (Events kumulieren bis Reset; gehen bei Container-Neustart verloren). Welt-Karte nutzt `Map/RasenKarte.csv` (aus dem GitHub-Repo geladen).
+- **Farben:** je `(sender, sensor)`-Kombination eine eigene Farbe (Radar bis zu 3 Ziele → 3 Farben).
+- **Liste 3a:** catObserved werden pro Minute zu einem Eintrag zusammengefasst (Zeit + beteiligte Sensor-IDs).
+- **Master-Flash:** über COM6 (USB).
+

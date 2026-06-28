@@ -83,6 +83,7 @@ void loop() {
     udpTextReceived = false;
     Serial.print("received:" );
     Serial.println(udpTextMsg);
+    gwAddDebug(udpTextMsg);            // Gateway: Debug-Zeile an den VPS
   }
   // Karten-Anfragen (Unicast) bedienen: Sensor fordert die No-Shot-Karte an
   if (ucDataReceived) {
@@ -104,11 +105,15 @@ void loop() {
     printSensorData(mcMsg);
 
     if (mcMsg.header.msgCode == HB) {
+      hbPayload hb;
+      if (getHbPayload(mcMsg, hb)) gwAddHb(mcMsg.header.sender, hb.ip);   // Gateway
       allPixel(0x00FF00);
       blinkOn = true;
       timer = millis()+ HB_blinkPeriode;
     }
     else if (mcMsg.header.msgCode == catObserved) {
+      posPayload pos;
+      if (getPayload(mcMsg, pos)) gwAddEvent(mcMsg.header.sender, pos);   // Gateway
       allPixel(0x0000FF);
       targetAlarm = true;
       blinkOn = false;
@@ -116,6 +121,7 @@ void loop() {
     }
     mcDataReceived = false;
   }
+  gwTick();                            // Gateway: gepufferte Ereignisse periodisch an den VPS posten
   if (blinkOn && (millis()> timer)) {
     allPixel(0x000000);
     blinkOn = false;
