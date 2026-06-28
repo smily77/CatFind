@@ -109,3 +109,22 @@ Konkret:
 
 6\. **Nicht Teil dieser Aufgabe** (Folge-Aufgaben): der eigentliche Point-in-Polygon-Test (In/Out) und die daraus folgende Feuer-/Melde-Konsequenz im Sensor/Aktor (siehe Projektnotiz `no-shot-map-format`).
 
+Aufgabe: Sensor mit absoluten Koordinaten hinzufügen
+Füge einen Lidar sensor zum Projekt CatFinder, als Sensor mit Weltkoordinaten, zum Projekt als neuen Sensor hinzu. Der Sensor (Sensor und Teile des Konzepts bekannt aus "C:\Users\stefan\Documents\Arduino\Lidar_C1_Prog" und "C:\Users\stefan\Documents\Arduino\Lidar_C1_Prog\Position_estimate" - jedoch Ablauf, wer den Prozess startetet und wo er läuft ist unterschiedlich).
+Grobkonzept: Der Sensor soll seine eigene Position mit hilfe von geeigneten Programmen (Python) die auf einem VPS server laufen, ermitteln (verfahren wie bei PositionEstimate). Die IP des VPS wird durch Einbindung von Credentials.h in der Form IPAddress ipVPS(xxx.xxx.xxx.xxx); bereit gestellt. alles was auf dem VPS server läuft soll in  Docker geschen, damit ein Container im Repositary gespeichert werden kann und auf andere Maschienen portiert werden kann. Die RasenKarte.csv im Verzeichniss Map muss/kann vom VPS von CatFinder repositary (https://github.com/smily77/CatFind) geladen werden, das soll sicher stellen, dass bei änderungen nichts am VPS gemacht werden muss.
+Der Ablauf ist volgendermassen. Beim Booten des Sensors, Positions und Ausrichtungsdaten aus den NVS lesen, prüfen, ob die plausibel sind (mit VPS), wenn nicht mit VPS wahrscheindlichse Position und Ausrichtung auf dem Rasen bestimmen -> Flag validWorldPose setzen, wenn validWorldPose No-Shot Karte aus speicher lesen und validieren, wenn und wenn nicht aktuelle neue vom Manager lesen - Wenn Manager nicht verfügbar, die alte No-Shotkarte verwenden. Wenn Position klar mit überwachung beginnen. Immer wenn ein Treffer mit No-Shot Karte überprüfen, ob da wo der Treffer ist im "Schiessbaren Bereich" liegt, wenn ja cat Observed broadcasten.
+Weiteres 
+-Die Status Pixel (2 bei Lidar_C1) sollen Auskunft über Initiaisierungsstatus geben und leuchten wenn eine Detektion im "Schiessbaren Bereich" erfolgte (ähnlich wie bisher)
+-Natürlich OTA und alle anderen Konzepte von CatFinder
+-Nach Abschluss der Initialisierung eine sehr knappe Text-Multicast über Status senden
+
+**Festlegungen (Umsetzung):**
+
+- **Gerät:** neuer Sketch `C1Lidar6_3_0` (Ordner `CF_LidarC1/`), RPLidar C1 (Serial1, 460800), 2× WS2812. Device-DB-Eintrag `LidarC1` (ID 17), Typ `Lidar`, **DHCP** (keine feste IP nötig; IP wird per HB gelernt), `group = groupNone` (welt-fähig, keine relative Gruppe). Flash per **OTA**.
+- **Sensor↔VPS:** **HTTP-POST** vom Sensor an den VPS (`ipVPS` aus `Credentials.h` als `IPAddress ipVPS(46,225,81,240);`), Body = 360-Bin-Scan (mm), Antwort = Pose-JSON (`x_mm,y_mm,heading_deg,mirror,confidence,inlier_ratio`). Ausgehend → kein NAT-Port. **Offener Endpoint, kein Token.**
+- **VPS:** Docker-Container `VPS/localizer/` im Repo (HTTP-Dienst, portiert aus `lidar_localize.py`), lädt `Map/RasenKarte.csv` aus dem GitHub-Repo (raw) beim Start/periodisch → Kartenänderung erfordert keinen VPS-Eingriff.
+- **Scan-Quelle für die Lokalisierung:** der nach 20 s gelernte 360-Bin-Hintergrund (ortsunabhängig; **keine Wand/Nische mehr nötig** — Wand- und Landmark-Modell der alten Firmware entfallen, der Perimeter-/Hintergrund-Detektor bleibt und arbeitet rundum).
+- **Plausibilitätsprüfung:** NVS-Pose wird gegen die globale VPS-Pose verglichen; stimmen sie (Toleranz) und ist die Konfidenz hoch → `validWorldPose=true` (NVS behalten); sonst VPS-Pose übernehmen und in NVS speichern.
+- **No-Shot/Point-in-Polygon:** generischer Loader + In/Out-Test (innerhalb = schießbar) als gemeinsame Prozedur in `xComProc6_3.h`; Karte aus LittleFS, sonst per `requestMap` vom Manager (Bausteine bereits vorhanden), sonst alte Karte.
+- **catObserved:** bei Treffer im schießbaren Bereich Broadcast mit relativen (x/y, radius/angle) **und** Welt-Koordinaten (`worldX/worldY`, `worldValid=1`).
+- **Status:** Pixel zeigen Init-Phasen (WiFi/Kalibrierung/Lokalisierung/Karte) und leuchten bei Detektion im schießbaren Bereich; nach Init ein knapper Text-Multicast (`sendUdpTextln`, Port 8300).

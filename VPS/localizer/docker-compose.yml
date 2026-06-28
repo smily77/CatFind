@@ -1,0 +1,12 @@
+services:
+  localizer:
+    build: .
+    image: catfinder-localizer:latest
+    container_name: catfinder-localizer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Karte aus dem Repo (Aenderung dort -> kein VPS-Eingriff noetig)
+      MAP_URL: "https://raw.githubusercontent.com/smily77/CatFind/main/Map/RasenKarte.csv"
+      MAP_REFRESH_S: "600"

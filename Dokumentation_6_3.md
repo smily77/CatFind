@@ -75,6 +75,7 @@ In `xComDef6_3.h` ist jedes Gerät mit einer festen ID (Array-Index) eingetragen
 | 14 | Sim | MananagementDevice | DHCP | M5 Cardputer (neu in 6_3) |
 | 15 | LaserMarker | Marker | 182 | ESP32-C3, Laser-Marker (siehe LaserMarker/API_LaserMarker6_3.md) |
 | 16 | PA1_1 | PowerActor | 183 | älterer PowerActor mit Schrittmotor (PCF8574/A4988), Drehturm (siehe PowerActor1_1/PA1_1_6_3_0) |
+| 17 | LidarC1 | Lidar | DHCP | ESP32-S3 + RPLidar C1, welt-fähig via VPS-Lokalisierung (siehe CF_LidarC1/C1Lidar6_3_0) |
 
 - Das Feld `IP` enthält das **letzte Oktett** der Adresse (Netz ist fest
   192.168.0.x). Bei Geräten mit Eintrag 150–195 konfiguriert `setUpWifi()`
@@ -603,6 +604,43 @@ bedienbar** — die byte-genaue Netzwerk-API (welche UDP-Pakete man selbst packe
 muss) ist in `LaserMarker/API_LaserMarker6_3.md` dokumentiert. Damit kann ihn
 auch ein Fremdprogramm steuern, das nicht zur CatFind-Serie gehört.
 
+### 5.10 C1Lidar6_3_0 — welt-fähiger Lidar-Sensor (ID 17)
+
+RPLidar C1 auf **ESP32-S3** (Serial1, 460800), 2× WS2812. Erster Sensor mit
+**Welt-Koordinaten** (`validWorldPose`). Ordner `CF_LidarC1/` (mehrteiliger
+Sketch: `C1Lidar6_3_0.ino` + `hwDef.h` + `hwProc.ino` + `localizeProc.ino` +
+`noShotProc.ino`). Komplett neu gedacht ggü. der Vorläufer-Firmware
+(`Lidar_C1_Prog/…/C1_Lidar_V2_OTA_Ueberw3`): **keine Wand/Nische mehr nötig**,
+der Sensor steht frei auf dem Rasen.
+
+Boot-Ablauf:
+1. WLAN (DHCP) + OTA + LittleFS, Pose aus NVS lesen (Namespace `"c1pose"`,
+   inkl. Drehsinn).
+2. **20 s Hintergrund lernen** (rundum, per-Bin-Mindestabstände) → Perimetermodell.
+3. **Welt-Pose per VPS:** den 360-Bin-Hintergrund als `{"scan":[…]}` per
+   **HTTP-POST** an den Lokalisierungsdienst (`ipVPS:8080/localize`, siehe
+   `VPS/localizer/`) schicken; Antwort = Pose (X, Y, Heading, Drehsinn,
+   Konfidenz). NVS-Pose wird gegen die VPS-Pose plausibilisiert, sonst die
+   VPS-Pose übernommen (in NVS gespeichert). Setzt `myPose.validWorldPose`.
+4. **No-Shot-Karte:** lokale Kopie (LittleFS) gegen Version/CRC des Managers
+   prüfen, bei Abweichung neu laden (`requestMap`), sonst (oder bei Manager-
+   Ausfall) die alte Karte verwenden (siehe Kap. 4.2).
+5. **Überwachung:** je Umdrehung die markierten Punkte (näher als der
+   Hintergrund) zum Zentroid zusammenfassen, in Welt-Koordinaten umrechnen und
+   **nur wenn im schießbaren Bereich** (`insideNoShot`) als `catObserved`
+   broadcasten — mit relativen **und** Welt-Koordinaten (`worldValid=1`).
+
+Status-Pixel: blau = Kalibrierung, gelb = VPS-Lokalisierung, violett =
+No-Shot-Karte, aus = bereit, rot = nicht lokalisiert; bei Detektion im
+schießbaren Bereich rot + Richtungs-Pixel. Nach der Init ein knapper
+Text-Multicast (`LidarC1 loc=… x=… y=… h=… ns=…`).
+
+> **VPS-Lokalisierungsdienst** (`VPS/localizer/`): Docker-Container mit einem
+> HTTP-Dienst, der den 360-Bin-Scan mit `Map/RasenKarte.csv` (direkt aus dem
+> GitHub-Repo geladen) global matcht (portiert aus
+> `Lidar_C1_Prog/Position_estimate/lidar_localize.py`). Kartenänderung =
+> `git push`, kein VPS-Eingriff. Erreichbar über `ipVPS` aus `Credentials.h`.
+
 ---
 
 ## 6. Gemeinsame Infrastruktur (xComProc6_3.h)
@@ -623,6 +661,7 @@ auch ein Fremdprogramm steuern, das nicht zur CatFind-Serie gehört.
 | `crc32Bytes` | CRC32 (zlib-kompatibel) für die Karten-Übertragung |
 | `mapFileInfo` / `serveMap` | Karte aus LittleFS analysieren / gechunkt senden (Kap. 4.2) |
 | `requestMap` / `mapBeginRx` / `mapFeedChunk` | Karte anfordern / empfangen (Kap. 4.2) |
+| `loadNoShot` / `insideNoShot` | No-Shot-Polygon(e) aus LittleFS laden / Welt-Punkt im schießbaren Bereich? (Point-in-Polygon) |
 | `writeComment` / `writelnComment` | Debug-Ausgabe-Hooks — jedes Programm definiert selbst, wohin (Serial, Display, Canvas) |
 
 `Credentials.h` (eigene Arduino-Library auf dem Entwicklungsrechner, **nicht
@@ -650,6 +689,8 @@ CatFind/                          (Repo 1 — die Programme)
 ├── LaserMarker/
 │   ├── LaserMarker6_3/           ← Zielmarkierer (ID 15, siehe 5.9)
 │   └── API_LaserMarker6_3.md     ← byte-genaue Netzwerk-API
+├── CF_LidarC1/C1Lidar6_3_0/      ← welt-fähiger Lidar (ID 17, ESP32-S3, siehe 5.10)
+├── VPS/localizer/                ← Docker-Lokalisierungsdienst (HTTP, Pose aus Scan+Karte)
 └── Tests/                        ← vom Versionsschema ausgenommen
 
 (Die 6_2-Ordner — PA2i6_2_0, Radar6_2_0, … — existieren weiterhin parallel.)
