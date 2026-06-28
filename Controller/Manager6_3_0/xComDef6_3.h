@@ -60,6 +60,7 @@ struct stationDefinitions {
 #define Sim 14
 #define LaserMarker 15
 #define PA1_1 16
+#define LidarC1 17
 //Types
 #define MananagementDevice 1
 #define HLK 2
@@ -70,7 +71,7 @@ struct stationDefinitions {
 #define onOffSchalter 7
 #define Marker 8
 //  {MananagementDevice,180,0x01},
-stationDefinitions device[17] = {
+stationDefinitions device[18] = {
   {MananagementDevice,180,0x01,groupNone, "Manager_Dev"},  //Manager
   {HLK,0,0,groupNone,  "Dome"},                            //Dome
   {HLK,0,0,groupPA1_1, "Mini_Dome"},                       //MiniDome  -> Gruppe PA1_1
@@ -87,7 +88,8 @@ stationDefinitions device[17] = {
   {Screen,0,0,groupNone, "Wavetec_7inch"},                 //Wavetec
   {MananagementDevice,0,0,groupNone, "Simulator"},         //Simulator (Cardputer)
   {Marker,182,0x03,groupNone, "Laser_Marker"},             //LaserMarker (ESP32-C3, feste IP .182)
-  {PowerActor,183,0x04,groupPA1_1, "PowerActor1_1"}        //PA1_1 (älterer PA mit Stepper/PCF8574/A4988, feste IP .183) -> Gruppe PA1_1
+  {PowerActor,183,0x04,groupPA1_1, "PowerActor1_1"},       //PA1_1 (älterer PA mit Stepper/PCF8574/A4988, feste IP .183) -> Gruppe PA1_1
+  {Lidar,0,0,groupNone, "LidarC1"}                         //LidarC1 (RPLidar C1, welt-fähig via VPS-Lokalisierung, DHCP)
 };
 
 // call -> device[ident].type

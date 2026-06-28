@@ -32,6 +32,8 @@
 //bool requestMap(uint8_t mapType, uint8_t managerOctet)         - Karte beim Manager anfordern (Sensor)
 //bool mapBeginRx(mapRxState&, const mapInfoPayload&, const char* path)  - Empfang starten
 //int  mapFeedChunk(mapRxState&, const xMsg&)                    - Chunk verarbeiten (0=weiter,1=fertig,-1=Fehler)
+//bool loadNoShot(const char* path)                             - No-Shot-Polygon(e) aus LittleFS-CSV in RAM laden
+//bool insideNoShot(int32_t xw, int32_t yw)                     - Welt-Punkt im schiessbaren Bereich? (Point-in-Polygon)
 //uint8_t getLastIpByte()
 //void initText2Udp()
 //size_t sendUdpText(const String& text)
@@ -550,6 +552,7 @@ bool serveMap(uint8_t mapType, const char* path, uint8_t reqOctet) {
   info.mapType = mapType; info.version = version; info.fileCrc = fileCrc;
   info.totalLen = totalLen; info.chunkSize = mapChunkBytes; info.chunkCount = chunkCount;
   unicastMsg(mapInfo, info, reqOctet);
+  delay(20);                                  // dem Empfaenger Zeit, mapInfo vor den Chunks zu verarbeiten
 
   File f = LittleFS.open(path, "r");
   if (!f) return false;
@@ -636,4 +639,80 @@ int mapFeedChunk(mapRxState& s, const xMsg& m) {
     return -1;
   }
   return 0;
+}
+
+//---------------------------------------------------------------------------------------
+// No-Shot-/Schusszonen-Karte: Polygon(e) in Welt-mm (CSV im LittleFS) in RAM laden und
+// einen Welt-Punkt testen. Innerhalb = schiessbar. Mehrere Ringe (durch Leerzeile
+// getrennt) -> even-odd-Test ueber alle Ringe (Loecher = No-Shot-Inseln).
+//---------------------------------------------------------------------------------------
+#ifndef MAX_NOSHOT_PTS
+#define MAX_NOSHOT_PTS 300
+#endif
+#ifndef MAX_NOSHOT_RINGS
+#define MAX_NOSHOT_RINGS 8
+#endif
+static int32_t  nsX[MAX_NOSHOT_PTS], nsY[MAX_NOSHOT_PTS];
+static uint16_t nsRingStart[MAX_NOSHOT_RINGS + 1];
+static uint8_t  nsRingCount = 0;
+static uint16_t nsPtCount   = 0;
+static int32_t  nsMinX, nsMaxX, nsMinY, nsMaxY;
+static bool     noShotLoaded = false;
+
+bool loadNoShot(const char* path) {
+  noShotLoaded = false; nsPtCount = 0; nsRingCount = 0;
+  File f = LittleFS.open(path, "r");
+  if (!f) return false;
+  nsRingStart[0] = 0;
+  bool ringHasPts = false;
+  nsMinX = nsMinY = 0x7FFFFFFF; nsMaxX = nsMaxY = -0x7FFFFFFF;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) {                       // Leerzeile -> Ring abschliessen
+      if (ringHasPts && nsRingCount < MAX_NOSHOT_RINGS) {
+        nsRingCount++; nsRingStart[nsRingCount] = nsPtCount; ringHasPts = false;
+      }
+      continue;
+    }
+    if (line[0] == '#') continue;                   // Kommentar
+    int comma = line.indexOf(',');
+    if (comma < 0) continue;
+    int32_t x = line.substring(0, comma).toInt();
+    int32_t y = line.substring(comma + 1).toInt();
+    if (nsPtCount < MAX_NOSHOT_PTS) {
+      nsX[nsPtCount] = x; nsY[nsPtCount] = y; nsPtCount++; ringHasPts = true;
+      if (x < nsMinX) nsMinX = x; if (x > nsMaxX) nsMaxX = x;
+      if (y < nsMinY) nsMinY = y; if (y > nsMaxY) nsMaxY = y;
+    }
+  }
+  f.close();
+  if (ringHasPts && nsRingCount < MAX_NOSHOT_RINGS) {  // letzten (nicht leerzeilen-) Ring schliessen
+    nsRingCount++; nsRingStart[nsRingCount] = nsPtCount;
+  }
+  noShotLoaded = (nsRingCount > 0 && nsPtCount >= 3);
+  return noShotLoaded;
+}
+
+// true = Welt-Punkt liegt im schiessbaren Bereich. Ohne geladene Karte: true
+// (fail-open: Detektion wird gemeldet; der Aktor prueft spaeter zusaetzlich selbst).
+bool insideNoShot(int32_t px, int32_t py) {
+  if (!noShotLoaded) return true;
+  if (px < nsMinX || px > nsMaxX || py < nsMinY || py > nsMaxY) return false;
+  bool inside = false;
+  for (uint8_t r = 0; r < nsRingCount; r++) {
+    uint16_t s = nsRingStart[r], e = nsRingStart[r + 1];
+    if (e - s < 3) continue;
+    int j = e - 1;
+    for (int i = s; i < (int)e; i++) {
+      const int32_t yi = nsY[i], yj = nsY[j];
+      if ((yi > py) != (yj > py)) {
+        const double xint = (double)(nsX[j] - nsX[i]) * (double)(py - yi) /
+                            (double)(yj - yi) + (double)nsX[i];
+        if ((double)px < xint) inside = !inside;
+      }
+      j = i;
+    }
+  }
+  return inside;
 }
