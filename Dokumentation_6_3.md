@@ -452,6 +452,14 @@ Jedes Programm folgt demselben Grundgerüst:
   beantwortet `mapRequest` per `serveMap()` (siehe Kap. 4.2). Beim Boot wird die
   Karte aus einer eingebetteten Default-Karte ins LittleFS geschrieben, falls dort
   noch keine liegt.
+- **VPS-Gateway (Treffervisualisierung):** der Manager lauscht ohnehin auf dem
+  Bus und leitet `catObserved`, `HB` und die Text-Debug-Meldungen gebündelt per
+  HTTP-POST an das VPS-Dashboard weiter (`ipVPS:80/ingest`, ~alle 1,5 s,
+  `gatewayProc.ino`). Pro Event geht `sender`, `sensor`, Welt- und
+  Relativkoordinaten sowie die Koordinatengruppe (`device[sender].group`) mit.
+  Fällt der Manager aus, läuft das lokale Netz weiter — nur die Visualisierung
+  pausiert. (Burst-Verlust durch den Single-Buffer-Empfang ist für die
+  akkumulierende Karte unkritisch.)
 
 ### 5.2 Radar6_3_0 — Bewegungssensor (HLK-Radar, "Dome"-Familie)
 
@@ -640,6 +648,13 @@ Text-Multicast (`LidarC1 loc=… x=… y=… h=… ns=…`).
 > GitHub-Repo geladen) global matcht (portiert aus
 > `Lidar_C1_Prog/Position_estimate/lidar_localize.py`). Kartenänderung =
 > `git push`, kein VPS-Eingriff. Erreichbar über `ipVPS` aus `Credentials.h`.
+>
+> **VPS-Dashboard / Treffervisualisierung** (`VPS/dashboard/`): zweiter
+> Docker-Container (Port 80, `http://<VPS-IP>/`). Zeigt — gespeist vom Manager
+> als Gateway (siehe 5.1) — ein scrollendes System-Debug-Fenster, die zuletzt
+> aktiven Geräte (HB), eine pro Minute zusammengefasste Ereignisliste und Karten
+> der `catObserved` in Welt- bzw. relativen Gruppen-Koordinaten (Farbe je
+> Sensor/Ziel, Reset-Button). State im RAM (kumuliert bis Reset).
 
 ---
 
@@ -691,6 +706,7 @@ CatFind/                          (Repo 1 — die Programme)
 │   └── API_LaserMarker6_3.md     ← byte-genaue Netzwerk-API
 ├── CF_LidarC1/C1Lidar6_3_0/      ← welt-fähiger Lidar (ID 17, ESP32-S3, siehe 5.10)
 ├── VPS/localizer/                ← Docker-Lokalisierungsdienst (HTTP, Pose aus Scan+Karte)
+├── VPS/dashboard/                ← Docker-Treffervisualisierung (Web, Port 80; Master als Gateway)
 └── Tests/                        ← vom Versionsschema ausgenommen
 
 (Die 6_2-Ordner — PA2i6_2_0, Radar6_2_0, … — existieren weiterhin parallel.)
