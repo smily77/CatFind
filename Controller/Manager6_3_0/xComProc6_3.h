@@ -22,6 +22,16 @@
 //void toKart(int &x, int &y, float phi, float radius)
 //void toPaPol(int x, int y, float &phi,float &radius)
 //void toPaKart(int &x, int &y, float phi, float radius)
+//void localToWorld(int xl, int yl, const worldPose &p, int &xw, int &yw)  - lokal -> Welt (kartesisch)
+//void worldToLocal(int xw, int yw, const worldPose &p, int &xl, int &yl)  - Welt -> lokal (kartesisch)
+//void savePose(const worldPose &p)                              - Ist-Pose ins NVS schreiben
+//bool loadPose(worldPose &p)                                    - Ist-Pose aus NVS lesen (validWorldPose bleibt false)
+//uint32_t crc32Bytes(const uint8_t* d, size_t n)                - CRC32 (zlib-kompatibel)
+//bool mapFileInfo(const char* path, uint16_t& v, uint32_t& crc, uint32_t& len)  - LittleFS-Karte: Version/CRC/Laenge
+//bool serveMap(uint8_t mapType, const char* path, uint8_t reqOctet)  - Karte gechunkt an Anforderer senden (Manager)
+//bool requestMap(uint8_t mapType, uint8_t managerOctet)         - Karte beim Manager anfordern (Sensor)
+//bool mapBeginRx(mapRxState&, const mapInfoPayload&, const char* path)  - Empfang starten
+//int  mapFeedChunk(mapRxState&, const xMsg&)                    - Chunk verarbeiten (0=weiter,1=fertig,-1=Fehler)
 //uint8_t getLastIpByte()
 //void initText2Udp()
 //size_t sendUdpText(const String& text)
@@ -72,6 +82,12 @@ void    toPol(int x, int y, float &phi, float &radius);
 void    toKart(int &x, int &y, float phi, float radius);
 void    toPaPol(int x, int y, float &phi, float &radius);
 void    toPaKart(int &x, int &y, float phi, float radius);
+
+// Welt-/Lokal-Transformation und Pose-Persistenz
+void    localToWorld(int xl, int yl, const worldPose &p, int &xw, int &yw);
+void    worldToLocal(int xw, int yw, const worldPose &p, int &xl, int &yl);
+void    savePose(const worldPose &p);
+bool    loadPose(worldPose &p);
 
 
 size_t sendUdpText(const String& text) {
@@ -214,6 +230,7 @@ void initUnicast() {
       xMsg m;
       if (!parseXMsg(packet, m)) return;
       lastUcMsg = m;
+      lastUcSenderOctet = packet.remoteIP()[3];  // fuer gezielte Antwort
       ucDataReceived = true;  // Flag setzen
     });
   } else {
@@ -353,7 +370,19 @@ void printSensorData(const xMsg &m) {
     Serial << "Sender: " << m.header.sender << ", Sensor: " << pos.sensor << ", ";
     Serial << "Radius: " << pos.radius << ", phi: " << pos.angle << ", x: " << pos.x << ", y: " << pos.y;
     Serial << ", speed: " << pos.targetSpeed << ", res: " << pos.res;
+    Serial << ", worldValid: " << pos.worldValid << ", worldX: " << pos.worldX << ", worldY: " << pos.worldY;
     Serial << endl;
+  }
+  else if (m.header.msgCode == poseReport) {
+    worldPosePayload wp;
+    if (!getPayload(m, wp)) return;
+    Serial << "PoseReport, Sender: " << m.header.sender;
+    Serial << ", validWorldPose: " << wp.validWorldPose;
+    Serial << ", worldX: " << wp.worldX << ", worldY: " << wp.worldY << ", heading: " << wp.heading;
+    Serial << endl;
+  }
+  else if (m.header.msgCode == poseRequest) {
+    Serial << "PoseRequest, Sender: " << m.header.sender << endl;
   }
 }
 
@@ -404,4 +433,207 @@ void toPaKart(int &x, int &y, float phi, float radius) {
   phi = (phi-2048)*M_PI /2048;
   x = sin(phi)* radius;
   y = cos(phi)* radius;
+}
+
+//---------------------------------------------------------------------------------------
+// Welt-/Lokal-Transformation (reine 2D-Starrkoerper-Transformation, mm)
+// heading in PA-Einheiten (0..4096 = 360 Grad), 0 = lokale Achsen welt-ausgerichtet.
+//   Welt = Rot(heading) * lokal + (worldX, worldY)
+//---------------------------------------------------------------------------------------
+void localToWorld(int xl, int yl, const worldPose &p, int &xw, int &yw) {
+  float a = p.heading * (2.0f * M_PI / 4096.0f);
+  float c = cos(a), s = sin(a);
+  xw = p.worldX + lround(xl * c - yl * s);
+  yw = p.worldY + lround(xl * s + yl * c);
+}
+
+void worldToLocal(int xw, int yw, const worldPose &p, int &xl, int &yl) {
+  float a = p.heading * (2.0f * M_PI / 4096.0f);
+  float c = cos(a), s = sin(a);
+  float dx = xw - p.worldX;
+  float dy = yw - p.worldY;
+  xl = lround( dx * c + dy * s);
+  yl = lround(-dx * s + dy * c);
+}
+
+//---------------------------------------------------------------------------------------
+// Pose-Persistenz im nichtfluechtigen Speicher (NVS, Namespace "pose").
+// loadPose laedt nur die Koordinaten/Ausrichtung; validWorldPose bleibt nach dem
+// Booten bewusst false und wird erst durch einen spaeteren Quickcheck bestaetigt.
+//---------------------------------------------------------------------------------------
+void savePose(const worldPose &p) {
+  Preferences posePrefs;
+  posePrefs.begin("pose", false);
+  posePrefs.putInt("x", p.worldX);
+  posePrefs.putInt("y", p.worldY);
+  posePrefs.putFloat("h", p.heading);
+  posePrefs.putBool("v", p.validWorldPose);
+  posePrefs.end();
+}
+
+bool loadPose(worldPose &p) {
+  Preferences posePrefs;
+  posePrefs.begin("pose", true);
+  bool exists = posePrefs.isKey("x");
+  if (exists) {
+    p.worldX  = posePrefs.getInt("x", 0);
+    p.worldY  = posePrefs.getInt("y", 0);
+    p.heading = posePrefs.getFloat("h", 0.0f);
+  }
+  posePrefs.end();
+  p.validWorldPose = false;   // nach Boot immer ungueltig -> Quickcheck bestaetigt spaeter
+  return exists;
+}
+
+//---------------------------------------------------------------------------------------
+// Karten-Verteilung (No-Shot u.a.): Manager haelt die Karte im LittleFS, Geraete laden
+// sie gechunkt ueber das UDP-xCom-Protokoll (mapRequest -> mapInfo -> mapChunk...).
+//---------------------------------------------------------------------------------------
+
+// CRC32 (zlib-kompatibel, reflektiertes Polynom 0xEDB88320) - Manager und
+// Empfaenger nutzen dieselbe Funktion.
+static inline uint32_t crc32Update(uint32_t crc, uint8_t b) {
+  crc ^= b;
+  for (int k = 0; k < 8; k++)
+    crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1)));
+  return crc;
+}
+uint32_t crc32Bytes(const uint8_t* d, size_t n) {
+  uint32_t crc = 0xFFFFFFFFu;
+  for (size_t i = 0; i < n; i++) crc = crc32Update(crc, d[i]);
+  return crc ^ 0xFFFFFFFFu;
+}
+
+// Version aus dem CSV-Header lesen ("... vN ...") - Default 1, wenn nicht gefunden.
+static uint16_t parseMapVersion(const String& firstLine) {
+  int i = firstLine.indexOf(" v");
+  if (i < 0) return 1;
+  i += 2;
+  uint16_t v = 0; bool any = false;
+  while (i < (int)firstLine.length() && isDigit(firstLine[i])) {
+    v = v * 10 + (firstLine[i] - '0'); any = true; i++;
+  }
+  return any ? v : 1;
+}
+
+// Karte im LittleFS analysieren: Version (Header), CRC32 (ganze Datei), Laenge.
+bool mapFileInfo(const char* path, uint16_t& version, uint32_t& fileCrc, uint32_t& totalLen) {
+  File f = LittleFS.open(path, "r");
+  if (!f) return false;
+  totalLen = f.size();
+  uint32_t crc = 0xFFFFFFFFu;
+  String first; bool inFirst = true;
+  while (f.available()) {
+    uint8_t b = (uint8_t)f.read();
+    crc = crc32Update(crc, b);
+    if (inFirst) {
+      if (b == '\n') inFirst = false;
+      else if (b != '\r') first += (char)b;
+    }
+  }
+  f.close();
+  fileCrc = crc ^ 0xFFFFFFFFu;
+  version = parseMapVersion(first);
+  return true;
+}
+
+// (Manager) Karte gechunkt an einen Anforderer senden: mapInfo + alle mapChunks (Unicast).
+bool serveMap(uint8_t mapType, const char* path, uint8_t reqOctet) {
+  if (reqOctet == 0) return false;
+  uint16_t version; uint32_t fileCrc, totalLen;
+  if (!mapFileInfo(path, version, fileCrc, totalLen)) return false;
+
+  uint16_t chunkCount = (uint16_t)((totalLen + mapChunkBytes - 1) / mapChunkBytes);
+  if (totalLen == 0) chunkCount = 0;
+
+  mapInfoPayload info;
+  info.mapType = mapType; info.version = version; info.fileCrc = fileCrc;
+  info.totalLen = totalLen; info.chunkSize = mapChunkBytes; info.chunkCount = chunkCount;
+  unicastMsg(mapInfo, info, reqOctet);
+
+  File f = LittleFS.open(path, "r");
+  if (!f) return false;
+  uint8_t buf[sizeof(mapChunkMeta) + mapChunkBytes];
+  uint16_t idx = 0;
+  while (true) {
+    int n = f.read(buf + sizeof(mapChunkMeta), mapChunkBytes);
+    if (n <= 0) break;
+    mapChunkMeta meta;
+    meta.mapType = mapType; meta.version = version;
+    meta.chunkIndex = idx; meta.dataLen = (uint16_t)n;
+    memcpy(buf, &meta, sizeof(meta));
+    unicastMsg(mapChunk, buf, (uint8_t)(sizeof(meta) + n), reqOctet);
+    idx++;
+    delay(4);   // dem Empfaenger Zeit lassen (UDP, kein Flow-Control)
+  }
+  f.close();
+  return true;
+}
+
+// (Sensor) Karte beim Manager anfordern.
+bool requestMap(uint8_t mapType, uint8_t managerOctet) {
+  mapReqPayload r; r.mapType = mapType;
+  return unicastMsg(mapRequest, r, managerOctet);
+}
+
+// Empfangszustand fuer eine eingehende Karte (Sensor-Seite).
+struct mapRxState {
+  bool     active = false;
+  bool     done = false;
+  bool     ok = false;
+  uint8_t  mapType = 0;
+  uint16_t version = 0;
+  uint32_t fileCrc = 0;
+  uint32_t totalLen = 0;
+  uint16_t chunkCount = 0;
+  uint16_t nextIndex = 0;
+  File     f;
+  String   path;
+};
+
+// Empfang nach erhaltenem mapInfo starten (schreibt in <path>.tmp).
+bool mapBeginRx(mapRxState& s, const mapInfoPayload& info, const char* path) {
+  s = mapRxState();
+  s.mapType = info.mapType; s.version = info.version; s.fileCrc = info.fileCrc;
+  s.totalLen = info.totalLen; s.chunkCount = info.chunkCount;
+  s.path = path;
+  s.f = LittleFS.open((s.path + ".tmp").c_str(), "w");
+  if (!s.f) return false;
+  s.active = true;
+  if (s.chunkCount == 0) {                 // leere Karte: sofort fertig
+    s.f.close();
+    LittleFS.remove(s.path.c_str());
+    LittleFS.rename((s.path + ".tmp").c_str(), s.path.c_str());
+    s.active = false; s.done = true; s.ok = (s.totalLen == 0);
+  }
+  return true;
+}
+
+// Einen mapChunk verarbeiten. Rueckgabe: 0 = weiter, 1 = fertig+OK, -1 = Fehler.
+int mapFeedChunk(mapRxState& s, const xMsg& m) {
+  if (!s.active) return -1;
+  if (m.header.payloadLen < sizeof(mapChunkMeta)) return -1;
+  mapChunkMeta meta; memcpy(&meta, m.payload, sizeof(meta));
+  if (meta.mapType != s.mapType || meta.version != s.version) return 0;  // fremder Chunk
+  if (meta.chunkIndex != s.nextIndex) return 0;                          // nicht in Reihenfolge
+  if ((size_t)sizeof(mapChunkMeta) + meta.dataLen > m.header.payloadLen) return -1;
+
+  s.f.write(m.payload + sizeof(mapChunkMeta), meta.dataLen);
+  s.nextIndex++;
+  if (s.nextIndex >= s.chunkCount) {
+    s.f.close();
+    String tmp = s.path + ".tmp";
+    uint16_t v; uint32_t crc, len;
+    bool good = mapFileInfo(tmp.c_str(), v, crc, len) && crc == s.fileCrc && len == s.totalLen;
+    if (good) {
+      LittleFS.remove(s.path.c_str());
+      LittleFS.rename(tmp.c_str(), s.path.c_str());
+      s.active = false; s.done = true; s.ok = true;
+      return 1;
+    }
+    LittleFS.remove(tmp.c_str());
+    s.active = false; s.done = true; s.ok = false;
+    return -1;
+  }
+  return 0;
 }

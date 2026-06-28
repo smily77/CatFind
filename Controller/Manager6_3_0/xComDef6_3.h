@@ -24,12 +24,22 @@
 #include <AsyncUDP.h>
 #include <ArduinoOTA.h>
 #include "time.h"
+#include <Preferences.h>
+#include <LittleFS.h>
 #include <Credentials.h>
+
+// Relative Koordinatengruppen: ein Aktor und die fest mit ihm verbundenen
+// Sensoren bilden eine Gruppe und teilen sich dasselbe lokale (sensor-/aktor-
+// bezogene) Koordinatensystem. group 0 = keiner Gruppe zugeordnet.
+#define groupNone  0
+#define groupPA2   1   // PA2i + CompactDome + LD06
+#define groupPA1_1 2   // PA1_1 + MiniDome
 
 struct stationDefinitions {
   byte   type;
   byte   IP;
   byte   MAC;
+  byte   group;   // relative Koordinatengruppe (groupNone/groupPA2/groupPA1_1)
   String Name;
 };
 //Device
@@ -61,23 +71,23 @@ struct stationDefinitions {
 #define Marker 8
 //  {MananagementDevice,180,0x01},
 stationDefinitions device[17] = {
-  {MananagementDevice,180,0x01,"Manager_Dev"},  //Manager
-  {HLK,0,0,"Dome"},                             //Dome
-  {HLK,0,0,"Mini_Dome"},                        //MiniDome
-  {HLK,0,0,"Compact_Dome"},                     //CompactDome - auf PA M5PicoDome
-  {PowerActor,181,0x02,"PowerActor1"},          //PA1
-  {Screen,0,0,"Disp_7"},                        //Display 7 Inch
-  {Controller,0,0,"CYD"},                       //CYD Controller
-  {Lidar,0,0,"LD6"},                            //LD06
-  {onOffSchalter,0,0,"Button"},                  //Schalter - achtung nicht Unique
-  {Screen,0,0,"Disp_5"},                         //Display 5 Inch
-  {Screen,0,0,"Core2"},                          //Core2
-  {Screen,0,0,"Tab5"},                           //Tab5
-  {Screen,0,0,"CYD35Zoll"},                      //CYD35Zoll
-  {Screen,0,0,"Wavetec_7inch"},                  //Wavetec
-  {MananagementDevice,0,0,"Simulator"},          //Simulator (Cardputer)
-  {Marker,182,0x03,"Laser_Marker"},              //LaserMarker (ESP32-C3, feste IP .182)
-  {PowerActor,183,0x04,"PowerActor1_1"}          //PA1_1 (älterer PA mit Stepper/PCF8574/A4988, feste IP .183)
+  {MananagementDevice,180,0x01,groupNone, "Manager_Dev"},  //Manager
+  {HLK,0,0,groupNone,  "Dome"},                            //Dome
+  {HLK,0,0,groupPA1_1, "Mini_Dome"},                       //MiniDome  -> Gruppe PA1_1
+  {HLK,0,0,groupPA2,   "Compact_Dome"},                    //CompactDome - auf PA M5PicoDome -> Gruppe PA2
+  {PowerActor,181,0x02,groupPA2, "PowerActor1"},           //PA1 (PA2i) -> Gruppe PA2
+  {Screen,0,0,groupNone, "Disp_7"},                        //Display 7 Inch
+  {Controller,0,0,groupNone, "CYD"},                       //CYD Controller
+  {Lidar,0,0,groupPA2, "LD6"},                             //LD06 -> Gruppe PA2
+  {onOffSchalter,0,0,groupNone, "Button"},                 //Schalter - achtung nicht Unique
+  {Screen,0,0,groupNone, "Disp_5"},                        //Display 5 Inch
+  {Screen,0,0,groupNone, "Core2"},                         //Core2
+  {Screen,0,0,groupNone, "Tab5"},                          //Tab5
+  {Screen,0,0,groupNone, "CYD35Zoll"},                     //CYD35Zoll
+  {Screen,0,0,groupNone, "Wavetec_7inch"},                 //Wavetec
+  {MananagementDevice,0,0,groupNone, "Simulator"},         //Simulator (Cardputer)
+  {Marker,182,0x03,groupNone, "Laser_Marker"},             //LaserMarker (ESP32-C3, feste IP .182)
+  {PowerActor,183,0x04,groupPA1_1, "PowerActor1_1"}        //PA1_1 (älterer PA mit Stepper/PCF8574/A4988, feste IP .183) -> Gruppe PA1_1
 };
 
 // call -> device[ident].type
@@ -93,6 +103,14 @@ stationDefinitions device[17] = {
 #define measurement 3
 #define catHit      4
 #define commandMsg  5
+#define poseRequest 6   // Anfrage an ein Geraet: "melde deine Welt-Pose" (ohne Payload)
+#define poseReport  7   // Antwort/Annonce: worldPosePayload (validWorldPose + Welt-Pose)
+#define mapRequest  8   // Anfrage an den Manager: "sende Karte vom Typ X" (mapReqPayload)
+#define mapInfo     9   // Antwort: Metadaten der Karte (mapInfoPayload)
+#define mapChunk   10   // ein Datenstueck der Karte (mapChunkMeta + Datenbytes, variabel)
+
+// Karten-Typen (fuer mapRequest/mapInfo/mapChunk)
+#define mapNoShot   1   // Schusszonen-/No-Shot-Karte (innerhalb = Feuern erlaubt)
 
 struct __attribute__((packed)) msgHeader {
   uint8_t version;     // XCOM_VERSION - Empfänger verwirft fremde Versionen
@@ -112,13 +130,19 @@ struct xMsg {
 
 //----------------------------------- Payloads -------------------------------------------
 // catObserved / measurement / catHit
+// x/y/radius/angle = RELATIVE Koordinaten (sensor-/aktor-lokal, siehe Koordinaten-
+// systeme). worldX/worldY = WELT-Koordinaten (immer kartesisch, mm) - nur gueltig,
+// wenn worldValid==1 (dann hatte der Sender beim Senden eine validWorldPose).
 struct __attribute__((packed)) posPayload {
-  int32_t x;
+  int32_t x;            // relativ, kartesisch (mm)
   int32_t y;
-  float   radius;
+  float   radius;       // relativ, polar (PA-Einheiten)
   float   angle;
   int32_t targetSpeed;
   int32_t res;
+  int32_t worldX;       // Welt-Koordinate X (mm) - 0 wenn !worldValid
+  int32_t worldY;       // Welt-Koordinate Y (mm) - 0 wenn !worldValid
+  uint8_t worldValid;   // 1 = worldX/worldY gueltig (Sender hatte validWorldPose)
   uint8_t sensor;
 };
 
@@ -164,6 +188,44 @@ struct __attribute__((packed)) cmdPayload {
   int32_t info;
 };
 
+// poseReport: Welt-Pose eines Geraets (Antwort auf poseRequest / Annonce).
+// Welt-Koordinaten sind immer kartesisch (mm); heading in PA-Einheiten (0..4096),
+// 0 = lokale Achsen sind welt-ausgerichtet.
+struct __attribute__((packed)) worldPosePayload {
+  uint8_t validWorldPose;  // 1 = worldX/worldY/heading gueltig
+  int32_t worldX;          // mm
+  int32_t worldY;          // mm
+  float   heading;         // PA-Einheiten 0..4096
+};
+
+//------------------------- Karten-Verteilung (Manager -> Geraete) -----------------------
+// mapRequest: ein Geraet fordert eine Karte beim Manager an
+struct __attribute__((packed)) mapReqPayload {
+  uint8_t mapType;         // gewuenschter Kartentyp (mapNoShot, ...)
+};
+
+// mapInfo: Manager meldet die Metadaten der Karte (Antwort auf mapRequest)
+struct __attribute__((packed)) mapInfoPayload {
+  uint8_t  mapType;
+  uint16_t version;        // aus dem CSV-Header ("... vN ...")
+  uint32_t fileCrc;        // CRC32 ueber die gesamte Datei (Identitaet + Integritaet)
+  uint32_t totalLen;       // Dateilaenge in Bytes
+  uint16_t chunkSize;      // Datenbytes pro mapChunk (ausser evtl. letztem)
+  uint16_t chunkCount;     // Anzahl mapChunks
+};
+
+// mapChunk: feste Metadaten + variable Datenbytes.
+// Auf der Leitung: payloadLen = sizeof(mapChunkMeta) + dataLen
+struct __attribute__((packed)) mapChunkMeta {
+  uint8_t  mapType;
+  uint16_t version;
+  uint16_t chunkIndex;     // 0..chunkCount-1, in Reihenfolge
+  uint16_t dataLen;        // Anzahl folgender Datenbytes
+};
+
+// Datenbytes pro Chunk so gewaehlt, dass mapChunkMeta + Daten in den Payload passen
+constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen (64)
+
 //cmd Codes für cmdPayload
 #define cmdRichtung                1   // info: absoluten PA-Winkel 0..4096 anfahren (Jog/Encoder-Test)
 #define cmdLaser                   2
@@ -186,6 +248,19 @@ struct __attribute__((packed)) cmdPayload {
 #define cmdExtPower               17   // info: 0 = aus, 1 = an (externe Versorgung)
 
 //---------------------------------------------------------------------------------------
+// Welt-Pose dieses Geraets (jedes Geraet besitzt diese Variablen, damit die
+// gemeinsamen Prozeduren generisch arbeiten koennen). validWorldPose ist nach
+// dem Booten immer false und wird erst durch eine Positionsbestimmung/Quickcheck
+// (eigene, spaetere Aufgabe) auf true gesetzt.
+struct worldPose {
+  int32_t worldX;          // Welt-X (mm)
+  int32_t worldY;          // Welt-Y (mm)
+  float   heading;         // Ausrichtung in PA-Einheiten 0..4096 (0 = welt-ausgerichtet)
+  bool    validWorldPose;  // false nach Boot
+};
+worldPose myPose = { 0, 0, 0.0f, false };
+
+//---------------------------------------------------------------------------------------
 IPAddress multiCastIP (239,0,0,57);
 constexpr uint16_t MC_PORT = 8266;
 AsyncUDP udpMc;
@@ -203,6 +278,7 @@ static const uint16_t UC_PORT = 23456;
 AsyncUDP udpUc;
 volatile bool ucDataReceived = false;
 xMsg lastUcMsg;
+volatile uint8_t lastUcSenderOctet = 0;   // letztes IP-Oktett des Unicast-Absenders
 
 struct tm timeinfo;
 time_t now;

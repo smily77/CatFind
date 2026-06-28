@@ -85,6 +85,11 @@ In `xComDef6_3.h` ist jedes Gerät mit einer festen ID (Array-Index) eingetragen
 - `Name` wird als OTA-Hostname verwendet (`setUpOTA()`), `type` dient zur
   Gruppierung (z.B. reagiert der Button auf HBs von **allen** PowerActor-Geräten,
   nicht auf eine bestimmte ID).
+- `group` ordnet jedes Gerät einer **relativen Koordinatengruppe** zu: ein Aktor
+  und die fest mit ihm verbundenen Sensoren teilen dasselbe lokale
+  Koordinatensystem. Definiert sind `groupNone (0)`, `groupPA2 (1)` =
+  {PA2i, CompactDome, LD06} und `groupPA1_1 (2)` = {PA1_1, MiniDome}; alle
+  übrigen Geräte sind `groupNone`. (Siehe Kap. 4.1.)
 
 ---
 
@@ -123,7 +128,13 @@ Länge kann es gar nicht mehr falsch machen.
 Alle Structs sind `__attribute__((packed))` — das Leitungsformat ist damit
 exakt definiert (Little-Endian, da alle Geräte ESP32 sind):
 msgHeader = 12, hbPayload = 5, radarHbPayload = 9, pa2HbPayload = 23,
-posPayload = 25, cmdPayload = 5 Bytes.
+posPayload = 34, cmdPayload = 5, worldPosePayload = 13 Bytes.
+
+> **Hinweis (globale Koordinaten, ab dieser 6_3-Erweiterung):** `posPayload`
+> wurde von 25 auf 34 Bytes erweitert (Welt-Koordinatenfelder, siehe unten).
+> Da sich die Payload-Größe ändert, müssen **alle** 6_3-Geräte gemeinsam neu
+> geflasht werden (Empfänger prüfen `payloadLen == sizeof(posPayload)`). Alte
+> Simulator-Aufnahmen mit 25-Byte-Records werden beim Replay verworfen.
 
 ### 3.2 Nachrichtenarten und ihre Payloads
 
@@ -134,17 +145,34 @@ posPayload = 25, cmdPayload = 5 Bytes.
 | `measurement` | 3 | `posPayload` | Broadcast | Messpunkt (z.B. Lidar-Scan des PA2) |
 | `catHit` | 4 | `posPayload` | Broadcast | PA2 hat auf diese Position geschossen |
 | `commandMsg` | 5 | `cmdPayload` | Unicast | Steuerkommando an ein bestimmtes Gerät |
+| `poseRequest` | 6 | — (kein Payload) | Unicast/Broadcast | "Melde deine Welt-Pose" (siehe Kap. 4.1) |
+| `poseReport` | 7 | `worldPosePayload` | Unicast/Broadcast | Antwort/Annonce der eigenen Welt-Pose |
+| `mapRequest` | 8 | `mapReqPayload` | Unicast | "Sende Karte vom Typ X" (an den Manager) |
+| `mapInfo` | 9 | `mapInfoPayload` | Unicast | Karten-Metadaten (Antwort auf `mapRequest`) |
+| `mapChunk` | 10 | `mapChunkMeta` + Daten | Unicast | ein Datenstück der Karte (variabel, siehe Kap. 4.2) |
 
-**posPayload** (25 Bytes) — Positionsmeldung:
+**posPayload** (34 Bytes) — Positionsmeldung. `x/y/radius/angle` sind **relativ**
+(sensor-/aktorlokal); `worldX/worldY` sind **Welt-Koordinaten** und nur gültig,
+wenn `worldValid==1`:
 
 | Feld | Typ | Bedeutung |
 |---|---|---|
-| `x`, `y` | int32 | kartesische Position in mm (siehe Koordinatensysteme, Kap. 4) |
-| `radius` | float | Distanz vom PA2-Drehpunkt in mm |
+| `x`, `y` | int32 | **relative** kartesische Position in mm (siehe Koordinatensysteme, Kap. 4) |
+| `radius` | float | Distanz vom Drehpunkt in mm (relativ) |
 | `angle` | float | Winkel in PA-Einheiten (0..4096, siehe Kap. 4) |
 | `targetSpeed` | int32 | Zielgeschwindigkeit (nur Radar, cm/s) |
 | `res` | int32 | Distanz-Auflösungswert des Radars |
+| `worldX`, `worldY` | int32 | **Welt-Koordinaten** in mm (immer kartesisch); 0 wenn `worldValid==0` |
+| `worldValid` | uint8 | 1 = `worldX/worldY` gültig (Sender hatte beim Senden eine `validWorldPose`) |
 | `sensor` | uint8 | Target-/Sensorindex (Radar liefert bis zu 3 Targets: 0..2) |
+
+**worldPosePayload** (13 Bytes) — Welt-Pose eines Geräts (Antwort auf `poseRequest`):
+
+| Feld | Typ | Bedeutung |
+|---|---|---|
+| `validWorldPose` | uint8 | 1 = Pose gültig |
+| `worldX`, `worldY` | int32 | Welt-Position des Geräte-Ursprungs in mm |
+| `heading` | float | Ausrichtung in PA-Einheiten (0..4096, 0 = welt-ausgerichtet) |
 
 **hbPayload** (5 Bytes) — Basis-Heartbeat, steht bei *allen* HB-Varianten am Anfang:
 
@@ -263,22 +291,36 @@ Längenfehler sind damit konstruktiv ausgeschlossen.
 ## 4. Koordinatensysteme
 
 Das System rechnet in zwei Welten; Ursprung ist immer der **Drehpunkt des
-PowerActor-Servos** (= Position des Wasserwerfers):
+PowerActors** (= Position des Wasserwerfers):
 
 **Kartesisch (mm):** x nach rechts, y nach vorne (vom PA2 aus auf den Rasen
 gesehen). Die Radarsensoren liefern direkt x/y in mm (y wird beim Einlesen
 gespiegelt, damit "vorne" positiv ist).
 
-**PA-Polar ("4096er-Welt"):** Der Servo (SMS_STS) arbeitet mit 4096 Schritten
-pro Umdrehung. Winkelkonvention:
+**PA-Polar ("4096er-Welt"):** Diese Winkelkonvention ist **geräteübergreifend**
+(alle Aktoren und Sensoren teilen sie):
 
 ```
         0°-Richtung = geradeaus (+y)  ↔  PA-Winkel 2048
         4096 Einheiten = 360°  →  1 Einheit ≈ 0.088°
         links  von der Mitte: < 2048      rechts: > 2048
+```
+
+**Gerätespezifisch** sind hingegen die mechanischen Anschläge und der nutzbare
+Bereich – diese gelten **nicht** allgemein, sondern hängen vom jeweiligen Aktor
+und seiner Mechanik ab. Beim **PA2i** (SMS_STS-Servo, 4096 Schritte/Umdrehung)
+gilt:
+
+```
         mechanische Anschläge: leftStopp 760, rightStopp 3400
         nutzbarer Bereich (maxAngle 60°): 2048 ± 682
 ```
+
+Der **PA1_1** (Schrittmotor-Turm, siehe 5.8) verwendet dieselbe 4096er-Welt,
+aber einen anderen nutzbaren Bereich (`maxAngle 180°` → 2048 ± 2048) und
+Reed-Referenzfahrt statt fester Servo-Anschläge. Wer Funktionen schreibt, die
+auf Anschläge/Limits zugreifen, muss diese also **pro Aktor** behandeln, nicht
+als Konstanten des Gesamtsystems.
 
 Umrechnungsfunktionen in xComProc6_3.h:
 
@@ -293,6 +335,91 @@ In `posPayload` steht deshalb beides: `angle`/`radius` in der PA-Welt (direkt
 servotauglich) und `x`/`y` kartesisch (direkt kartentauglich fürs Display).
 Der Sender füllt beide konsistent (Radar: misst x/y, rechnet mit `toPaPol` um;
 Lidar: misst Winkel/Distanz, rechnet mit `toPaKart` um).
+
+### 4.1 Welt-Koordinaten (globales System) und relative Koordinatengruppen
+
+Die obigen relativen Koordinaten gelten nur **innerhalb einer relativen
+Koordinatengruppe** (Aktor + fest verbundene Sensoren, siehe `group` in Kap. 2).
+Zusätzlich gibt es ein **globales Welt-System**, damit mehrere Aktoren
+zusammenarbeiten können:
+
+- **Welt-Koordinaten sind immer kartesisch** (`worldX`/`worldY`, **mm**). Es gibt
+  bewusst keine globalen Polarkoordinaten.
+- Jedes Gerät besitzt eine **Welt-Pose** (`worldPose myPose` in `xComDef6_3.h`):
+  Ursprung `worldX/worldY` (mm) + `heading` (PA-Einheiten 0..4096, 0 =
+  welt-ausgerichtet) + Flag `validWorldPose`. Letzteres ist nach Boot **immer
+  `false`**, bis eine Positionsbestimmung/Quickcheck es bestätigt (eigene,
+  spätere Aufgabe).
+- Ein Sensor mit `validWorldPose` sendet in `posPayload` zusätzlich
+  `worldX/worldY` und setzt `worldValid=1`. Ohne valide Pose bleibt
+  `worldValid=0` (und `worldX/worldY=0`).
+- **Adressierung der Meldungen:** Ein Aktor verwendet eine Beobachtung, wenn
+  entweder (a) Welt-Koordinaten mitgeliefert wurden **und** er selbst eine
+  `validWorldPose` hat, oder (b) die Meldung aus **seiner eigenen relativen
+  Koordinatengruppe** stammt. Andernfalls ignoriert er sie. (Die konkrete
+  Empfangs-/Feuerlogik ist Gegenstand späterer Aufgaben.)
+- **Pose-Abfrage:** `poseRequest` (msgCode 6, ohne Payload) fragt ein Gerät nach
+  seiner Welt-Pose; es antwortet mit `poseReport` (msgCode 7, `worldPosePayload`).
+  So kann z.B. ein auf Welt-Koordinaten eingestelltes Display, das nur eine
+  relative Meldung erhält, ein Gruppenmitglied mit valider Pose anfragen und
+  selbst umrechnen.
+
+Umrechnung Welt ↔ lokal (in `xComProc6_3.h`, reine 2D-Translation + Rotation um
+`heading`):
+
+| Funktion | Richtung |
+|---|---|
+| `localToWorld(xl,yl, pose, xw,yw)` | lokal → Welt (mm) |
+| `worldToLocal(xw,yw, pose, xl,yl)` | Welt → lokal (mm) |
+
+Persistenz der eigenen Pose (NVS, Preferences-Namespace `"pose"`):
+
+| Funktion | Zweck |
+|---|---|
+| `savePose(pose)` | Ist-Pose ins NVS schreiben |
+| `loadPose(pose)` | Ist-Pose lesen (`validWorldPose` bleibt nach Boot `false`) |
+
+### 4.2 Karten-Verteilung (Manager → Geräte)
+
+Karten (zunächst die **No-Shot-/Schusszonen-Karte**) liegen zentral im **LittleFS
+des Managers** und werden über das UDP-xCom-Protokoll an anfragende Geräte
+verteilt. Ablauf (alles Unicast):
+
+```
+Sensor ──mapRequest(mapType)──►  Manager
+Sensor ◄──mapInfo(version,crc,len,chunkSize,chunkCount)── Manager
+Sensor ◄──mapChunk(idx,data)──   Manager   (chunkCount Stück, in Reihenfolge)
+```
+
+- **mapType-Enum:** `mapNoShot (1)` (weitere Typen später möglich).
+- **`mapReqPayload`** (1 B): `mapType`.
+- **`mapInfoPayload`** (15 B): `mapType`, `version` (aus dem CSV-Header `vN`),
+  `fileCrc` (CRC32 über die ganze Datei), `totalLen`, `chunkSize` (`mapChunkBytes`
+  = 48), `chunkCount`.
+- **`mapChunk`**: `mapChunkMeta` (`mapType`, `version`, `chunkIndex`, `dataLen`)
+  **+** `dataLen` Datenbytes — variable Payloadlänge `sizeof(mapChunkMeta)+dataLen`.
+
+Der Empfänger sammelt die Chunks der Reihe nach in `<pfad>.tmp`, prüft am Ende
+`fileCrc`/`totalLen` und benennt erst dann auf den Zielpfad um (atomar). Stimmt
+die `version`/`fileCrc` bereits mit der lokalen Kopie überein, kann ein Gerät den
+Download überspringen. Die zeitkritische In/Out-Entscheidung läuft danach lokal
+gegen die gecachte Karte (Point-in-Polygon — eigene, spätere Aufgabe).
+
+Gemeinsame Prozeduren in `xComProc6_3.h`:
+
+| Funktion | Seite | Zweck |
+|---|---|---|
+| `crc32Bytes(d,n)` | beide | CRC32 (zlib-kompatibel) |
+| `mapFileInfo(path, v, crc, len)` | Manager | Version/CRC/Länge einer LittleFS-Karte |
+| `serveMap(mapType, path, reqOctet)` | Manager | `mapInfo` + alle `mapChunk`s senden |
+| `requestMap(mapType, mgrOctet)` | Sensor | `mapRequest` senden |
+| `mapBeginRx(state, info, path)` | Sensor | Empfang starten (nach `mapInfo`) |
+| `mapFeedChunk(state, msg)` | Sensor | Chunk verarbeiten (0=weiter,1=fertig,-1=Fehler) |
+
+Auf dem **Manager** liegt die Karte als `data/noshot.csv` (LittleFS-Image) bzw.
+wird beim ersten Boot aus einer im Sketch eingebetteten Default-Karte ins
+LittleFS geschrieben, falls dort noch keine vorhanden ist. Erzeugt wird die Karte
+mit dem Zeichen-Tool `Lidar_C1_Prog/Position_estimate/map_draw/`.
 
 ---
 
@@ -320,6 +447,10 @@ Jedes Programm folgt demselben Grundgerüst:
   `catObserved` — man sieht dem Gerät von weitem an, ob das System lebt und
   ob gerade etwas detektiert wird.
 - Feste IP .180, OTA aktiv.
+- **Karten-Server:** hält die No-Shot-Karte im LittleFS (`/noshot.csv`) und
+  beantwortet `mapRequest` per `serveMap()` (siehe Kap. 4.2). Beim Boot wird die
+  Karte aus einer eingebetteten Default-Karte ins LittleFS geschrieben, falls dort
+  noch keine liegt.
 
 ### 5.2 Radar6_3_0 — Bewegungssensor (HLK-Radar, "Dome"-Familie)
 
@@ -435,6 +566,43 @@ Manager testen, ohne auf eine echte Katze zu warten.
   Programme (vorher: eigene udpDef/udpProc in Version 5_4), holt die
   WLAN-Zugangsdaten aus `Credentials.h` und ist als `Sim` in der device dB.
 
+### 5.8 PA1_1_6_3_0 — PowerActor mit Schrittmotor (der "ältere" Werfer, ID 16)
+
+Zweiter PowerActor-Bautyp ("PA1b"), der parallel zum PA2i existiert und auf
+denselben `catObserved`-Strom reagiert. Er dreht den Werfer **nicht** mit einem
+SMS_STS-Servo, sondern mit einem **Schrittmotor**:
+
+- ESP32 (feste IP .183) → **PCF8574 (I2C @0x20)** → **A4988**-Treiber →
+  Schrittmotor. Riemenübersetzung Pulley 20T : Zahnkranz 130T = 6.5; mit
+  1/16-Mikroschritt ergibt das **20 800 Mikroschritte / Turmumdrehung**
+  (1 PA-Einheit ≈ 5.08 Mikroschritte).
+- **Positionsführung:** über Schrittzählung + **Reed-Referenzfahrt (Homing)**.
+  Ein **AS5600**-Winkelgeber sitzt aktuell nur auf der Stepperwelle und wird
+  vorerst lediglich ausgelesen/geloggt (geplant: Montage am Turm zur Erkennung
+  übersprungener Schritte).
+- **Winkelwelt:** dieselbe PA-Polar-Konvention wie PA2 (0..4096, 2048 =
+  geradeaus), aber mit anderem nutzbarem Bereich: `maxAngle 180°` → Limits-
+  Default 2048 ± 2048 (statt PA2: 60° / ± 682). Siehe Korrektur in Kap. 4.
+- **Aktoren:** Wasserventil (= Feuer) und Ziellaser über Relais; zusätzlich
+  Relais für externe Versorgung und Strom der Turmsensoren (bei Boot an);
+  2× WS2812 als Status-Pixel.
+- Protokoll-, HB- und Kommando-Verhalten entsprechen dem PA2i (Typ
+  `PowerActor`); der Button reagiert daher automatisch auch auf diesen Aktor.
+  PA1_1 ist der konkrete **zweite Aktor** für die Mehr-Aktor-Ausbaurichtung.
+
+### 5.9 LaserMarker6_3 — Zielmarkierer/Indikator (ID 15)
+
+Einfaches Spezialgerät auf **ESP32-C3 Super Mini** (feste IP .182, Gerätetyp
+`Marker`). Stellt schaltbare Ausgänge bereit: **mainLaser** und **subLaser**,
+einen frei verwendbaren **Aux**-Schaltausgang und ein **WS2812-Pixel**
+(beliebige RGB-Farbe). Dient als per Netzwerk steuerbare Zielmarkierung bzw.
+Statusanzeige.
+
+Besonderheit: Der Marker ist **vollständig ohne die gemeinsamen Header
+bedienbar** — die byte-genaue Netzwerk-API (welche UDP-Pakete man selbst packen
+muss) ist in `LaserMarker/API_LaserMarker6_3.md` dokumentiert. Damit kann ihn
+auch ein Fremdprogramm steuern, das nicht zur CatFind-Serie gehört.
+
 ---
 
 ## 6. Gemeinsame Infrastruktur (xComProc6_3.h)
@@ -450,6 +618,11 @@ Manager testen, ohne auf eine echte Katze zu warten.
 | `printSensorData` / `printCmdData` / `printTimePreamble` | Debug-Ausgabe beliebiger Nachrichten |
 | `initPixel` / `setPixel` / `allPixel` | FastLED-Helfer (nur wenn `containLed` definiert; der Trick `maxPix > pixelNum` ⇒ "alle Pixel") |
 | `toPol` / `toKart` / `toPaPol` / `toPaKart` | Koordinatenumrechnung (Kap. 4) |
+| `localToWorld` / `worldToLocal` | Umrechnung lokal ↔ Welt (Kap. 4.1) |
+| `savePose` / `loadPose` | Welt-Pose im NVS speichern/lesen (Kap. 4.1) |
+| `crc32Bytes` | CRC32 (zlib-kompatibel) für die Karten-Übertragung |
+| `mapFileInfo` / `serveMap` | Karte aus LittleFS analysieren / gechunkt senden (Kap. 4.2) |
+| `requestMap` / `mapBeginRx` / `mapFeedChunk` | Karte anfordern / empfangen (Kap. 4.2) |
 | `writeComment` / `writelnComment` | Debug-Ausgabe-Hooks — jedes Programm definiert selbst, wohin (Serial, Display, Canvas) |
 
 `Credentials.h` (eigene Arduino-Library auf dem Entwicklungsrechner, **nicht
@@ -469,10 +642,17 @@ CatFind/                          (Repo 1 — die Programme)
 ├── Button/Button6_3_0/           ← je Programm: Ordnername = Sketchname
 ├── CF3_LD06_Lidar/LD06_6_3_0/       (Arduino-IDE-Pflicht), hwDef.h für Pins,
 ├── PowerActor2/PA2i6_3_0/           hwProc.ino für Gerätefunktionen
+├── PowerActor1_1/PA1_1_6_3_0/    ← Schrittmotor-PowerActor (ID 16, siehe 5.8)
+│                                    daneben: Development/ Infrastructur_test/ Tests/
 ├── Radar_HKL/Radar6_3_0/
 ├── Displays/Udisp6_3_0/          ← + dispDef.h/dispDevLoGFX.h/dispProcLoGFX.ino
 ├── Simulator/Sim6_3_0/
+├── LaserMarker/
+│   ├── LaserMarker6_3/           ← Zielmarkierer (ID 15, siehe 5.9)
+│   └── API_LaserMarker6_3.md     ← byte-genaue Netzwerk-API
 └── Tests/                        ← vom Versionsschema ausgenommen
+
+(Die 6_2-Ordner — PA2i6_2_0, Radar6_2_0, … — existieren weiterhin parallel.)
 
 CommonFiles/                      (Repo 2 — wird als Arduino-Library eingebunden)
 ├── xComDef6_3.h  → Symlink auf CatFind/Controller/Manager6_3_0/xComDef6_3.h
