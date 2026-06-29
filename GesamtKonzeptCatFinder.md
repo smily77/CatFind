@@ -149,3 +149,28 @@ Die anzeige 3a - 3e können umgeschalzten werden so das der Bildschirm die Debug
 - **Liste 3a:** catObserved werden pro Minute zu einem Eintrag zusammengefasst (Zeit + beteiligte Sensor-IDs).
 - **Master-Flash:** über COM6 (USB).
 
+
+Aufgabe: Welt-Pose eines Sensors per Co-Observation kalibrieren (Radar)
+
+Grobkonzept: Sensoren mit 360°- oder beweglichem Lidar können ihre Welt-Pose selbst bestimmen (VPS-Lokalisierung), Radar-Sensoren nicht. Ein Radar (oder allgemein ein nicht selbst-lokalisierender Sensor) soll seine Welt-Pose dadurch erhalten, dass es **gleichzeitig mit einem welt-posierten Lidar dieselbe laufende Person beobachtet**. Aus den beiden Beobachtungsbahnen wird die starre Transformation Radar-Frame → Welt (Translation + Heading + Drehsinn = eine `worldPose`) geschätzt. Das ist klassische Extrinsik-Kalibrierung über ein gemeinsames bewegtes Ziel (Trajektorien-Registrierung).
+
+Prinzip: Lidar (gültige Welt-Pose) liefert die Bahn in Welt-Koordinaten `p_welt`, das Radar dieselbe Bahn im Eigenframe `p_radar`. Gesucht ist `p_welt = R(heading)·(mirror·p_radar) + (tx,ty)`. Mit genug korrespondierenden Punktepaaren per Least-Squares-Registrierung (Umeyama/Kabsch) + RANSAC lösbar.
+
+Ablauf (knopfgesteuert, im Radar-Sketch):
+1. Voraussetzung: ein Lidar mit gültiger Welt-Pose broadcastet `catObserved` mit `worldValid=1`; das Radar läuft.
+2. Knopfdruck am Radar → Kalibriermodus (~30–60 s, Status-Pixel zeigt es an).
+3. Das Radar sammelt parallel: (a) seine eigenen Detektionen (Relativ-`x/y`, in Reihenfolge), (b) die `catObserved` des Lidars vom Bus (Welt-`x/y`).
+4. Person läuft eine **kurvige** Bahn im gemeinsamen Sichtfeld.
+5. Das Radar sendet beide Punktzüge an den VPS (neuer Endpunkt, z.B. `/calibrate`).
+6. VPS macht Trajektorien-Registrierung (ICP-artig) + RANSAC + Umeyama → `tx, ty, heading, mirror, confidence`.
+7. Das Radar übernimmt die Pose mit Quality-Gate (wie beim Lidar), `savePose`, `validWorldPose=true`, kurzer Status-Multicast. Danach füllt das Radar bei eigenen Detektionen auch `worldX/worldY` (`worldValid=1`).
+
+**Festlegungen / wichtige Punkte:**
+
+- **Korrespondenz über die Bahnform, nicht über die Zeit:** der Header-`timeStamp` ist `time_t` in **Sekunden** → bei Gehtempo zu grob für zeitliche Zuordnung. Daher Trajektorien-Matching (geordnete Punktzüge als Kurven ausrichten). Optionale spätere Verbesserung: ein Millisekunden-Feld einführen — vermeidbar, wenn Trajektorien-Matching genügt (kein Wire-Format-Eingriff).
+- **Eindeutigkeit kommt vom Laufweg:** eine gerade Linie ist mehrdeutig (Translation entlang der Linie). Eine 2-D-strukturierte Bahn (Kurve/L/Acht) ist nötig. Beinbreite/Messrauschen helfen dabei NICHT (mitteln sich nur weg).
+- **Wiederverwendung:** `posPayload` trägt bereits beides (Radar = Relativ-`x/y`, Lidar = Welt-`x/y` mit `worldValid`) → keine neue Datenstruktur. `worldPose`/`savePose`/`loadPose` (mirror-fähig), Quality-Gate, VPS-Muster, OTA, Status-Text, Knopf/`commandMsg` sind vorhanden.
+- **Voraussetzungen/Grenzen:** überlappendes Sichtfeld, EINE Person, gute Lidar-Pose (Garbage-in→Garbage-out), genügend Punkte; VPS liefert Konfidenz → Gate verhindert eine schlechte Pose.
+- **Generalisierung:** nicht radar-spezifisch — jeder nicht selbst-lokalisierende Sensor über jeden welt-posierten Sensor kalibrierbar. Die Sammel-/Sende-/Übernahme-Logik daher als gemeinsame Prozedur in `xComProc` (z.B. `coObserveCalibrate(...)`), VPS-Endpunkt einmal, nutzbar von Radar, künftigen Aktoren mit Turm-Sensor usw.
+- **Offene Detailfragen (vor Umsetzung):** VPS-Endpunkt-/Daten-Format; Mindest-Bahnlänge/Konfidenzschwelle; Ziel-Assoziation, wenn das Radar bis zu 3 Targets liefert (RANSAC wählt die zur Lidar-Bahn passende Spur); ob die Lösung rein 2-D bleibt (mirror als ±1 wie beim Lidar).
+
