@@ -35,8 +35,8 @@
 //bool loadNoShot(const char* path)                             - No-Shot-Polygon(e) aus LittleFS-CSV in RAM laden
 //bool insideNoShot(int32_t xw, int32_t yw)                     - Welt-Punkt im schiessbaren Bereich? (Point-in-Polygon)
 //bool acquireNoShot(const char* path, uint8_t mgrOctet, unsigned long waitMs)  - No-Shot-Karte vom Manager beziehen/cachen
-//bool vpsLocalize(const uint16_t* scan,int n, ... )            - Scan an den VPS, Pose zurueck (nur mit USE_VPS_LOCALIZE)
-//void resolvePose(vpsOk,vx,vy,vh,vmir,conf, hadNVS,plausMm,plausDeg)  - VPS-Pose vs. NVS-Pose -> myPose setzen+speichern
+//bool vpsLocalize(scan,n, x,y,head,mir,conf,inlier)            - Scan an den VPS, Pose+inlier zurueck (nur mit USE_VPS_LOCALIZE)
+//void resolvePose(vpsOk,vx,vy,vh,vmir,conf,inlier, hadNVS,minInlier)  - Quality-Gate: nur hochwertige Pose uebernehmen, sonst NVS behalten
 //uint8_t getLastIpByte()
 //void initText2Udp()
 //size_t sendUdpText(const String& text)
@@ -795,7 +795,6 @@ bool acquireNoShot(const char* path, uint8_t managerOctet, unsigned long waitMs)
 #endif
 
 static float wrap360f(float d){ while (d < 0) d += 360.0f; while (d >= 360.0f) d -= 360.0f; return d; }
-static float angDiff180(float a, float b){ float d = a - b; while (d > 180.0f) d -= 360.0f; while (d < -180.0f) d += 360.0f; return d; }
 
 #ifdef USE_VPS_LOCALIZE
 #include <HTTPClient.h>
@@ -815,7 +814,8 @@ static String jsonStr(const String& s, const char* key) {
 
 // Scan (n Bins, mm; 0 = ungueltig) an den VPS posten, Pose zurueck. true bei Erfolg.
 bool vpsLocalize(const uint16_t* scan, int n, int32_t& xmm, int32_t& ymm,
-                 float& headDeg, int& mir, String& conf) {
+                 float& headDeg, int& mir, String& conf, float& inlier) {
+  inlier = 0.0f;
   if (WiFi.status() != WL_CONNECTED) return false;
   String body; body.reserve(n * 6 + 16);
   body = "{\"scan\":[";
@@ -832,7 +832,7 @@ bool vpsLocalize(const uint16_t* scan, int n, int32_t& xmm, int32_t& ymm,
     String r = http.getString();
     float fx = jsonNum(r, "\"x_mm\""), fy = jsonNum(r, "\"y_mm\"");
     headDeg = jsonNum(r, "\"heading_deg\""); mir = (int)jsonNum(r, "\"mirror\"");
-    conf = jsonStr(r, "\"confidence\"");
+    conf = jsonStr(r, "\"confidence\""); inlier = jsonNum(r, "\"inlier_ratio\"");
     if (!isnan(fx) && !isnan(fy) && !isnan(headDeg) && (mir == 1 || mir == -1)) {
       xmm = (int32_t)lroundf(fx); ymm = (int32_t)lroundf(fy); ok = true;
     }
@@ -842,28 +842,22 @@ bool vpsLocalize(const uint16_t* scan, int n, int32_t& xmm, int32_t& ymm,
 }
 #endif  // USE_VPS_LOCALIZE
 
-// Pose-Entscheidung (generisch): VPS-Ergebnis gegen die in myPose geladene NVS-Pose
-// plausibilisieren -> passend: NVS behalten; sonst VPS-Pose uebernehmen + speichern.
+// Pose-Entscheidung (generisch) mit Quality-Gate: eine NEUE VPS-Pose wird nur
+// uebernommen, wenn sie hochwertig ist (conf=HOCH UND inlier >= minInlier). Eine
+// hochwertige Messung ueberschreibt IMMER die NVS-Pose -> man bleibt nie auf einer
+// schlechten Pose haengen. Schlechte Messungen werden verworfen: vorhandene
+// NVS-Pose behalten, sonst nicht-lokalisiert (Aufrufer -> PH_NOLOC).
 // myPose muss vorher mit der NVS-Pose gefuellt sein (loadPose); setzt validWorldPose.
 void resolvePose(bool vpsOk, int32_t vx, int32_t vy, float vh, int vmir, const String& conf,
-                 bool hadNVS, float plausMm, float plausDeg) {
-  if (vpsOk) {
-    float nvsHeadDeg = myPose.heading * 360.0f / 4096.0f;
-    float dx = (float)(myPose.worldX - vx), dy = (float)(myPose.worldY - vy);
-    bool plausible = hadNVS && (sqrtf(dx * dx + dy * dy) < plausMm)
-                   && (fabsf(angDiff180(nvsHeadDeg, vh)) < plausDeg) && (conf != "NIEDRIG");
-    if (plausible) {
-      myPose.validWorldPose = true;                 // NVS-Pose bestaetigt -> behalten
-    } else if (conf == "HOCH" || conf == "MITTEL") {
-      myPose.worldX = vx; myPose.worldY = vy;
-      myPose.heading = wrap360f(vh) * 4096.0f / 360.0f; myPose.mirror = (int8_t)vmir;
-      myPose.validWorldPose = true; savePose(myPose);
-    } else {
-      myPose.validWorldPose = false;
-    }
+                 float inlier, bool hadNVS, float minInlier) {
+  bool goodVps = vpsOk && (conf == "HOCH") && (inlier >= minInlier);
+  if (goodVps) {                                    // hochwertig -> uebernehmen + speichern
+    myPose.worldX = vx; myPose.worldY = vy;
+    myPose.heading = wrap360f(vh) * 4096.0f / 360.0f; myPose.mirror = (int8_t)vmir;
+    myPose.validWorldPose = true; savePose(myPose);
   } else if (hadNVS) {
-    myPose.validWorldPose = true;                   // VPS weg -> NVS-Pose (unbestaetigt) nutzen
+    myPose.validWorldPose = true;                   // schlechte Messung -> gute NVS-Pose behalten
   } else {
-    myPose.validWorldPose = false;
+    myPose.validWorldPose = false;                  // keine vertrauenswuerdige Pose
   }
 }

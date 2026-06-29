@@ -223,6 +223,11 @@ def do_localize():
         return jsonify(error=str(e)), 400
     if pose is None:
         return jsonify(error="too few valid beams"), 422
+    nz = sum(1 for v in scan if v)               # belegte Bins (Hintergrund-Qualitaet)
+    print("localize from %s: x=%d y=%d head=%.1f mirror=%+d conf=%s inlier=%.2f beams=%d bins=%d"
+          % (request.remote_addr, pose["x_mm"], pose["y_mm"], pose["heading_deg"],
+             pose["mirror"], pose["confidence"], pose["inlier_ratio"], pose["beams"], nz),
+          flush=True)
     return jsonify(pose)
 
 
