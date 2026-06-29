@@ -79,6 +79,14 @@ def load_map():
 app = Flask(__name__, static_folder="static")
 
 
+@app.after_request
+def no_cache(resp):
+    # Browser nie cachen lassen -> Live-Daten + immer aktuelle Seite
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
 @app.get("/")
 def index():
     return send_from_directory("static", "index.html")
