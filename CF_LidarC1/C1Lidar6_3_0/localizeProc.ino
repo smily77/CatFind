@@ -16,12 +16,12 @@ void doLocalize() {
   lidar.stop();                                   // Serial1 ruhig waehrend HTTP
   static uint16_t scan[NUM_BINS];
   buildBackgroundScan(scan);
-  int32_t vx = 0, vy = 0; float vh = 0; int vmir = 1; String conf = "";
-  bool ok = vpsLocalize(scan, NUM_BINS, vx, vy, vh, vmir, conf);
+  int32_t vx = 0, vy = 0; float vh = 0, vinlier = 0; int vmir = 1; String conf = "";
+  bool ok = vpsLocalize(scan, NUM_BINS, vx, vy, vh, vmir, conf, vinlier);
   lidar.startScan();
 
   if (ok) Serial << "VPS-Pose (" << vx / 1000.0f << ", " << vy / 1000.0f << ") m, h=" << vh
-                 << " mir=" << vmir << " conf=" << conf << endl;
-  resolvePose(ok, vx, vy, vh, vmir, conf, hadNVSpose, LOC_PLAUSIBLE_MM, LOC_PLAUSIBLE_DEG);
+                 << " mir=" << vmir << " conf=" << conf << " inlier=" << vinlier << endl;
+  resolvePose(ok, vx, vy, vh, vmir, conf, vinlier, hadNVSpose, LOC_MIN_INLIER);
   Serial << (myPose.validWorldPose ? "Pose gueltig." : "nicht lokalisiert.") << endl;
 }

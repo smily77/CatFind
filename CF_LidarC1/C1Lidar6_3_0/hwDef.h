@@ -29,8 +29,8 @@
 #define VPS_PORT       8080
 #define VPS_PATH       "/localize"
 #define VPS_TIMEOUT_MS 20000      // HTTP-Timeout fuer die Pose-Anfrage
-#define LOC_PLAUSIBLE_MM 600.0f   // NVS-Pose gilt als bestaetigt, wenn so nah an der VPS-Pose
-#define LOC_PLAUSIBLE_DEG 8.0f    // ... und Heading so nah
+#define LOC_MIN_INLIER  0.60f     // Quality-Gate: neue VPS-Pose nur uebernehmen, wenn
+                                  // conf=HOCH UND inlier_ratio >= diesem Wert (sonst NVS behalten)
 
 // --- No-Shot-Karte ---
 #define NOSHOT_PATH    "/noshot.csv"
