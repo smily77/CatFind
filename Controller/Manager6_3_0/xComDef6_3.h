@@ -198,6 +198,7 @@ struct __attribute__((packed)) worldPosePayload {
   int32_t worldX;          // mm
   int32_t worldY;          // mm
   float   heading;         // PA-Einheiten 0..4096
+  int8_t  mirror;          // +1 = normal, -1 = gespiegelt (Drehsinn des Sensors)
 };
 
 //------------------------- Karten-Verteilung (Manager -> Geraete) -----------------------
@@ -258,9 +259,10 @@ struct worldPose {
   int32_t worldX;          // Welt-X (mm)
   int32_t worldY;          // Welt-Y (mm)
   float   heading;         // Ausrichtung in PA-Einheiten 0..4096 (0 = welt-ausgerichtet)
+  int8_t  mirror;          // +1 = normal, -1 = gespiegelt (Drehsinn); fuer localToWorld/worldToLocal
   bool    validWorldPose;  // false nach Boot
 };
-worldPose myPose = { 0, 0, 0.0f, false };
+worldPose myPose = { 0, 0, 0.0f, 1, false };
 
 //---------------------------------------------------------------------------------------
 IPAddress multiCastIP (239,0,0,57);

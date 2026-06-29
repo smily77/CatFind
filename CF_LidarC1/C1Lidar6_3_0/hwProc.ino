@@ -3,10 +3,6 @@
 void writelnComment(String comment) { if (DEBUG) Serial << comment << endl; }
 void writeComment(String comment)   { if (DEBUG) Serial << comment; }
 
-static inline float angDiffDeg(float a, float b) {
-  float d = a - b; while (d > 180.0f) d -= 360.0f; while (d < -180.0f) d += 360.0f; return d;
-}
-
 // Status-Pixel je Init-Phase (Detektion ueberschreibt im aktiven Zustand).
 void statusLeds() {
   switch (phase) {
@@ -73,19 +69,12 @@ void buildPerimeter() {
   Serial << "Perimeter: " << anchors << " Anker, " << openBins << " offen." << endl;
 }
 
-// Lokaler Treffer (Lidar-Rahmen, mm; ly enthaelt bereits den Drehsinn) -> Welt (mm).
-void hitToWorld(float lxc, float lyc, int32_t& wx, int32_t& wy) {
-  const float ct = cosf(poseHeadDeg * DEG2RAD), st = sinf(poseHeadDeg * DEG2RAD);
-  wx = (int32_t)lroundf(poseXmm + ct * lxc - st * lyc);
-  wy = (int32_t)lroundf(poseYmm + st * lxc + ct * lyc);
-}
-
 // Knapper Status-Multicast nach Abschluss der Initialisierung.
 void sendStatusText() {
   String s = "LidarC1 ";
   if (myPose.validWorldPose) {
-    s += "loc=1 x=" + String(poseXmm / 1000.0f, 1) + " y=" + String(poseYmm / 1000.0f, 1)
-       + " h=" + String((int)lroundf(poseHeadDeg));
+    s += "loc=1 x=" + String(myPose.worldX / 1000.0f, 1) + " y=" + String(myPose.worldY / 1000.0f, 1)
+       + " h=" + String((int)lroundf(myPose.heading * 360.0f / 4096.0f));
   } else {
     s += "loc=0";
   }
@@ -101,10 +90,10 @@ void finishInit() {
   buildPerimeter();
 
   phase = PH_LOCALIZE; statusLeds();
-  doLocalize();                                   // setzt myPose.validWorldPose + poseXmm...
+  doLocalize();                                   // setzt myPose.validWorldPose
 
   phase = PH_NOSHOT; statusLeds();
-  acquireNoShot();                                // noShotOK
+  noShotOK = acquireNoShot(NOSHOT_PATH, device[Manager].IP, MAP_WAIT_MS);
 
   phase = myPose.validWorldPose ? PH_ACTIVE : PH_NOLOC;
   statusLeds();

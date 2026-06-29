@@ -34,6 +34,9 @@
 //int  mapFeedChunk(mapRxState&, const xMsg&)                    - Chunk verarbeiten (0=weiter,1=fertig,-1=Fehler)
 //bool loadNoShot(const char* path)                             - No-Shot-Polygon(e) aus LittleFS-CSV in RAM laden
 //bool insideNoShot(int32_t xw, int32_t yw)                     - Welt-Punkt im schiessbaren Bereich? (Point-in-Polygon)
+//bool acquireNoShot(const char* path, uint8_t mgrOctet, unsigned long waitMs)  - No-Shot-Karte vom Manager beziehen/cachen
+//bool vpsLocalize(const uint16_t* scan,int n, ... )            - Scan an den VPS, Pose zurueck (nur mit USE_VPS_LOCALIZE)
+//void resolvePose(vpsOk,vx,vy,vh,vmir,conf, hadNVS,plausMm,plausDeg)  - VPS-Pose vs. NVS-Pose -> myPose setzen+speichern
 //uint8_t getLastIpByte()
 //void initText2Udp()
 //size_t sendUdpText(const String& text)
@@ -381,6 +384,7 @@ void printSensorData(const xMsg &m) {
     Serial << "PoseReport, Sender: " << m.header.sender;
     Serial << ", validWorldPose: " << wp.validWorldPose;
     Serial << ", worldX: " << wp.worldX << ", worldY: " << wp.worldY << ", heading: " << wp.heading;
+    Serial << ", mirror: " << wp.mirror;
     Serial << endl;
   }
   else if (m.header.msgCode == poseRequest) {
@@ -442,11 +446,14 @@ void toPaKart(int &x, int &y, float phi, float radius) {
 // heading in PA-Einheiten (0..4096 = 360 Grad), 0 = lokale Achsen welt-ausgerichtet.
 //   Welt = Rot(heading) * lokal + (worldX, worldY)
 //---------------------------------------------------------------------------------------
+// Welt = Translation + Rotation(heading) angewandt auf das (ggf. ueber mirror an der
+// lokalen y-Achse gespiegelte) lokale System. mirror = +1 (normal) oder -1 (gespiegelt).
 void localToWorld(int xl, int yl, const worldPose &p, int &xw, int &yw) {
   float a = p.heading * (2.0f * M_PI / 4096.0f);
   float c = cos(a), s = sin(a);
-  xw = p.worldX + lround(xl * c - yl * s);
-  yw = p.worldY + lround(xl * s + yl * c);
+  float ym = (float)p.mirror * (float)yl;          // Drehsinn beruecksichtigen
+  xw = p.worldX + lround(xl * c - ym * s);
+  yw = p.worldY + lround(xl * s + ym * c);
 }
 
 void worldToLocal(int xw, int yw, const worldPose &p, int &xl, int &yl) {
@@ -454,8 +461,8 @@ void worldToLocal(int xw, int yw, const worldPose &p, int &xl, int &yl) {
   float c = cos(a), s = sin(a);
   float dx = xw - p.worldX;
   float dy = yw - p.worldY;
-  xl = lround( dx * c + dy * s);
-  yl = lround(-dx * s + dy * c);
+  xl = lround(  dx * c + dy * s);
+  yl = lround(((float)p.mirror) * (-dx * s + dy * c));   // mirror ist sein eigenes Inverses
 }
 
 //---------------------------------------------------------------------------------------
@@ -469,6 +476,7 @@ void savePose(const worldPose &p) {
   posePrefs.putInt("x", p.worldX);
   posePrefs.putInt("y", p.worldY);
   posePrefs.putFloat("h", p.heading);
+  posePrefs.putInt("m", p.mirror);
   posePrefs.putBool("v", p.validWorldPose);
   posePrefs.end();
 }
@@ -481,6 +489,7 @@ bool loadPose(worldPose &p) {
     p.worldX  = posePrefs.getInt("x", 0);
     p.worldY  = posePrefs.getInt("y", 0);
     p.heading = posePrefs.getFloat("h", 0.0f);
+    p.mirror  = (int8_t)posePrefs.getInt("m", 1);
   }
   posePrefs.end();
   p.validWorldPose = false;   // nach Boot immer ungueltig -> Quickcheck bestaetigt spaeter
@@ -715,4 +724,146 @@ bool insideNoShot(int32_t px, int32_t py) {
     }
   }
   return inside;
+}
+
+//---------------------------------------------------------------------------------------
+// No-Shot-Karte beim Manager beschaffen (generisch fuer jedes welt-faehige Geraet):
+// lokale Kopie laden, beim Manager die aktuelle Version erfragen, bei Abweichung neu
+// herunterladen; sonst / bei Manager-Ausfall die alte Karte verwenden. true = Karte nutzbar.
+//---------------------------------------------------------------------------------------
+static bool waitForUc(uint8_t codeWanted, xMsg& out, unsigned long budget) {
+  unsigned long t0 = millis();
+  while (millis() - t0 < budget) {
+    ArduinoOTA.handle();
+    if (ucDataReceived) {
+      out = lastUcMsg; ucDataReceived = false;
+      if (out.header.msgCode == codeWanted) return true;
+    }
+    delay(1);
+  }
+  return false;
+}
+
+bool acquireNoShot(const char* path, uint8_t managerOctet, unsigned long waitMs) {
+  bool haveLocal = loadNoShot(path);
+  uint16_t lv = 0; uint32_t lcrc = 0, llen = 0;
+  bool haveLocalInfo = mapFileInfo(path, lv, lcrc, llen);
+
+  if (managerOctet == 0 || !requestMap(mapNoShot, managerOctet)) {
+    Serial << "No-Shot: Manager-Anfrage nicht moeglich -> lokale Karte." << endl;
+    return haveLocal;
+  }
+  xMsg uc; mapInfoPayload info;
+  if (!waitForUc(mapInfo, uc, waitMs) || !getPayload(uc, info) || info.mapType != mapNoShot) {
+    Serial << "No-Shot: kein mapInfo -> lokale Karte." << endl;
+    return haveLocal;
+  }
+  if (haveLocalInfo && info.version == lv && info.fileCrc == lcrc) {
+    Serial << "No-Shot: lokale Karte aktuell (v" << lv << ")." << endl;
+    return haveLocal;
+  }
+  Serial << "No-Shot: lade Karte vom Manager (v" << info.version << ", " << info.totalLen
+         << " B, " << info.chunkCount << " Chunks) ..." << endl;
+  mapRxState rx;
+  if (!mapBeginRx(rx, info, path)) return haveLocal;
+  int result = 0; unsigned long t0 = millis();
+  while (rx.active && millis() - t0 < waitMs) {
+    ArduinoOTA.handle();
+    if (ucDataReceived) {
+      xMsg c = lastUcMsg; ucDataReceived = false;
+      if (c.header.msgCode == mapChunk) { result = mapFeedChunk(rx, c); t0 = millis(); if (result != 0) break; }
+    }
+    delay(1);
+  }
+  Serial << (result == 1 ? "No-Shot: Download OK." : "No-Shot: Download unvollstaendig -> alte Karte.") << endl;
+  return loadNoShot(path);
+}
+
+//---------------------------------------------------------------------------------------
+// Welt-Pose per VPS bestimmen. wrap360f/angDiff180 + resolvePose sind generisch; der
+// eigentliche HTTP-Aufruf vpsLocalize zieht HTTPClient und wird nur kompiliert, wenn
+// das Geraet vor dem Include USE_VPS_LOCALIZE definiert (sonst kein Code-Bloat).
+//---------------------------------------------------------------------------------------
+#ifndef VPS_LOC_PORT
+#define VPS_LOC_PORT 8080
+#endif
+#ifndef VPS_LOC_PATH
+#define VPS_LOC_PATH "/localize"
+#endif
+#ifndef VPS_LOC_TIMEOUT_MS
+#define VPS_LOC_TIMEOUT_MS 20000
+#endif
+
+static float wrap360f(float d){ while (d < 0) d += 360.0f; while (d >= 360.0f) d -= 360.0f; return d; }
+static float angDiff180(float a, float b){ float d = a - b; while (d > 180.0f) d -= 360.0f; while (d < -180.0f) d += 360.0f; return d; }
+
+#ifdef USE_VPS_LOCALIZE
+#include <HTTPClient.h>
+
+static float jsonNum(const String& s, const char* key) {
+  int i = s.indexOf(key); if (i < 0) return NAN;
+  i = s.indexOf(':', i);  if (i < 0) return NAN;
+  return s.substring(i + 1).toFloat();
+}
+static String jsonStr(const String& s, const char* key) {
+  int i = s.indexOf(key); if (i < 0) return "";
+  i = s.indexOf(':', i);  if (i < 0) return "";
+  int a = s.indexOf('"', i); if (a < 0) return "";
+  int b = s.indexOf('"', a + 1); if (b < 0) return "";
+  return s.substring(a + 1, b);
+}
+
+// Scan (n Bins, mm; 0 = ungueltig) an den VPS posten, Pose zurueck. true bei Erfolg.
+bool vpsLocalize(const uint16_t* scan, int n, int32_t& xmm, int32_t& ymm,
+                 float& headDeg, int& mir, String& conf) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  String body; body.reserve(n * 6 + 16);
+  body = "{\"scan\":[";
+  for (int i = 0; i < n; i++) { body += scan[i]; if (i < n - 1) body += ','; }
+  body += "]}";
+  HTTPClient http;
+  String url = "http://" + ipVPS.toString() + ":" + String(VPS_LOC_PORT) + VPS_LOC_PATH;
+  if (!http.begin(url)) return false;
+  http.setTimeout(VPS_LOC_TIMEOUT_MS);
+  http.addHeader("Content-Type", "application/json");
+  int code = http.POST(body);
+  bool ok = false;
+  if (code == 200) {
+    String r = http.getString();
+    float fx = jsonNum(r, "\"x_mm\""), fy = jsonNum(r, "\"y_mm\"");
+    headDeg = jsonNum(r, "\"heading_deg\""); mir = (int)jsonNum(r, "\"mirror\"");
+    conf = jsonStr(r, "\"confidence\"");
+    if (!isnan(fx) && !isnan(fy) && !isnan(headDeg) && (mir == 1 || mir == -1)) {
+      xmm = (int32_t)lroundf(fx); ymm = (int32_t)lroundf(fy); ok = true;
+    }
+  } else Serial << "VPS HTTP " << code << endl;
+  http.end();
+  return ok;
+}
+#endif  // USE_VPS_LOCALIZE
+
+// Pose-Entscheidung (generisch): VPS-Ergebnis gegen die in myPose geladene NVS-Pose
+// plausibilisieren -> passend: NVS behalten; sonst VPS-Pose uebernehmen + speichern.
+// myPose muss vorher mit der NVS-Pose gefuellt sein (loadPose); setzt validWorldPose.
+void resolvePose(bool vpsOk, int32_t vx, int32_t vy, float vh, int vmir, const String& conf,
+                 bool hadNVS, float plausMm, float plausDeg) {
+  if (vpsOk) {
+    float nvsHeadDeg = myPose.heading * 360.0f / 4096.0f;
+    float dx = (float)(myPose.worldX - vx), dy = (float)(myPose.worldY - vy);
+    bool plausible = hadNVS && (sqrtf(dx * dx + dy * dy) < plausMm)
+                   && (fabsf(angDiff180(nvsHeadDeg, vh)) < plausDeg) && (conf != "NIEDRIG");
+    if (plausible) {
+      myPose.validWorldPose = true;                 // NVS-Pose bestaetigt -> behalten
+    } else if (conf == "HOCH" || conf == "MITTEL") {
+      myPose.worldX = vx; myPose.worldY = vy;
+      myPose.heading = wrap360f(vh) * 4096.0f / 360.0f; myPose.mirror = (int8_t)vmir;
+      myPose.validWorldPose = true; savePose(myPose);
+    } else {
+      myPose.validWorldPose = false;
+    }
+  } else if (hadNVS) {
+    myPose.validWorldPose = true;                   // VPS weg -> NVS-Pose (unbestaetigt) nutzen
+  } else {
+    myPose.validWorldPose = false;
+  }
 }

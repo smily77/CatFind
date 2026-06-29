@@ -348,9 +348,9 @@ zusammenarbeiten können:
   bewusst keine globalen Polarkoordinaten.
 - Jedes Gerät besitzt eine **Welt-Pose** (`worldPose myPose` in `xComDef6_3.h`):
   Ursprung `worldX/worldY` (mm) + `heading` (PA-Einheiten 0..4096, 0 =
-  welt-ausgerichtet) + Flag `validWorldPose`. Letzteres ist nach Boot **immer
-  `false`**, bis eine Positionsbestimmung/Quickcheck es bestätigt (eigene,
-  spätere Aufgabe).
+  welt-ausgerichtet) + `mirror` (Drehsinn ±1, von `localToWorld`/`worldToLocal`
+  berücksichtigt) + Flag `validWorldPose`. Letzteres ist nach Boot **immer
+  `false`**, bis eine Positionsbestimmung/Quickcheck es bestätigt.
 - Ein Sensor mit `validWorldPose` sendet in `posPayload` zusätzlich
   `worldX/worldY` und setzt `worldValid=1`. Ohne valide Pose bleibt
   `worldValid=0` (und `worldX/worldY=0`).
@@ -616,8 +616,12 @@ auch ein Fremdprogramm steuern, das nicht zur CatFind-Serie gehört.
 
 RPLidar C1 auf **ESP32-S3** (Serial1, 460800), 2× WS2812. Erster Sensor mit
 **Welt-Koordinaten** (`validWorldPose`). Ordner `CF_LidarC1/` (mehrteiliger
-Sketch: `C1Lidar6_3_0.ino` + `hwDef.h` + `hwProc.ino` + `localizeProc.ino` +
-`noShotProc.ino`). Komplett neu gedacht ggü. der Vorläufer-Firmware
+Sketch: `C1Lidar6_3_0.ino` + `hwDef.h` + `hwProc.ino` + `localizeProc.ino`).
+Die generischen Bausteine (VPS-Lokalisierung `vpsLocalize`/`resolvePose`,
+No-Shot-Beschaffung `acquireNoShot`, mirror-fähige Pose-Persistenz/Transformation)
+liegen in `xComProc6_3.h` und stehen jedem welt-fähigen Gerät zur Verfügung; im
+Sketch bleibt nur das Gerätespezifische (Scan aus dem Lidar-Hintergrund bauen).
+Komplett neu gedacht ggü. der Vorläufer-Firmware
 (`Lidar_C1_Prog/…/C1_Lidar_V2_OTA_Ueberw3`): **keine Wand/Nische mehr nötig**,
 der Sensor steht frei auf dem Rasen.
 
@@ -677,6 +681,8 @@ Text-Multicast (`LidarC1 loc=… x=… y=… h=… ns=…`).
 | `mapFileInfo` / `serveMap` | Karte aus LittleFS analysieren / gechunkt senden (Kap. 4.2) |
 | `requestMap` / `mapBeginRx` / `mapFeedChunk` | Karte anfordern / empfangen (Kap. 4.2) |
 | `loadNoShot` / `insideNoShot` | No-Shot-Polygon(e) aus LittleFS laden / Welt-Punkt im schießbaren Bereich? (Point-in-Polygon) |
+| `acquireNoShot` | No-Shot-Karte generisch vom Manager beziehen/cachen (für jedes welt-fähige Gerät) |
+| `vpsLocalize` / `resolvePose` | Scan an den VPS → Pose / Pose gegen NVS plausibilisieren + speichern (`vpsLocalize` nur mit `USE_VPS_LOCALIZE`) |
 | `writeComment` / `writelnComment` | Debug-Ausgabe-Hooks — jedes Programm definiert selbst, wohin (Serial, Display, Canvas) |
 
 `Credentials.h` (eigene Arduino-Library auf dem Entwicklungsrechner, **nicht
