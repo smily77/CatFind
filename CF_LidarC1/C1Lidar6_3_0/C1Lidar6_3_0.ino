@@ -24,7 +24,6 @@ byte ID = LidarC1;
 #endif
 
 RPLidar     lidar;
-Preferences c1prefs;                 // eigene NVS-Pose (inkl. mirror), Namespace "c1pose"
 
 // --- Hintergrund-/Perimetermodell (je Bin) ---
 float    bgMin1[NUM_BINS], bgMin2[NUM_BINS];
@@ -35,11 +34,8 @@ int      perimAnchors = 0, perimOpen = 0;
 unsigned long calStartMs = 0;
 bool          calibrated = false;
 bool          hadNVSpose = false;
-
-// --- Welt-Pose: myPose (xComDef) traegt x/y/heading/valid fuer die Infrastruktur;
-//     poseHeadDeg + poseMirror zusaetzlich fuer die korrekte Hit->Welt-Transformation. ---
-float poseXmm = 0, poseYmm = 0, poseHeadDeg = 0;
-int   poseMirror = 1;
+// Welt-Pose steht in myPose (xComDef): worldX/worldY (mm), heading (PA-Einheiten),
+// mirror (Drehsinn), validWorldPose. Persistenz/Transformation generisch in xComProc.
 
 enum InitPhase { PH_WIFI, PH_CALIB, PH_LOCALIZE, PH_NOSHOT, PH_ACTIVE, PH_NOLOC };
 InitPhase phase = PH_WIFI;
@@ -51,6 +47,7 @@ uint8_t       lastHue        = 0;
 bool          noShotOK       = false;
 unsigned long lastHBms       = 0;
 
+#define USE_VPS_LOCALIZE             // aktiviert vpsLocalize() (zieht HTTPClient) in xComProc
 #include <xComProc6_3.h>
 
 static inline int angleToBin(float angle) {
@@ -85,7 +82,7 @@ void setup() {
   lidar.begin(Serial1);
   lidar.startScan();
 
-  hadNVSpose = loadPoseC1();         // Pose aus NVS lesen (validWorldPose bleibt vorerst false)
+  hadNVSpose = loadPose(myPose);     // Pose aus NVS lesen (validWorldPose bleibt vorerst false)
   startCalibration();                // -> PH_CALIB (blau)
   sendHB();
 }
@@ -123,7 +120,8 @@ void loop() {
     if (flaggedThisScan >= MIN_DETECT_POINTS) {
       const float lxc = sumLx / flaggedThisScan;
       const float lyc = sumLy / flaggedThisScan;
-      int32_t wx, wy; hitToWorld(lxc, lyc, wx, wy);     // lokal -> Welt (mm)
+      int wx, wy;
+      localToWorld(lroundf(lxc), lroundf(lyc), myPose, wx, wy);   // lokal -> Welt (mm, mirror-aware)
 
       float deg = atan2f(sumSin, sumCos) * RAD2DEG; if (deg < 0) deg += 360.0f;
       lastDirDeg = (int)(deg + 0.5f) % 360;
@@ -153,7 +151,7 @@ void loop() {
   if (m.distance <= perim[bin] - PERIM_MARGIN_MM) {     // naeher als der Hintergrund -> Ziel
     const float a = m.angle * DEG2RAD;
     sumLx += m.distance * cosf(a);
-    sumLy += poseMirror * m.distance * sinf(a);
+    sumLy += m.distance * sinf(a);     // roh; mirror wendet localToWorld an
     sumCos += cosf(a); sumSin += sinf(a);
     flaggedThisScan++;
   }
