@@ -2,8 +2,8 @@
 //6_3 - umgestellt auf fixen Header + variablen Payload (xComDef6_3/xComProc6_3)
 //      HB geht als radarHbPayload (inkl. Totzone) raus, Beobachtungen als posPayload
 //#define  CompactDomeDevice
-#define  MiniDomeDevice
-//#define  DomeDevice
+//#define  MiniDomeDevice
+#define  DomeDevice
 
 #include <xComDef6_3.h>
 
