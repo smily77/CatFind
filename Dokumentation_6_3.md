@@ -218,6 +218,14 @@ des Radars in mm).
 `cmd`-Präfix versehen, weil die alten Namen mit Pin-defines in den
 hwDef-Dateien kollidierten.)
 
+Weitere Kommando-Codes sind **gerätespezifisch** und nicht an den PA2i gerichtet:
+`cmdMainLaser`/`cmdSubLaser`/`cmdAux`/`cmdPixelColor`/`cmdMarkerState` (11–15, LaserMarker,
+siehe `API_LaserMarker6_3.md`), `cmdWirelessPower`/`cmdExtPower` (16–17, PA1_1-Relais) und
+`cmdCalibrate` (**18**) — an einen nicht selbst-lokalisierenden Sensor (z.B. das Radar)
+gerichtet; `info` = Kalibrier-Fensterdauer in ms (0 = Geräte-Default). Startet dort den
+**Co-Observation-Kalibriermodus** (Welt-Pose über einen mitbeobachtenden, welt-posierten
+Sensor; siehe GesamtKonzeptCatFinder.md). Ausgelöst z.B. vom Touch-Remote in Kap. 5.11.
+
 ### 3.3 Warum HB-Varianten unterschiedlicher Länge?
 
 Der Trick des 6_3-Designs: alle drei HB-Payloads beginnen mit demselben
@@ -656,9 +664,29 @@ Text-Multicast (`LidarC1 loc=… x=… y=… h=… ns=…`).
 > **VPS-Dashboard / Treffervisualisierung** (`VPS/dashboard/`): zweiter
 > Docker-Container (Port 80, `http://<VPS-IP>/`). Zeigt — gespeist vom Manager
 > als Gateway (siehe 5.1) — ein scrollendes System-Debug-Fenster, die zuletzt
-> aktiven Geräte (HB), eine pro Minute zusammengefasste Ereignisliste und Karten
-> der `catObserved` in Welt- bzw. relativen Gruppen-Koordinaten (Farbe je
-> Sensor/Ziel, Reset-Button). State im RAM (kumuliert bis Reset).
+> aktiven Geräte (HB), eine pro Minute zusammengefasste Ereignisliste (Zeit,
+> **Trefferzahl** und meldende Sensoren) und Karten der `catObserved` in Welt-
+> bzw. relativen Gruppen-Koordinaten (Farbe je Sensor/Ziel, Reset-Button). State
+> im RAM (kumuliert bis Reset).
+
+### 5.11 radarCalibrationButton — Touch-Fernbedienung für die Radar-Kalibrierung
+
+Kleines Remote-Gerät, das die **Co-Observation-Kalibrierung** eines Radars per
+Knopfdruck startet (siehe Kap. 4.1 und GesamtKonzeptCatFinder.md, Aufgabe
+„Welt-Pose per Co-Observation kalibrieren"). Basiert auf `Udisp6_3_0` (gleiches
+**CYD35**-LovyanGFX-Profil inkl. XPT2046-Touch), ist aber UI-reduziert auf einen
+einzigen Vollflächen-**Touch-Button**. Ordner `Displays/radarCalibrationButton/`.
+
+- **Hardware:** CYD 3.5" (ID `CYD35Z`, classic ESP32, ST7796-Panel + resistiver
+  XPT2046-Touch), DHCP. Upload per **USB (COM9)**; OTA ebenfalls aktiv.
+- **Funktion:** Ein Tippen auf die Schaltfläche sendet dem Radar `Dome` per
+  **Unicast** eine `commandMsg` mit `cmdCalibrate` (`info` = 45000 ms). Die
+  Ziel-IP wird wie üblich aus den HBs gelernt (`device[Dome].IP`); ist Dome noch
+  nicht gesehen, zeigt das Display einen Hinweis statt zu senden.
+- **Rückmeldung:** Das Gerät lauscht auf den **Text-Multicast** (Port 8300) und
+  zeigt die Statusmeldungen des Radars an (`calib Knopf …`, `calib OK/FAIL …`).
+- Sendet selbst **keinen HB** (reines Bediengerät) und taucht daher nicht in der
+  HB-/Geräteliste auf — wie die anderen Displays.
 
 ---
 
@@ -706,6 +734,7 @@ CatFind/                          (Repo 1 — die Programme)
 │                                    daneben: Development/ Infrastructur_test/ Tests/
 ├── Radar_HKL/Radar6_3_0/
 ├── Displays/Udisp6_3_0/          ← + dispDef.h/dispDevLoGFX.h/dispProcLoGFX.ino
+│   └── ../radarCalibrationButton/ ← Touch-Remote: startet Radar-Kalibrierung (CYD35, siehe 5.11)
 ├── Simulator/Sim6_3_0/
 ├── LaserMarker/
 │   ├── LaserMarker6_3/           ← Zielmarkierer (ID 15, siehe 5.9)

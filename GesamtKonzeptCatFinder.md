@@ -264,6 +264,10 @@ lokalisierenden Sensor zur Verfügung.
 - **Radar-Sketch:** verarbeitet jetzt empfangene Nachrichten (vorher nur Senden) — `catObserved`
   vom Bus (Sammeln/Health-Check) und `commandMsg`. Build/Flash: **`esp32:esp32:pico32`** (M5Stack
   Pico), per OTA.
+- **Knopf als eigenes Gerät:** Da das Radar selbst keinen Knopf hat, löst ein kleines Touch-Remote
+  den Knopf-Trigger per `commandMsg`/`cmdCalibrate` (Unicast) aus: `Displays/radarCalibrationButton/`
+  auf CYD35 (Touch-Button, basiert auf `Udisp6_3_0`). Es zeigt die Status-Multicasts des Radars an.
+  Siehe Dokumentation_6_3.md Kap. 5.11.
 
 Bewusst **nicht** umgesetzt / als Grenzen dokumentiert: Die DTW-Registrierung erzwingt Matching
 der Bahn-Endpunkte — stark versetzte Start-/Endzeitpunkte der beiden Sensoren verschlechtern den
