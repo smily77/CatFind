@@ -40,7 +40,7 @@ struct stationDefinitions {
   byte   type;
   byte   IP;
   byte   MAC;
-  byte   group;   // relative Koordinatengruppe (groupNone/groupPA2/groupPA1_1)
+  byte   group;   // relative Koordinatengruppe (groupNone/groupPA2/groupPA1_1/testGroup)
   String Name;
 };
 //Device
