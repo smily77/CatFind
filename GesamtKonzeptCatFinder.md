@@ -221,3 +221,51 @@ Mit genügend korrespondierenden Punktepaaren ist dies per Least-Squares-Registr
 - **Voraussetzungen/Grenzen:** überlappendes Sichtfeld, **eine** Person, gute Lidar-Pose (Garbage-in → Garbage-out) und genügend Punkte. Der VPS liefert eine Konfidenz; das Gate verhindert eine schlechte Pose.
 - **Generalisierung:** nicht radar-spezifisch. Jeder nicht selbst lokalisierende Sensor kann über jeden welt-posierten Sensor kalibriert werden. Die Sammel-/Sende-/Übernahme-Logik gehört daher als gemeinsame Prozedur in `xComProc`, zum Beispiel `coObserveCalibrate(...)`. Der VPS-Endpunkt wird einmal umgesetzt und kann von Radar sowie von künftigen Aktoren mit Turm-Sensor usw. genutzt werden.
 - **Offene Detailfragen vor Umsetzung:** VPS-Endpunkt-/Datenformat; Mindest-Bahnlänge/Konfidenzschwelle; Ziel-Assoziation, wenn das Radar bis zu 3 Targets liefert (RANSAC wählt die zur Lidar-Bahn passende Spur); ob die Lösung rein 2-D bleibt (`mirror` als ±1 wie beim Lidar).
+
+### Umsetzung, konkretisiert — Stand 6_3
+
+Umgesetzt in den gemeinsamen Dateien (`xComDef6_3.h`/`xComProc6_3.h`), im VPS-Localizer
+(`VPS/localizer/`) und im Radar-Sketch (`Radar_HKL/Radar6_3_0`). Die Sammel-/Sende-/
+Übernahme-Logik ist **generisch** (nicht radar-spezifisch) und steht jedem nicht selbst-
+lokalisierenden Sensor zur Verfügung.
+
+- **Auslösung — Knopf UND Auto UND Health-Check (entschieden):**
+  - *Knopf/`commandMsg`:* neuer `cmdCalibrate(18)` (`info` = Fensterdauer in ms, 0 = Default
+    45 s). Damit kann ein Button-/Display-Gerät das Fenster starten.
+  - *Auto:* Hat das Gerät **keine** valide Pose und liegt anhaltend (≥ `AUTO_ARM_MS`)
+    Co-Observation an — eigenes Target **und** welt-valide `catObserved` gleichzeitig —,
+    startet das Fenster selbsttätig. Das Quality-Gate verhindert eine schlechte Pose.
+  - *Health-Check/Re-Validierung:* Bei vorhandener Pose wird jede co-beobachtete Lidar-
+    Welt-Detektion gegen die eigene (per `localToWorld` transformierte) Detektion geprüft
+    (`coObserveCheck`). Anhaltendes Welt-Residuum > Gate ⇒ `validWorldPose=false` (danach
+    greift der Auto-Trigger erneut).
+- **Gegen alle Welt-Quellen — je Sender getrennt (entschieden):** Das Radar taggt die
+  gesammelten Welt-Punkte mit der **Sender-ID** und sammelt pro Quelle einen eigenen
+  Punktzug (`coCalState`, bis zu `CO_MAX_WORLD_SRC` Quellen, je `CO_MAX_WORLD_PTS`). Der VPS
+  probiert **jede (Eigen-Spur × Welt-Quelle)-Kombination** durch und liefert die beste; so
+  wird „gegen alle welt-validen Sensoren" erfüllt, ohne die „eine kohärente Bahn"-Bedingung
+  je Kandidat zu verletzen. Die gewinnende Quelle steht als `source` in der Antwort.
+- **Kein neues Wire-Format:** `posPayload` trägt Relativ- **und** Welt-Koordinaten samt
+  `worldValid` bereits; die Trajektorien gehen per HTTP an den VPS, nicht über xCom.
+- **VPS-Endpunkt `/calibrate` (einmal, von allen nutzbar):** Body
+  `{radar_tracks:[[[x,y]…]…], world_tracks:[{id,pts:[[x,y]…]}…]}` (Eigen mm relativ,
+  Welt mm). Registrierung = **ICP mit reihenfolge-erhaltender DTW-Korrespondenz** +
+  Umeyama/Kabsch über `mirror=±1`; Antwort `tx_mm,ty_mm,heading_deg,mirror,confidence,
+  inlier_ratio,source`. Die Reihenfolge-Korrespondenz (statt Nearest-Neighbour) löst die
+  Drehsinn-Mehrdeutigkeit; eine **gerade Linie** bleibt mehrdeutig und wird per
+  Linearitäts-Check nie `HOCH`.
+- **Übernahme mit Quality-Gate:** `coCalibFinish` übernimmt die Pose nur bei `confidence==HOCH`
+  **und** `inlier_ratio ≥ CALIB_MIN_INLIER`, dann `savePose` + `validWorldPose=true` + kurzer
+  Status-Multicast. Danach füllt das Gerät bei eigenen Detektionen `worldX/worldY`
+  (`worldValid=1`) via `fillWorld`/`localToWorld`.
+- **Gemeinsame Prozeduren in `xComProc6_3.h`:** `coCalState`, `coCalibBegin/FeedLocal/
+  FeedWorld/Elapsed/Finish`, `vpsCalibrate` (unter `USE_VPS_CALIBRATE`), `fillWorld`,
+  `coHealth`/`coObserveCheck`.
+- **Radar-Sketch:** verarbeitet jetzt empfangene Nachrichten (vorher nur Senden) — `catObserved`
+  vom Bus (Sammeln/Health-Check) und `commandMsg`. Build/Flash: **`esp32:esp32:pico32`** (M5Stack
+  Pico), per OTA.
+
+Bewusst **nicht** umgesetzt / als Grenzen dokumentiert: Die DTW-Registrierung erzwingt Matching
+der Bahn-Endpunkte — stark versetzte Start-/Endzeitpunkte der beiden Sensoren verschlechtern den
+Fit an den Rändern; eine gemeinsam und vollständig beobachtete, kurvige Bahn bleibt nötig. Die
+Health-Check-Assoziation ist best-effort (Distanz-Gate gegen „anderes Ziel").

@@ -37,6 +37,11 @@
 //bool acquireNoShot(const char* path, uint8_t mgrOctet, unsigned long waitMs)  - No-Shot-Karte vom Manager beziehen/cachen
 //bool vpsLocalize(scan,n, x,y,head,mir,conf,inlier)            - Scan an den VPS, Pose+inlier zurueck (nur mit USE_VPS_LOCALIZE)
 //void resolvePose(vpsOk,vx,vy,vh,vmir,conf,inlier, hadNVS,minInlier)  - Quality-Gate: nur hochwertige Pose uebernehmen, sonst NVS behalten
+//void fillWorld(posPayload&)                                    - relative x/y -> worldX/worldY/worldValid ueber myPose
+//void coCalibBegin/FeedLocal/FeedWorld(coCalState&, ...)        - Co-Observation: Eigen-/Welt-Trajektorien sammeln (je Sender getrennt)
+//bool coCalibElapsed(coCalState&)                               - Sammelfenster abgelaufen?
+//bool coCalibFinish(coCalState&, minInlier)                     - Bahnen an VPS /calibrate, Pose mit Gate uebernehmen (nur USE_VPS_CALIBRATE)
+//bool coObserveCheck(coHealth&, lxr,lyr, wxLidar,wyLidar, gateMm,assocMm,maxBad)  - Health-Check: Welt-Residuum, true = Pose driftet
 //uint8_t getLastIpByte()
 //void initText2Udp()
 //size_t sendUdpText(const String& text)
@@ -796,7 +801,7 @@ bool acquireNoShot(const char* path, uint8_t managerOctet, unsigned long waitMs)
 
 static float wrap360f(float d){ while (d < 0) d += 360.0f; while (d >= 360.0f) d -= 360.0f; return d; }
 
-#ifdef USE_VPS_LOCALIZE
+#if defined(USE_VPS_LOCALIZE) || defined(USE_VPS_CALIBRATE)
 #include <HTTPClient.h>
 
 static float jsonNum(const String& s, const char* key) {
@@ -811,7 +816,9 @@ static String jsonStr(const String& s, const char* key) {
   int b = s.indexOf('"', a + 1); if (b < 0) return "";
   return s.substring(a + 1, b);
 }
+#endif  // USE_VPS_LOCALIZE || USE_VPS_CALIBRATE
 
+#ifdef USE_VPS_LOCALIZE
 // Scan (n Bins, mm; 0 = ungueltig) an den VPS posten, Pose zurueck. true bei Erfolg.
 bool vpsLocalize(const uint16_t* scan, int n, int32_t& xmm, int32_t& ymm,
                  float& headDeg, int& mir, String& conf, float& inlier) {
@@ -861,3 +868,224 @@ void resolvePose(bool vpsOk, int32_t vx, int32_t vy, float vh, int vmir, const S
     myPose.validWorldPose = false;                  // keine vertrauenswuerdige Pose
   }
 }
+
+//---------------------------------------------------------------------------------------
+// Welt-Pose per Co-Observation kalibrieren (generisch, nicht radar-spezifisch).
+// Ein nicht selbst-lokalisierender Sensor (Radar, Turm-Sensor, ...) sammelt parallel
+//   * seine eigenen relativen Detektionen (bis zu CO_RADAR_TRACKS geordnete Spuren) und
+//   * die catObserved welt-posierter Sensoren vom Bus (je SENDER getrennt),
+// waehrend eine Person eine kurvige Bahn im gemeinsamen Sichtfeld laeuft. Die Bahnen
+// gehen an den VPS (/calibrate), der je (Eigen-Spur x Welt-Quelle) eine Trajektorien-
+// Registrierung (ICP + Umeyama + RANSAC) rechnet und die beste Pose zurueckliefert.
+// Die Korrespondenz kommt aus der BAHNFORM, nicht aus der Zeit (timeStamp ist Sekunden).
+//---------------------------------------------------------------------------------------
+#ifndef CO_RADAR_TRACKS
+#define CO_RADAR_TRACKS 3        // das Radar liefert bis zu 3 Targets -> 3 Spuren
+#endif
+#ifndef CO_MAX_LOCAL_PTS
+#define CO_MAX_LOCAL_PTS 160     // Punkte pro Eigen-Spur
+#endif
+#ifndef CO_MAX_WORLD_SRC
+#define CO_MAX_WORLD_SRC 4       // verschiedene welt-posierte Quellen gleichzeitig
+#endif
+#ifndef CO_MAX_WORLD_PTS
+#define CO_MAX_WORLD_PTS 160     // Punkte pro Welt-Quelle
+#endif
+#ifndef CO_MIN_STEP_MM
+#define CO_MIN_STEP_MM 60        // dichter beieinander -> nicht aufnehmen (kein Stillstand-Spam)
+#endif
+#ifndef CO_MIN_TRACK_PTS
+#define CO_MIN_TRACK_PTS 15      // kuerzere Spuren werden nicht an den VPS gesendet
+#endif
+
+struct coCalState {
+  bool          active   = false;
+  bool          autoTrig = false;            // true = automatisch ausgeloest (sonst Knopf/cmd)
+  unsigned long startMs  = 0;
+  unsigned long windowMs = 0;
+  // Eigen-Spuren (relativ, mm), je Radar-Slot
+  int32_t  lx[CO_RADAR_TRACKS][CO_MAX_LOCAL_PTS];
+  int32_t  ly[CO_RADAR_TRACKS][CO_MAX_LOCAL_PTS];
+  uint16_t ln[CO_RADAR_TRACKS] = {0};
+  // Welt-Quellen (Welt-mm), je Sender-ID getrennt
+  uint8_t  wSender[CO_MAX_WORLD_SRC] = {0};
+  int32_t  wx[CO_MAX_WORLD_SRC][CO_MAX_WORLD_PTS];
+  int32_t  wy[CO_MAX_WORLD_SRC][CO_MAX_WORLD_PTS];
+  uint16_t wn[CO_MAX_WORLD_SRC] = {0};
+  uint8_t  wSrcCount = 0;
+};
+
+// Sammelfenster starten/zuruecksetzen.
+void coCalibBegin(coCalState& s, unsigned long windowMs, bool autoTrig = false) {
+  for (uint8_t t = 0; t < CO_RADAR_TRACKS; t++) s.ln[t] = 0;
+  for (uint8_t w = 0; w < CO_MAX_WORLD_SRC; w++) { s.wn[w] = 0; s.wSender[w] = 0; }
+  s.wSrcCount = 0;
+  s.active = true; s.autoTrig = autoTrig;
+  s.windowMs = windowMs; s.startMs = millis();
+}
+
+// Eigene relative Detektion in Slot 'slot' aufnehmen (vom Radar pro Frame).
+void coCalibFeedLocal(coCalState& s, uint8_t slot, int32_t xl, int32_t yl) {
+  if (!s.active || slot >= CO_RADAR_TRACKS) return;
+  uint16_t n = s.ln[slot];
+  if (n >= CO_MAX_LOCAL_PTS) return;
+  if (n > 0) {                                       // zu nah am letzten Punkt -> ueberspringen
+    int32_t dx = xl - s.lx[slot][n-1], dy = yl - s.ly[slot][n-1];
+    if ((int64_t)dx*dx + (int64_t)dy*dy < (int64_t)CO_MIN_STEP_MM*CO_MIN_STEP_MM) return;
+  }
+  s.lx[slot][n] = xl; s.ly[slot][n] = yl; s.ln[slot] = n + 1;
+}
+
+// Welt-Detektion eines welt-posierten Senders aufnehmen (aus catObserved mit worldValid=1).
+void coCalibFeedWorld(coCalState& s, uint8_t sender, int32_t xw, int32_t yw) {
+  if (!s.active) return;
+  int si = -1;
+  for (uint8_t w = 0; w < s.wSrcCount; w++) if (s.wSender[w] == sender) { si = w; break; }
+  if (si < 0) {
+    if (s.wSrcCount >= CO_MAX_WORLD_SRC) return;
+    si = s.wSrcCount++; s.wSender[si] = sender; s.wn[si] = 0;
+  }
+  uint16_t n = s.wn[si];
+  if (n >= CO_MAX_WORLD_PTS) return;
+  if (n > 0) {
+    int32_t dx = xw - s.wx[si][n-1], dy = yw - s.wy[si][n-1];
+    if ((int64_t)dx*dx + (int64_t)dy*dy < (int64_t)CO_MIN_STEP_MM*CO_MIN_STEP_MM) return;
+  }
+  s.wx[si][n] = xw; s.wy[si][n] = yw; s.wn[si] = n + 1;
+}
+
+inline bool coCalibElapsed(const coCalState& s) {
+  return s.active && (millis() - s.startMs >= s.windowMs);
+}
+
+//---------------------------------------------------------------------------------------
+// Welt-Koordinaten einer eigenen Detektion fuellen (relative x/y -> Welt ueber myPose).
+// Ohne valide Pose: worldValid=0 und worldX/worldY=0 (wie in posPayload festgelegt).
+//---------------------------------------------------------------------------------------
+inline void fillWorld(posPayload& p) {
+  if (myPose.validWorldPose) {
+    int xw, yw; localToWorld(p.x, p.y, myPose, xw, yw);
+    p.worldX = xw; p.worldY = yw; p.worldValid = 1;
+  } else {
+    p.worldX = 0; p.worldY = 0; p.worldValid = 0;
+  }
+}
+
+//---------------------------------------------------------------------------------------
+// Health-Check / laufende Re-Validierung: eine co-beobachtete Lidar-Welt-Detektion gegen
+// die eigene (per myPose in die Welt transformierte) Detektion vergleichen. Distanzen
+// ueber assocMm gelten als anderes Ziel und werden ignoriert; ab gateMm gilt das Residuum
+// als schlecht. true = Pose driftet (badStreak >= maxBad) -> Aufrufer loescht
+// validWorldPose und/oder kalibriert neu. Best-effort: setzt eine bereits valide Pose voraus.
+//---------------------------------------------------------------------------------------
+struct coHealth {
+  float    residEma  = -1.0f;   // mm, gleitendes Welt-Residuum (-1 = leer)
+  uint16_t badStreak = 0;
+};
+
+bool coObserveCheck(coHealth& h, int32_t lxr, int32_t lyr,
+                    int32_t wxLidar, int32_t wyLidar,
+                    float gateMm, float assocMm, uint16_t maxBad) {
+  if (!myPose.validWorldPose) return false;
+  int xw, yw; localToWorld(lxr, lyr, myPose, xw, yw);
+  float dx = (float)xw - wxLidar, dy = (float)yw - wyLidar;
+  float d  = sqrtf(dx*dx + dy*dy);
+  if (d > assocMm) return false;                     // anderes Ziel -> nicht bewerten
+  h.residEma = (h.residEma < 0) ? d : (0.7f * h.residEma + 0.3f * d);
+  if (h.residEma > gateMm) h.badStreak++; else h.badStreak = 0;
+  return h.badStreak >= maxBad;
+}
+
+//---------------------------------------------------------------------------------------
+// VPS-Aufruf /calibrate (nur mit USE_VPS_CALIBRATE, zieht HTTPClient wie vpsLocalize).
+// Sendet alle ausreichend langen Eigen-Spuren und Welt-Quellen; der VPS waehlt die beste
+// Kombination (RANSAC) und liefert tx/ty/heading/mirror/confidence/inlier_ratio/source.
+//---------------------------------------------------------------------------------------
+#ifndef VPS_CAL_PORT
+#define VPS_CAL_PORT VPS_LOC_PORT
+#endif
+#ifndef VPS_CAL_PATH
+#define VPS_CAL_PATH "/calibrate"
+#endif
+#ifndef VPS_CAL_TIMEOUT_MS
+#define VPS_CAL_TIMEOUT_MS 30000
+#endif
+
+#ifdef USE_VPS_CALIBRATE
+bool vpsCalibrate(const coCalState& s, int32_t& txmm, int32_t& tymm, float& headDeg,
+                  int& mir, String& conf, float& inlier, uint8_t& srcOut) {
+  inlier = 0.0f; srcOut = 0;
+  if (WiFi.status() != WL_CONNECTED) return false;
+  String body; body.reserve(8192);
+  body = "{\"radar_tracks\":[";
+  bool firstTrack = true;
+  for (uint8_t t = 0; t < CO_RADAR_TRACKS; t++) {
+    if (s.ln[t] < CO_MIN_TRACK_PTS) continue;
+    if (!firstTrack) body += ',';
+    firstTrack = false;
+    body += '[';
+    for (uint16_t i = 0; i < s.ln[t]; i++) {
+      if (i) body += ',';
+      body += '['; body += s.lx[t][i]; body += ','; body += s.ly[t][i]; body += ']';
+    }
+    body += ']';
+  }
+  body += "],\"world_tracks\":[";
+  bool firstSrc = true;
+  for (uint8_t w = 0; w < s.wSrcCount; w++) {
+    if (s.wn[w] < CO_MIN_TRACK_PTS) continue;
+    if (!firstSrc) body += ',';
+    firstSrc = false;
+    body += "{\"id\":"; body += s.wSender[w]; body += ",\"pts\":[";
+    for (uint16_t i = 0; i < s.wn[w]; i++) {
+      if (i) body += ',';
+      body += '['; body += s.wx[w][i]; body += ','; body += s.wy[w][i]; body += ']';
+    }
+    body += "]}";
+  }
+  body += "]}";
+  if (firstTrack || firstSrc) return false;          // auf einer Seite zu wenig Punkte
+
+  HTTPClient http;
+  String url = "http://" + ipVPS.toString() + ":" + String(VPS_CAL_PORT) + VPS_CAL_PATH;
+  if (!http.begin(url)) return false;
+  http.setTimeout(VPS_CAL_TIMEOUT_MS);
+  http.addHeader("Content-Type", "application/json");
+  int code = http.POST(body);
+  bool ok = false;
+  if (code == 200) {
+    String r = http.getString();
+    float fx = jsonNum(r, "\"tx_mm\""), fy = jsonNum(r, "\"ty_mm\"");
+    headDeg = jsonNum(r, "\"heading_deg\""); mir = (int)jsonNum(r, "\"mirror\"");
+    conf = jsonStr(r, "\"confidence\""); inlier = jsonNum(r, "\"inlier_ratio\"");
+    srcOut = (uint8_t)jsonNum(r, "\"source\"");
+    if (!isnan(fx) && !isnan(fy) && !isnan(headDeg) && (mir == 1 || mir == -1)) {
+      txmm = (int32_t)lroundf(fx); tymm = (int32_t)lroundf(fy); ok = true;
+    }
+  } else Serial << "VPS calibrate HTTP " << code << endl;
+  http.end();
+  return ok;
+}
+
+// Sammelfenster abschliessen: Trajektorien an den VPS senden, Pose mit Quality-Gate
+// uebernehmen (conf=HOCH UND inlier>=minInlier), in NVS speichern und kurzen Status
+// per Text-Multicast melden. true = neue Welt-Pose uebernommen.
+bool coCalibFinish(coCalState& s, float minInlier) {
+  s.active = false;
+  int32_t tx = 0, ty = 0; float hd = 0; int mir = 1;
+  String conf; float inlier = 0; uint8_t src = 0;
+  bool ok   = vpsCalibrate(s, tx, ty, hd, mir, conf, inlier, src);
+  bool good = ok && (conf == "HOCH") && (inlier >= minInlier);
+  if (good) {
+    myPose.worldX = tx; myPose.worldY = ty;
+    myPose.heading = wrap360f(hd) * 4096.0f / 360.0f; myPose.mirror = (int8_t)mir;
+    myPose.validWorldPose = true; savePose(myPose);
+    sendUdpTextln("calib OK: src=" + String(src) + " conf=" + conf +
+                  " inl=" + String(inlier, 2) + " x=" + String(tx) + " y=" + String(ty));
+  } else {
+    sendUdpTextln(String("calib FAIL: ") +
+                  (ok ? ("conf=" + conf + " inl=" + String(inlier, 2)) : "no VPS / zu wenig Punkte"));
+  }
+  return good;
+}
+#endif  // USE_VPS_CALIBRATE

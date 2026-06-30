@@ -103,6 +103,26 @@ HLK ──UART──► ESP32: Frame AA FF 03 00 + 3 Targets à 8 Byte (30 Bytes
               HB: radarHbPayload (inkl. deadZoneDist) alle periodeForHB
 ```
 
+## Co-Observation-Kalibrierung (6_3)
+
+Der Radar bestimmt seine Welt-Pose nicht selbst, sondern per gleichzeitiger
+Beobachtung einer laufenden Person mit einem welt-posierten Sensor (Lidar).
+Details siehe Konzept *„Welt-Pose eines Sensors per Co-Observation kalibrieren"*.
+
+- **Empfang neu:** Der Sketch verarbeitet jetzt eingehende Nachrichten (vorher nur
+  Senden): `catObserved` vom Bus (welt-valide Quellen) und `commandMsg`.
+- **Auslösung:** Knopf/`commandMsg` (`cmdCalibrate`, `info` = ms), **oder** automatisch
+  bei anhaltender Co-Observation ohne valide Pose, **oder** Re-Kalibrierung nach
+  erkanntem Pose-Drift (Health-Check).
+- **Ablauf:** Sammelfenster (Default 45 s) → eigene Bahnen + Welt-Bahnen (je Sender) an
+  den VPS `/calibrate` → Pose mit Quality-Gate (`HOCH` + Inlier) übernehmen, `savePose`.
+- **Nach Kalibrierung:** eigene `catObserved` tragen zusätzlich `worldX/worldY`
+  (`worldValid=1`) via `fillWorld`/`localToWorld`.
+- **Build/Flash:** `esp32:esp32:pico32` (M5Stack Pico), OTA. Benötigt `ipVPS` aus
+  `Credentials.h` (`#define USE_VPS_CALIBRATE` zieht den HTTPClient).
+- **LED erweitert:** minPix zeigt zusätzlich Magenta = Kalibriermodus, Gelb = „rechnet",
+  Grün/Rot = Kalibrierung OK/fehlgeschlagen (überlagert den HB-Blink).
+
 ## Hinweise
 
 - Der HLK-Sensor (LD2450-Klasse) braucht 5 V, seine UART-Pegel sind 3,3 V —

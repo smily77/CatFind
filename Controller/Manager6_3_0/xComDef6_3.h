@@ -250,6 +250,9 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
 // PowerActor1_1-Relais (zusaetzlich zu den PA-Kommandos; water = Feuer, automatisch)
 #define cmdWirelessPower          16   // info: 0 = aus, 1 = an (Strom fuer Turm-Sensoren)
 #define cmdExtPower               17   // info: 0 = aus, 1 = an (externe Versorgung)
+// Co-Observation-Kalibrierung (Welt-Pose eines nicht selbst-lokalisierenden Sensors
+// per gleichzeitiger Beobachtung einer Person mit einem welt-posierten Sensor).
+#define cmdCalibrate              18   // info: Fensterdauer in ms (0 = Default); startet Kalibriermodus
 
 //---------------------------------------------------------------------------------------
 // Welt-Pose dieses Geraets (jedes Geraet besitzt diese Variablen, damit die

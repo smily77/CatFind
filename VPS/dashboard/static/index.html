@@ -94,9 +94,9 @@ function renderDevices(devs, now){
   }).join("") || `<div class="hint">— keine —</div>`;
 }
 function renderList(summary){
-  const rows = summary.map(s=>`<tr><td>${fmtTime(s.minute)}</td><td>${s.senders.map(id=>`#${id}`).join(", ")}</td></tr>`).join("");
+  const rows = summary.map(s=>`<tr><td>${fmtTime(s.minute)}</td><td>${s.count}</td><td>${s.senders.map(id=>`#${id}`).join(", ")}</td></tr>`).join("");
   document.getElementById("list").innerHTML =
-    `<table><thead><tr><th>Zeit (Minute)</th><th>meldende Sensoren</th></tr></thead><tbody>${rows}</tbody></table>`
+    `<table><thead><tr><th>Zeit (Minute)</th><th>Treffer</th><th>meldende Sensoren</th></tr></thead><tbody>${rows}</tbody></table>`
     + (summary.length? "" : `<div class="hint">— noch keine catObserved —</div>`);
 }
 function escapeHtml(s){ return s.replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
