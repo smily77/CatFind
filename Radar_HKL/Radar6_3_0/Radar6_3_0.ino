@@ -88,6 +88,15 @@ void handleCommand(const xMsg& m) {
     setPixel(minPix, 0xFF00FF);   // Kalibriermodus sichtbar
     sendUdpTextln("calib Knopf: Fenster " + String(win / 1000) + "s");
   }
+  else if (cmd.cmd == cmdClearPose) {
+    calib.active = false;                          // evtl. laufendes Fenster abbrechen
+    clearPose();                                   // NVS-Pose vergessen
+    myPose.validWorldPose = false;
+    myPose.worldX = 0; myPose.worldY = 0;
+    health = coHealth();                           // Health-Check zuruecksetzen
+    setPixel(minPix, 0xFF0000);
+    sendUdpTextln("Pose geloescht -> nicht lokalisiert (Neukalibrierung noetig)");
+  }
 }
 
 // catObserved vom Bus: welt-posierte Beobachtungen als Referenz nutzen

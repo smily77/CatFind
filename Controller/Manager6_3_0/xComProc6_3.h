@@ -26,6 +26,7 @@
 //void worldToLocal(int xw, int yw, const worldPose &p, int &xl, int &yl)  - Welt -> lokal (kartesisch)
 //void savePose(const worldPose &p)                              - Ist-Pose ins NVS schreiben
 //bool loadPose(worldPose &p)                                    - Ist-Pose aus NVS lesen (validWorldPose bleibt false)
+//void clearPose()                                               - gespeicherte Pose im NVS loeschen (erzwingt Neukalibrierung)
 //uint32_t crc32Bytes(const uint8_t* d, size_t n)                - CRC32 (zlib-kompatibel)
 //bool mapFileInfo(const char* path, uint16_t& v, uint32_t& crc, uint32_t& len)  - LittleFS-Karte: Version/CRC/Laenge
 //bool serveMap(uint8_t mapType, const char* path, uint8_t reqOctet)  - Karte gechunkt an Anforderer senden (Manager)
@@ -499,6 +500,15 @@ bool loadPose(worldPose &p) {
   posePrefs.end();
   p.validWorldPose = false;   // nach Boot immer ungueltig -> Quickcheck bestaetigt spaeter
   return exists;
+}
+
+// Gespeicherte Pose vollstaendig vergessen (NVS-Namespace "pose" leeren). Danach liefert
+// loadPose() false -> beim naechsten Boot keine vertraute Pose; erzwingt Neukalibrierung.
+void clearPose() {
+  Preferences posePrefs;
+  posePrefs.begin("pose", false);
+  posePrefs.clear();
+  posePrefs.end();
 }
 
 //---------------------------------------------------------------------------------------

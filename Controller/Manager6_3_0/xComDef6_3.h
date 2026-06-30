@@ -253,6 +253,7 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
 // Co-Observation-Kalibrierung (Welt-Pose eines nicht selbst-lokalisierenden Sensors
 // per gleichzeitiger Beobachtung einer Person mit einem welt-posierten Sensor).
 #define cmdCalibrate              18   // info: Fensterdauer in ms (0 = Default); startet Kalibriermodus
+#define cmdClearPose              19   // info: ignoriert - loescht die gespeicherte Welt-Pose (NVS), validWorldPose=false
 
 //---------------------------------------------------------------------------------------
 // Welt-Pose dieses Geraets (jedes Geraet besitzt diese Variablen, damit die
