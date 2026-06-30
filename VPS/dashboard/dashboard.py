@@ -119,12 +119,16 @@ def ingest():
 
 
 def minute_summary():
-    # catObserved pro Minute zu einem Eintrag zusammenfassen (Zeit + Sensor-IDs)
+    # catObserved pro Minute zu einem Eintrag zusammenfassen
+    # (Zeit + meldende Sensor-IDs + Anzahl Treffer in der Minute)
     buckets = OrderedDict()
     for e in _events:
         key = int(e["t"] // 60) * 60
-        buckets.setdefault(key, set()).add(e["sender"])
-    out = [{"minute": k, "senders": sorted(v)} for k, v in buckets.items()]
+        b = buckets.setdefault(key, {"senders": set(), "count": 0})
+        b["senders"].add(e["sender"])
+        b["count"] += 1
+    out = [{"minute": k, "senders": sorted(v["senders"]), "count": v["count"]}
+           for k, v in buckets.items()]
     out.sort(key=lambda r: r["minute"], reverse=True)
     return out[:180]
 

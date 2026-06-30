@@ -191,6 +191,115 @@ def localize(mapx, mapy, ranges_mm):
     }
 
 
+# --- Co-Observation-Kalibrierung (/calibrate) -------------------------------
+# Trajektorien-Registrierung: eine Eigen-Spur (Radar, relativ mm) gegen eine
+# Welt-Spur (welt-posierter Sensor, mm) ausrichten. Korrespondenz kommt aus der
+# BAHNFORM (ICP mit Nearest-Neighbour), nicht aus der Zeit. Gesucht ist die starre
+# Transformation  welt = R(heading)*[x, mirror*y] + (tx,ty)  (konsistent mit
+# localToWorld in xComProc6_3.h: Drehsinn = mirror an der lokalen y-Achse).
+CAL_INLIER_MM   = float(os.environ.get("CAL_INLIER_MM", "300"))   # Welt-Residuum fuer Inlier
+CAL_MIN_PTS     = int(os.environ.get("CAL_MIN_PTS", "12"))        # Mindestpunkte je Spur
+CAL_RESAMPLE_N  = int(os.environ.get("CAL_RESAMPLE_N", "80"))     # Bogenlaengen-Resampling
+CAL_ICP_ITERS   = int(os.environ.get("CAL_ICP_ITERS", "40"))
+CAL_MIN_LINEAR  = float(os.environ.get("CAL_MIN_LINEAR", "0.01")) # PCA-Verhaeltnis: darunter = (fast) gerade Linie -> mehrdeutig
+
+
+def _resample_arc(pts, n):
+    """Polyline auf n bogenlaengen-aequidistante Punkte resampeln (gleichmaessige
+    Punktdichte -> robustere ICP-Korrespondenzen, unabhaengig vom Gehtempo)."""
+    pts = np.asarray(pts, dtype=float)
+    if len(pts) <= 2:
+        return pts
+    seg = np.sqrt(((pts[1:] - pts[:-1]) ** 2).sum(1))
+    s = np.concatenate([[0.0], np.cumsum(seg)])
+    if s[-1] <= 0:
+        return pts[:1]
+    want = np.linspace(0.0, s[-1], min(n, len(pts)))
+    x = np.interp(want, s, pts[:, 0])
+    y = np.interp(want, s, pts[:, 1])
+    return np.column_stack([x, y])
+
+
+def _kabsch2d(P, Q):
+    """Starre 2D-Transformation (echte Rotation, keine Skalierung) mit q ~ R*p + t."""
+    Pc, Qc = P.mean(0), Q.mean(0)
+    H = (P - Pc).T @ (Q - Qc)
+    U, _, Vt = np.linalg.svd(H)
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    R = Vt.T @ np.diag([1.0, d]) @ U.T
+    t = Qc - R @ Pc
+    return R, t
+
+
+def _dtw(A, B):
+    """Reihenfolge-erhaltende Zuordnung zweier geordneter Punktzuege (Dynamic Time
+    Warping ueber euklidische Distanz). Gibt korrespondierende Indexarrays (ai, bj)
+    zurueck. Anders als Nearest-Neighbour erzwingt das eine MONOTONE Korrespondenz und
+    bestraft so falschen Drehsinn / falsches Heading, die als Menge zwar ueberlappen
+    koennen, aber die Bahn nicht in konsistenter Reihenfolge durchlaufen."""
+    C = np.sqrt(((A[:, None, :] - B[None, :, :]) ** 2).sum(-1))
+    n, m = C.shape
+    D = np.full((n + 1, m + 1), np.inf); D[0, 0] = 0.0
+    for i in range(1, n + 1):
+        Ci = C[i - 1]; Dp = D[i - 1]; Di = D[i]
+        for j in range(1, m + 1):
+            Di[j] = Ci[j - 1] + min(Dp[j], Di[j - 1], Dp[j - 1])
+    i, j, ai, bj = n, m, [], []
+    while i > 0 and j > 0:
+        ai.append(i - 1); bj.append(j - 1)
+        up, left, diag = D[i - 1, j], D[i, j - 1], D[i - 1, j - 1]
+        mmin = min(up, left, diag)
+        if diag == mmin:   i -= 1; j -= 1
+        elif up == mmin:   i -= 1
+        else:              j -= 1
+    return np.array(ai[::-1]), np.array(bj[::-1])
+
+
+def _linearity(pts):
+    """PCA-Eigenwertverhaeltnis (klein/gross). 0 = perfekt gerade (mehrdeutig)."""
+    c = pts - pts.mean(0)
+    w = np.linalg.eigvalsh((c.T @ c) / max(len(pts), 1))
+    return float(w[0] / w[1]) if w[1] > 1e-9 else 0.0
+
+
+def register_pair(radar_pts, world_pts):
+    """Eine Eigen-Spur gegen eine Welt-Spur registrieren (beide mm). ICP mit
+    reihenfolge-erhaltender DTW-Korrespondenz, ueber mirror = +-1 und mehrere
+    Start-Headings. Auswahl nach Inlier-Anteil auf den DTW-Paaren. None bei zu wenig."""
+    P0 = _resample_arc(radar_pts, CAL_RESAMPLE_N)
+    Q  = _resample_arc(world_pts, CAL_RESAMPLE_N)
+    if len(P0) < CAL_MIN_PTS or len(Q) < CAL_MIN_PTS:
+        return None
+    best = None
+    for mirror in (1.0, -1.0):
+        Pm = P0.copy(); Pm[:, 1] *= mirror
+        for th0 in range(0, 360, 60):
+            a = math.radians(th0)
+            R = np.array([[math.cos(a), -math.sin(a)], [math.sin(a), math.cos(a)]])
+            t = Q.mean(0) - R @ Pm.mean(0)
+            ai = bj = None
+            for _ in range(CAL_ICP_ITERS):
+                T = Pm @ R.T + t
+                ai, bj = _dtw(T, Q)
+                R, t = _kabsch2d(Pm[ai], Q[bj])
+            T = Pm @ R.T + t
+            ai, bj = _dtw(T, Q)
+            d = np.sqrt(((T[ai] - Q[bj]) ** 2).sum(1))
+            inlier_ratio = float(np.mean(d < CAL_INLIER_MM))
+            resid = float(np.mean(d))
+            if best is None or inlier_ratio > best["inlier_ratio"] or \
+               (inlier_ratio == best["inlier_ratio"] and resid < best["_resid"]):
+                heading = math.degrees(math.atan2(R[1, 0], R[0, 0])) % 360.0
+                best = {"tx_mm": int(round(t[0])), "ty_mm": int(round(t[1])),
+                        "heading_deg": round(heading, 3), "mirror": int(mirror),
+                        "inlier_ratio": round(inlier_ratio, 4), "_resid": resid}
+    if best is not None:
+        best.pop("_resid", None)
+        # Linearitaet ueber beide Bahnen: eine (fast) gerade Linie ist mehrdeutig
+        best["linearity"] = round(min(_linearity(P0), _linearity(Q)), 4)
+    return best
+
+
 app = Flask(__name__)
 
 
@@ -229,6 +338,40 @@ def do_localize():
              pose["mirror"], pose["confidence"], pose["inlier_ratio"], pose["beams"], nz),
           flush=True)
     return jsonify(pose)
+
+
+@app.post("/calibrate")
+def do_calibrate():
+    data = request.get_json(force=True, silent=True) or {}
+    radar_tracks = data.get("radar_tracks") or []
+    world_tracks = data.get("world_tracks") or []
+    if not radar_tracks or not world_tracks:
+        return jsonify(error="body needs {'radar_tracks':[[[x,y],..]], "
+                             "'world_tracks':[{'id':N,'pts':[[x,y],..]}]}"), 400
+
+    best, best_src = None, 0
+    for wt in world_tracks:
+        wpts = wt.get("pts") or []
+        if len(wpts) < CAL_MIN_PTS:
+            continue
+        for rpts in radar_tracks:            # RANSAC-artig: passende Eigen-Spur waehlen
+            if len(rpts) < CAL_MIN_PTS:
+                continue
+            res = register_pair(rpts, wpts)
+            if res and (best is None or res["inlier_ratio"] > best["inlier_ratio"]):
+                best, best_src = res, int(wt.get("id", 0))
+    if best is None:
+        return jsonify(ok=False, error="no registration (too few points)"), 422
+
+    ir, lin = best["inlier_ratio"], best["linearity"]
+    if   ir >= 0.60 and lin >= CAL_MIN_LINEAR: conf = "HOCH"
+    elif ir >= 0.40:                           conf = "MITTEL"
+    else:                                      conf = "NIEDRIG"
+    out = dict(ok=True, source=best_src, confidence=conf, **best)
+    print("calibrate from %s: src=%d conf=%s inlier=%.2f lin=%.3f x=%d y=%d head=%.1f mir=%+d"
+          % (request.remote_addr, best_src, conf, ir, lin,
+             best["tx_mm"], best["ty_mm"], best["heading_deg"], best["mirror"]), flush=True)
+    return jsonify(out)
 
 
 load_map(force=True)
