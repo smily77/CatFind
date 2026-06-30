@@ -54,7 +54,16 @@ void setup() {
   initText2Udp();
   setUpOTA();
   setUpTime();
-  loadPose(myPose);   // NVS-Pose laden (validWorldPose bleibt false bis Co-Observation bestaetigt)
+  // NVS-Pose laden. Das Radar wird im Normalfall NICHT bewegt (Aus/Ein), darum wird
+  // einer vorhandenen gespeicherten Pose direkt vertraut (validWorldPose=true) statt jedes
+  // Mal neu zu kalibrieren. Der Health-Check (coObserveCheck) verwirft sie automatisch,
+  // sobald ein welt-posierter Sensor mitbeobachtet und zeigt, dass sie nicht mehr stimmt;
+  // danach greift der Auto-Trigger und kalibriert neu. Ohne gespeicherte Pose bleibt es false.
+  if (loadPose(myPose)) {
+    myPose.validWorldPose = true;
+    sendUdpTextln("Pose aus NVS uebernommen (x=" + String(myPose.worldX) +
+                  " y=" + String(myPose.worldY) + ") - Health-Check prueft");
+  }
   Serial2.begin(S2_baud,SERIAL_8N1,S2_RX,S2_TX);
   timer = millis();  //heardBeat
 }

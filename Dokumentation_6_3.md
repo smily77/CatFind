@@ -357,8 +357,16 @@ zusammenarbeiten können:
 - Jedes Gerät besitzt eine **Welt-Pose** (`worldPose myPose` in `xComDef6_3.h`):
   Ursprung `worldX/worldY` (mm) + `heading` (PA-Einheiten 0..4096, 0 =
   welt-ausgerichtet) + `mirror` (Drehsinn ±1, von `localToWorld`/`worldToLocal`
-  berücksichtigt) + Flag `validWorldPose`. Letzteres ist nach Boot **immer
-  `false`**, bis eine Positionsbestimmung/Quickcheck es bestätigt.
+  berücksichtigt) + Flag `validWorldPose`. Letzteres ist nach Boot grundsätzlich
+  **`false`**, bis eine Positionsbestimmung/Quickcheck es bestätigt: `loadPose()`
+  lädt nur die Koordinaten, lässt `validWorldPose` aber auf `false`. **Ausnahme:**
+  ein Sensor, der sich **nicht selbst lokalisieren** kann (Radar), aber im Normalfall
+  **nicht bewegt** wird, vertraut beim Boot seiner gespeicherten NVS-Pose direkt
+  (setzt `validWorldPose=true`), statt jedes Mal eine Kalibrierung zu verlangen.
+  Sein „Quickcheck" ist dann der laufende **Health-Check** (siehe Kap. 5.2 und
+  GesamtKonzeptCatFinder.md): ein mitbeobachtender welt-posierter Sensor deckt eine
+  inzwischen falsche Pose auf und verwirft sie. Der Lidar dagegen verifiziert bei jedem
+  Boot per VPS und braucht diese Vertrauensregel nicht.
 - Ein Sensor mit `validWorldPose` sendet in `posPayload` zusätzlich
   `worldX/worldY` und setzt `worldValid=1`. Ohne valide Pose bleibt
   `worldValid=0` (und `worldX/worldY=0`).
@@ -486,6 +494,26 @@ Jedes Programm folgt demselben Grundgerüst:
 - Heartbeat: `radarHbPayload` mit der eigenen Totzone — die Empfänger wissen
   damit, in welchem Nahbereich dieser Sensor blind ist.
 - LED: grüner Blitz bei HB, blaue LED solange ein gültiges Target da ist.
+
+**Welt-Pose per Co-Observation (Radar kann sich nicht selbst lokalisieren).** Da das
+Radar keine eigene Lokalisierung hat, erhält es seine Welt-Pose, indem es **gleichzeitig
+mit einem welt-posierten Lidar dieselbe laufende Person** beobachtet; der VPS registriert
+beide Bahnen und liefert die Transformation (Details: GesamtKonzeptCatFinder.md, Aufgabe
+„Welt-Pose per Co-Observation kalibrieren"). Im Sketch:
+
+- **Auslösung dreifach:** per **Knopf** (`cmdCalibrate` vom Touch-Remote, Kap. 5.11),
+  **automatisch** bei anhaltender Co-Observation ohne gültige Pose, oder als
+  **Re-Kalibrierung** nach erkanntem Pose-Drift.
+- **Boot-Verhalten:** vorhandene NVS-Pose wird **direkt vertraut** (`validWorldPose=true`) —
+  das Radar wird im Normalfall nicht bewegt (siehe Kap. 4.1). Kein gespeicherter Wert →
+  `false`, dann startet Auto/Knopf eine Kalibrierung.
+- **Health-Check:** trifft eine welt-valide `catObserved` eines anderen Sensors ein und hat
+  das Radar gerade ein eigenes Ziel, vergleicht es dessen (per `localToWorld` in die Welt
+  gerechnete) Position mit dem gemeldeten Welt-Punkt. Anhaltendes Residuum zwischen Gate
+  (~0,6 m) und Assoziationsgrenze (~1,5 m) ⇒ Pose driftet ⇒ `validWorldPose=false`. Größere
+  Abweichungen gelten als „anderes Ziel" und werden ignoriert (dann hilft der Knopf).
+- **Nach Kalibrierung:** eigene `catObserved` tragen zusätzlich `worldX/worldY`
+  (`worldValid=1`) via `localToWorld`.
 
 ### 5.3 LD06_6_3_0 — Lidar-Sensor
 
