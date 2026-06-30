@@ -34,6 +34,7 @@
 #define groupNone  0
 #define groupPA2   1   // PA2i + CompactDome + LD06
 #define groupPA1_1 2   // PA1_1 + MiniDome
+#define testGroup  3   // zum Testen
 
 struct stationDefinitions {
   byte   type;
@@ -73,7 +74,7 @@ struct stationDefinitions {
 //  {MananagementDevice,180,0x01},
 stationDefinitions device[18] = {
   {MananagementDevice,180,0x01,groupNone, "Manager_Dev"},  //Manager
-  {HLK,0,0,groupNone,  "Dome"},                            //Dome
+  {HLK,0,0,testGroup,  "Dome"},                            //Dome
   {HLK,0,0,groupPA1_1, "Mini_Dome"},                       //MiniDome  -> Gruppe PA1_1
   {HLK,0,0,groupPA2,   "Compact_Dome"},                    //CompactDome - auf PA M5PicoDome -> Gruppe PA2
   {PowerActor,181,0x02,groupPA2, "PowerActor1"},           //PA1 (PA2i) -> Gruppe PA2
