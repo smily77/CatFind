@@ -258,6 +258,13 @@ lokalisierenden Sensor zur Verfügung.
   **und** `inlier_ratio ≥ CALIB_MIN_INLIER`, dann `savePose` + `validWorldPose=true` + kurzer
   Status-Multicast. Danach füllt das Gerät bei eigenen Detektionen `worldX/worldY`
   (`worldValid=1`) via `fillWorld`/`localToWorld`.
+- **Boot vertraut der NVS-Pose (Radar-Ausnahme zur „false nach Boot"-Regel):** Da das Radar
+  sich nicht selbst lokalisieren kann, aber im Normalfall nicht bewegt wird, setzt es beim Boot
+  bei vorhandener gespeicherter Pose direkt `validWorldPose=true` (statt jedes Mal neu zu
+  kalibrieren). Der Health-Check ist sein „Quickcheck": ein mitbeobachtender welt-posierter
+  Sensor verwirft eine inzwischen falsche Pose; danach greift der Auto-Trigger. Erkannt wird
+  Drift im Bereich zwischen Gate (~0,6 m) und Assoziationsgrenze (~1,5 m) — größere Abweichungen
+  gelten als „anderes Ziel" und brauchen eine manuelle Neukalibrierung per Knopf.
 - **Gemeinsame Prozeduren in `xComProc6_3.h`:** `coCalState`, `coCalibBegin/FeedLocal/
   FeedWorld/Elapsed/Finish`, `vpsCalibrate` (unter `USE_VPS_CALIBRATE`), `fillWorld`,
   `coHealth`/`coObserveCheck`.
