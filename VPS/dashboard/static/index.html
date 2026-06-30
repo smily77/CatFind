@@ -105,7 +105,7 @@ function drawCurrent(){
   if(view==="world") drawMap(events.filter(e=>e.wv===1).map(e=>({x:e.wx/1000, y:e.wy/1000, s:e.sender, sub:e.sensor})), mapPoints, "Welt-Koordinaten [m]");
   else if(view[0]==="g"){ const g=+view[1];
     drawMap(events.filter(e=>e.group===g).map(e=>({x:e.x/1000, y:e.y/1000, s:e.sender, sub:e.sensor})), null,
-            `relative Koordinaten Gruppe ${g} [m]` + (g===3?" (noch keine Gruppe 3)":"")); }
+            `relative Koordinaten Gruppe ${g} [m]` + (g===3?" (Testgruppe)":"")); }
 }
 
 function drawMap(pts, bg, title){
