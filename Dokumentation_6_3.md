@@ -179,7 +179,7 @@ wenn `worldValid==1`:
 
 **settingsPayload** (6 Bytes) — Einstellungen & Aktionen eines Geräts (Antwort auf
 `settingsRequest`). Bit-Indizes: `stgHbLed(0)`, `stgCatLed(1)`, `stgAutoCopyPose(2)`,
-`stgAutoCalib(3)`, `stgLidarMotor(4)`; Aktionen `actCopyPose(0)`, `actCalibrate(1)`:
+`stgAutoCalib(3)`, `stgLidarMotor(4)`; Aktionen `actCopyPose(0)`, `actCalibrate(1)`, `actClearPose(2)`:
 
 | Feld | Typ | Bedeutung |
 |---|---|---|
@@ -542,7 +542,8 @@ beide Bahnen und liefert die Transformation (Details: GesamtKonzeptCatFinder.md,
 - **Nach Kalibrierung:** eigene `catObserved` tragen zusätzlich `worldX/worldY`
   (`worldValid=1`) via `localToWorld`.
 - **Einstellungen (Kap. 5.12):** HB-/Target-Anzeige schaltbar, Auto-Kalibrierung und
-  Auto-Pose-Übernahme schaltbar (NVS); Aktionen „Kalibrieren" und „Pose kopieren".
+  Auto-Pose-Übernahme schaltbar (NVS); Aktionen „Kalibrieren", „Pose kopieren" und
+  „Pose löschen" (`cmdClearPose`, verwirft die gespeicherte Welt-Pose, siehe 5.11).
 
 ### 5.3 LD06_6_3_0 — Lidar-Sensor
 
@@ -772,7 +773,7 @@ aller aktiven Geräte per Touch bedienen lassen (siehe GesamtKonzeptCatFinder.md
   `STG_SUPPORTED`/`STG_DEFAULT`/`STG_PERSIST`/`STG_ACTIONS` fest. `initSettings()` lädt die
   persistierten Bits aus dem NVS-Namespace `"devcfg"`; nicht persistierte Bits (Lidar-Motor)
   starten auf Default. Setting-Indizes `stgHbLed/stgCatLed/stgAutoCopyPose/stgAutoCalib/
-  stgLidarMotor`, Aktionen `actCopyPose/actCalibrate`.
+  stgLidarMotor`, Aktionen `actCopyPose/actCalibrate/actClearPose`.
 - **Seite 1 (Geräteauswahl):** listet die Geräte, die per `settingsReport` ihre
   Fähigkeiten gemeldet haben (Broadcast `settingsRequest` beim Start und periodisch). Touch
   wählt ein Gerät → Seite 2.
