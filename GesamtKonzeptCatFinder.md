@@ -310,6 +310,9 @@ Spezialfall Manger:
 Spezialfall Radar:
 1. Automatische Kalibrierung: Ein/-Ausschaltbar - Zustand im NVS gespeichert
 
+SpezialFall Lidar
+1. Motor des Lidars ein und ausschalten: ein/ausschaltbar - default (also immer beim Booten) eingeschaltet
+
 #### Auslösbare Funktionalitäten
 1. WorldPose von einem anderen Gerät mit gültiger WorldPose im selben relativen Koordinatensystem kopieren
 
