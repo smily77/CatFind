@@ -1,6 +1,6 @@
 # CatFind 6.3 — Systembeschreibung
 
-Stand: 2026-06-12 · gilt für die 6_3-Programmversionen (Protokoll 0x63)
+Stand: 2026-07-01 · gilt für die 6_3-Programmversionen (Protokoll 0x63)
 
 CatFind ist ein verteiltes System aus ESP32-Geräten, das eine Katze auf dem
 Rasen erkennt, ihre Position bestimmt und sie mit einem gezielten Wasserstrahl
@@ -12,42 +12,64 @@ selbstdefinierten UDP-Protokoll (fixer Header + variabler Payload).
 ## 1. Überblick: Wer macht was
 
 ```
-                    ┌──────────────────────── WLAN (192.168.0.x) ────────────────────────┐
-                    │            UDP-Multicast 239.0.0.57:8266  ("alle hören mit")       │
-                    │            UDP-Unicast  Port 23456        ("gezielt an ein Gerät") │
-                    └─────────────────────────────────────────────────────────────────────┘
-                         ▲              ▲               ▲              ▲             ▲
-   Sensoren              │              │               │              │             │
-  ┌──────────────┐  catObserved   ┌───────────┐   commandMsg     ┌──────────┐   HB  ┌──────────┐
-  │ Radar (Dome/ │ ─────────────► │ PowerActor│ ◄─────────────── │ Display  │ ◄──── │ Manager  │
-  │ MiniDome/    │   (Broadcast)  │  PA2i     │  (Unicast:       │ Udisp    │       │ (Status- │
-  │ CompactDome) │                │ Servo +   │   Limits setzen, │ (Karte,  │       │  lampe,  │
-  └──────────────┘                │ Ventil +  │   armFire)       │  Menü)   │       │  Log)    │
-  ┌──────────────┐  catObserved   │ Laser-    │                  └──────────┘       └──────────┘
-  │ Lidar LD06   │ ─────────────► │ Distanz   │ ◄─────────────── ┌──────────┐
-  └──────────────┘                └───────────┘    cmdArmFire    │ Button   │
-  ┌──────────────┐                      │          (Unicast)     │ (Scharf- │
-  │ Simulator    │ ◄── zeichnet auf ────┘                        │ schalten)│
-  │ (Cardputer)  │ ──── spielt ab ──► catObserved (Broadcast)    └──────────┘
-  └──────────────┘
+  ┌─ Sensoren ──────────────┐        ┌─ Aktoren (Wasserwerfer) ─┐
+  │ Radar Dome/Mini/Compact │        │ PA2i  (SMS-Servo)        │
+  │ Lidar LD06              │        │ PA1_1 (Schrittmotor)     │
+  │ Lidar C1  (welt-fähig)  │        └───────────▲──────────────┘
+  │ Simulator (Replay)      │                    │ commandMsg (Unicast)
+  └───────────┬─────────────┘                    │
+              │ catObserved (+Welt-Koord.)        │
+  ════════════▼═══════════════════════════════════╪═══════════════  UDP-Bus (WLAN 192.168.0.x)
+    Multicast 239.0.0.57:8266  ·  Unicast :23456  ·  Text :8300
+  ════════════▲═══════════════════▲═══════════════╪═══════════════
+              │ HB / Status        │ settingsReport │ HB
+  ┌───────────┴──┐  ┌──────────────┴─────┐  ┌───────┴────────────────┐
+  │ Display Udisp│  │ Bedien-Display     │  │ Button / Touch-Remote  │
+  │ (Karte/Menü) │  │  Einstellungen +   │  │ (scharf / kalibrieren) │
+  │ LaserMarker  │  │  Steuerung         │  └────────────────────────┘
+  └──────────────┘  └────────────────────┘
+              │
+  ┌───────────┴─────────────┐            ┌──── VPS (Docker, außerhalb LAN) ────┐
+  │ Manager                 │  HTTP      │ Localizer :8080/localize            │
+  │  Statuslampe, Log,      │═══/ingest═►│   (360-Bin-Scan → Welt-Pose)        │
+  │  Karten-Server,         │◄═/commands═│ Dashboard :80/                      │
+  │  VPS-Gateway            │            │   (Treffer-/Statusvisualisierung)   │
+  └─────────────────────────┘            └──────────────▲──────────────────────┘
+                                                        │ HTTP POST /localize
+              LidarC1 fragt beim Boot direkt ───────────┘ (eigene Welt-Pose)
 ```
+
+Nur der **Manager** (und der **LidarC1** für seine Boot-Lokalisierung) verlässt
+per HTTP das LAN Richtung **VPS**; alle CatFind-Geräte untereinander reden
+ausschließlich über den UDP-Bus.
 
 **Die Kette im Normalbetrieb:**
 
-1. Ein **Sensor** (Radar oder Lidar) erkennt ein Objekt auf dem Rasen und
-   broadcastet die Position als `catObserved`-Nachricht.
-2. Der **PowerActor (PA2i)** empfängt die Position, richtet seinen Servo auf
-   das Ziel, verifiziert die Distanz mit dem Laser-Distanzmesser und löst —
-   wenn scharfgeschaltet und das Ziel innerhalb der Limits liegt — das
-   Wasserventil aus. (Die Schiesslogik ist in 6_3 noch auskommentiert /
-   in Arbeit, siehe REVIEW_6_3.md im PA2i-Ordner.)
+1. Ein **Sensor** (Radar, LD06 oder welt-fähiger LidarC1) erkennt ein Objekt auf
+   dem Rasen und broadcastet die Position als `catObserved` — relativ, und falls
+   der Sensor eine gültige Welt-Pose hat (`validWorldPose`) zusätzlich in
+   **Welt-Koordinaten** (`worldValid=1`, Kap. 4.1).
+2. Ein **PowerActor** (PA2i mit SMS-Servo oder PA1_1 mit Schrittmotor) empfängt
+   die Position, richtet seinen Werfer auf das Ziel, verifiziert die Distanz mit
+   dem Laser-Distanzmesser und löst — wenn scharfgeschaltet und das Ziel
+   innerhalb der Limits liegt — das Wasserventil aus. Eine Meldung wird verwendet,
+   wenn sie Welt-Koordinaten trägt **und** der Aktor selbst welt-posiert ist, oder
+   wenn sie aus seiner eigenen Koordinatengruppe stammt (Kap. 4.1). (Die
+   Schiesslogik ist in 6_3 noch auskommentiert / in Arbeit, siehe REVIEW_6_3.md
+   im PA2i-Ordner.)
 3. **Display**, **Manager** und **Simulator** hören denselben Broadcast mit:
    das Display zeichnet die Position auf eine Karte, der Manager blinkt blau,
    der Simulator kann die Szene auf SD aufzeichnen.
-4. Der **Button** schaltet den PowerActor per Unicast-Kommando scharf/unscharf;
+4. Der **Button** schaltet einen PowerActor per Unicast-Kommando scharf/unscharf;
    der aktuelle Zustand kommt als Heartbeat zurück und wird über die LED-Farbe
-   angezeigt.
-5. Alle Geräte senden periodisch einen **Heartbeat (HB)** — daraus lernen alle
+   angezeigt. Über das **Bedien-Display** bzw. den **Steuerungs-Tab des
+   VPS-Dashboards** lassen sich Anzeige-/Automatik-Settings und Aktionen jedes
+   Geräts schalten (Kap. 5.12).
+5. **Welt-Pose:** der LidarC1 lokalisiert sich beim Boot selbst über den **VPS**
+   (Scan → Pose), das Radar bekommt seine Pose per **Co-Observation** mit einem
+   welt-posierten Sensor (Kap. 4.1, 5.2). So arbeiten mehrere Aktoren in einem
+   gemeinsamen Welt-System zusammen.
+6. Alle Geräte senden periodisch einen **Heartbeat (HB)** — daraus lernen alle
    anderen automatisch die IP-Adressen (für Unicast) und sehen, wer lebt.
 
 ---
@@ -89,8 +111,9 @@ In `xComDef6_3.h` ist jedes Gerät mit einer festen ID (Array-Index) eingetragen
 - `group` ordnet jedes Gerät einer **relativen Koordinatengruppe** zu: ein Aktor
   und die fest mit ihm verbundenen Sensoren teilen dasselbe lokale
   Koordinatensystem. Definiert sind `groupNone (0)`, `groupPA2 (1)` =
-  {PA2i, CompactDome, LD06} und `groupPA1_1 (2)` = {PA1_1, MiniDome}; alle
-  übrigen Geräte sind `groupNone`. (Siehe Kap. 4.1.)
+  {PA2i, CompactDome, LD06}, `groupPA1_1 (2)` = {PA1_1, MiniDome} und
+  `testGroup (3)` (derzeit `Dome`, zum Testen); alle übrigen Geräte sind
+  `groupNone`. (Siehe Kap. 4.1.)
 
 ---
 
@@ -716,6 +739,23 @@ Text-Multicast (`LidarC1 loc=… x=… y=… h=… ns=…`).
 Einstellungen (Kap. 5.12): Detektions-Anzeige (catObserved) schaltbar und im NVS
 gespeichert; **Lidar-Motor** an/aus (`lidar.stop()`/`startScan()`), Default an und
 **nicht** persistiert — der Sensor bootet immer mit laufendem Motor.
+
+> **„Motor aus" = Sensor auf Idle.** Beim RPLidar C1 gibt es **keinen separaten
+> Motor-Pin/PWM**: Dreh-Motor und Messkern hängen gemeinsam am Scan/Stop-Kommando.
+> `lidar.stop()` sendet `RPLIDAR_CMD_STOP` (0x25), was den C1 **physisch herunterdreht
+> und gleichzeitig das Sampling stoppt** (verifiziert in der Library `Lidar/src/RPLidar.cpp`).
+> In der `loop()` greift bei Motor aus sofort `if (!motorRunning) return;`
+> (`C1Lidar6_3_0.ino`) — es werden keine Messungen verarbeitet, keine Detektion,
+> kein `catObserved` gesendet. Damit deckt „Motor aus" **beide** Zwecke ab:
+> Fehl-Ereignisse bei starker Sonneneinstrahlung unterbinden **und** die drehende
+> Mechanik schonen. Der Sensor bleibt im Netz präsent (Strom, WLAN, Heartbeat,
+> reagiert auf Settings), misst/detektiert aber nichts — echtes Idle.
+> Zu beachten: (1) **nicht persistiert** — nach Reboot/Stromausfall läuft der Motor
+> wieder; ein per Display/VPS gesetztes Idle muss danach erneut gesetzt werden.
+> (2) Beim Wiedereinschalten läuft **keine** Neu-Lokalisierung; die gecachte Welt-Pose
+> (NVS) wird weiterverwendet — nur korrekt, wenn der C1 in der Idle-Zeit **nicht bewegt**
+> wurde. (3) **Nicht schnell toggeln:** manche C1-Einheiten hängen bei „STOP/SCAN-Churn";
+> `startScan()` fängt das über einen RESET-Retry (mit `delay(2500)`) ab.
 
 > **VPS-Lokalisierungsdienst** (`VPS/localizer/`): Docker-Container mit einem
 > HTTP-Dienst, der den 360-Bin-Scan mit `Map/RasenKarte.csv` (direkt aus dem
