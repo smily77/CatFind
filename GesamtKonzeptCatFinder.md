@@ -282,3 +282,48 @@ Bewusst **nicht** umgesetzt / als Grenzen dokumentiert: Die DTW-Registrierung er
 der Bahn-Endpunkte — stark versetzte Start-/Endzeitpunkte der beiden Sensoren verschlechtern den
 Fit an den Rändern; eine gemeinsam und vollständig beobachtete, kurvige Bahn bleibt nötig. Die
 Health-Check-Assoziation ist best-effort (Distanz-Gate gegen „anderes Ziel").
+
+
+## Aufgabe: Einstellung und Steuerung der CatFinder Elemente
+
+### Grobkonzept
+Alle Sensoren, Aktoren und zum Teil weitere Elemente führen aut. Aufgaben aus, senden einen HB oder führen Funktionen aus. Viele davon haben LED Pixel oder Anzeigen um ein visuelles Feedback zu geben. Diese Anzeigen sollen eigestellt werden können, so wie ebenso gewisse automatische Aufgaben (z.B. automatische Kalibration eines Radarsensors) und Funktion sollen ausgelöst werden können wie z.B. die Kalibration eines Radarsensors. Die Einstellungen sollen entweder im nicht flüchtigen Speicher (NVS) abgelegt werden oder einen Default-Wert für den start haben. Die Variablen für die Einstellungen werden in der entsprechenden hwDef.h des Elements (Sensor, Aktor,...) festgelegt. 
+Die Bedienung der Einstellungen und Auslösung von Aktionen soll über den Touchscreen eines Displays oder den Webserver des VPS erfolgen. 
+
+### Details - Geräteanzeige
+
+#### Standardanzeige
+Im Standardfall haben Elemente 4 Anzeige Ereignisse, die sie mit den LED-Pixel anzeigen (kann variieren je nach Elementtyp):
+Anzeige-Ereignisse (Tabelle bezieht sich nur auf die Anzeige)
+1. Initialisierung, stand des Boot und Initialisierung Vorganges: Immer eingeschalten
+2. HB: Ein/-Ausschaltbar - Zustand im NVS gespeichert
+3. CatObserved Ereignis: Ein/-Ausschaltbar - Zustand im NVS gespeichert  
+4. Kalibrierung, OTA, usw. :  Immer eingeschalten
+
+Spezialfall Manger:
+1. HB Empfangen: Ein/-Ausschaltbar - Zustand im NVS gespeichert
+2. CatObserved Empfangen: Ein/-Ausschaltbar - Zustand im NVS gespeichert
+
+#### automatische Aufgaben
+1. Automatische Übernahme/Kopieren der WorldPose, wenn ein anders Gerät im selben relativen Koordinatensystem eine gültige WorldPose hat:  Ein/-Ausschaltbar - Zustand im NVS gespeichert
+
+Spezialfall Radar:
+1. Automatische Kalibrierung: Ein/-Ausschaltbar - Zustand im NVS gespeichert
+
+#### Auslösbare Funktionalitäten
+1. WorldPose von einem anderen Gerät mit gültiger WorldPose im selben relativen Koordinatensystem kopieren
+
+Spezialfall Radar:
+1. Kalibrierung durchführen: Kann ausgelöst werden
+
+### Details Steuerung und Anzeige
+
+#### Displays 
+Die Funktionen sollen über den Touchscreen der Displays bedient werden können. Auf einer Seite soll das Gerät (Aktive geräte) ausgewählt werden können und dann sollen die anwählbare Dinge dargestellt und bedient werden können. Das ganze muss autoskaliert werden, da nicht alle Displays die selbe Auflösung haben. Kopiere den Display Prototypen vollständig in ein Verzeichnis Bedienung_Einstellungen in dieser Kopie kannst du die nicht benötigten Funktionen des Hauptprogrammes löschen und durch die hierfür notwendigen ersetzen. Wichtig basierend auf dem vollständigen Prototyp - keine abgespeckte version und dass man wie gewohnt vor dem kompilieren das Display über #define auswählen kann
+
+#### VPS - Webpage 
+Der Webserver des VPS soll eine zusätzliche Seite (auswählbar wie die unterschiedlichen Karten) erhalten, auf der man alle einstellbaren Funktionen und Aktionen der aktiven Geräte einstellen resp. auslösen kann
+  
+
+
+
