@@ -16,9 +16,9 @@
 //  (gfx.getTouch); Ziel-IPs werden wie ueblich per HB gelernt.
 // =====================================================================
 //#define CYD28
-#define CYD35
+//#define CYD35
 //#define Sunton7
-//#define Sunton5
+#define Sunton5
 //#define M5Core2
 //#define M5Tab5
 //#define Wave7

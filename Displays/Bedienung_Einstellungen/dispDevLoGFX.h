@@ -18,13 +18,13 @@ LGFX gfx;
 
 LGFX gfx;
 #elif defined(Sunton5) //----------------------------------------------------------------------------------
-#include "M5_8EN.h"
+// Bedienung_Einstellungen ist ein Touch-Bediengeraet -> der 8-Encoder des Prototyps
+// (M5_8EN) wird NICHT gebraucht und daher hier nicht eingebunden.
 #include <LXFX_Sunton_ESP32-8048S050.h>
 
 LGFX gfx;
 
 #elif defined(M5Core2) //----------------------------------------------------------------
-  #include "UNIT_8ENCODER.h"
   #include <M5Unified.h>
   auto& gfx = M5.Display;
   
