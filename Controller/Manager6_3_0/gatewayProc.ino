@@ -66,6 +66,14 @@ void gwAddHb(uint8_t sender, uint8_t ip) {
 
 void gwFlush() {
   if (WiFi.status() != WL_CONNECTED) { gwEventN = gwDebugN = gwHbN = 0; return; }
+  // Eigene Einstellungen des Managers stets aktuell mitfuehren (er sendet sich selbst kein
+  // settingsReport per Multicast) -> so erscheint auch der Manager auf der VPS-Steuerseite.
+  {
+    int slot = -1;
+    for (int i = 0; i < GW_MAX_SETTINGS; i++) if (gwSet[i].used && gwSet[i].sender == ID) { slot = i; break; }
+    if (slot < 0) for (int i = 0; i < GW_MAX_SETTINGS; i++) if (!gwSet[i].used) { gwSet[i].used = true; gwSet[i].sender = ID; slot = i; break; }
+    if (slot >= 0) { gwSet[slot].sup = mySettings.supported; gwSet[slot].val = mySettings.values; gwSet[slot].act = mySettings.actions; }
+  }
   if (gwEventN == 0 && gwDebugN == 0 && gwHbN == 0 && !gwSettingsDirty) return;
   gwSettingsDirty = false;
 
