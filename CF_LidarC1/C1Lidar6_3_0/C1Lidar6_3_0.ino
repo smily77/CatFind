@@ -46,6 +46,7 @@ int           lastDirDeg     = -1;
 uint8_t       lastHue        = 0;
 bool          noShotOK       = false;
 unsigned long lastHBms       = 0;
+unsigned long hbBlinkUntil   = 0;   // bis wann der gruene HB-Blitz leuchtet (0 = aus)
 
 #define USE_VPS_LOCALIZE             // aktiviert vpsLocalize() (zieht HTTPClient) in xComProc
 #include <xComProc6_3.h>
@@ -63,6 +64,7 @@ void sendHB() {
   hbPayload hb; hb.ip = getLastIpByte(); hb.HBperiode = periodeForHB;
   broadcastMsg(HB, hb);
   lastHBms = millis();
+  if (settingOn(stgHbLed)) hbBlinkUntil = millis() + HB_BLINK_MS;   // gruener HB-Blitz (nur PH_ACTIVE)
 }
 
 void setup() {
@@ -98,6 +100,8 @@ void loop() {
   // (cmdSetSetting per Unicast, settingsRequest/poseRequest per Multicast).
   if (ucDataReceived) { xMsg um = lastUcMsg; ucDataReceived = false; handleCommonMsg(um); }
   if (mcDataReceived) { xMsg cm = lastMcMsg; mcDataReceived = false; handleCommonMsg(cm); }
+
+  updateLeds();                      // HB-Blitz (gruen) / Detektions-LEDs (nur PH_ACTIVE)
 
   // Motor an/aus (Lidar-Spezial-Setting): stop()/startScan() beim Umschalten.
   static bool motorRunning = true;
@@ -159,8 +163,7 @@ void loop() {
         broadcastMsg(catObserved, pos);
       }
     }
-    updateDetectLeds();
-    flaggedThisScan = 0; sumLx = sumLy = sumCos = sumSin = 0;
+    flaggedThisScan = 0; sumLx = sumLy = sumCos = sumSin = 0;   // LEDs: updateLeds() in loop()
   }
 
   if (!valid || m.distance < NEAR_LIMIT_MM) return;

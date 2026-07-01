@@ -12,6 +12,7 @@ byte ID = Manager;
 #endif
 
 unsigned long timer;
+unsigned long hbTimer = 0;
 bool blinkOn = false;
 bool targetAlarm = false;
 
@@ -81,6 +82,15 @@ void setup() {
 
 void loop() {
   ArduinoOTA.handle();
+  // Eigener HB: der Manager annonciert sich wie jedes andere Geraet (Lebenszeichen). Damit
+  // erscheint er in der HB-/Aktiv-Liste und auf der VPS-Steuerseite (nur aktive Geraete).
+  // gwAddHb direkt, damit der VPS ihn auch ohne Multicast-Loopback als aktiv sieht.
+  if (millis() - hbTimer >= periodeForHB) {
+    hbPayload hb; hb.ip = getLastIpByte(); hb.HBperiode = periodeForHB;
+    broadcastMsg(HB, hb);
+    gwAddHb(ID, hb.ip);
+    hbTimer = millis();
+  }
   if (udpTextReceived) {
     udpTextReceived = false;
     Serial.print("received:" );
