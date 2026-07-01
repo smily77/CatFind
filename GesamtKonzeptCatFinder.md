@@ -326,6 +326,54 @@ Die Funktionen sollen über den Touchscreen der Displays bedient werden können.
 
 #### VPS - Webpage 
 Der Webserver des VPS soll eine zusätzliche Seite (auswählbar wie die unterschiedlichen Karten) erhalten, auf der man alle einstellbaren Funktionen und Aktionen der aktiven Geräte einstellen resp. auslösen kann
+
+### Umsetzung, konkretisiert — Stand 6_3
+
+Umgesetzt in den gemeinsamen Dateien (`xComDef6_3.h`/`xComProc6_3.h`), in den Geräten
+Radar/Lidar/Manager, im neuen Touch-Bediendisplay `Displays/Bedienung_Einstellungen/`
+und im VPS-Dashboard (`VPS/dashboard/`).
+
+- **Generisches Einstellungs-/Aktions-Modell (entschieden):** Jedes Gerät führt eine
+  Bitmaske `mySettings` (`deviceSettings` in `xComDef`): `supported` (welche Settings es
+  hat), `values` (aktueller on/off-Zustand) und `actions` (auslösbare Aktionen). WELCHE Bits
+  ein Gerät führt, legt seine `hwDef.h` über die Masken `STG_SUPPORTED`/`STG_DEFAULT`/
+  `STG_PERSIST`/`STG_ACTIONS` fest — so bleiben die Variablen der Einstellungen wie gefordert
+  in der `hwDef.h` des jeweiligen Elements. Setting-Indizes: `stgHbLed`, `stgCatLed`,
+  `stgAutoCopyPose`, `stgAutoCalib`, `stgLidarMotor`; Aktionen: `actCopyPose`, `actCalibrate`.
+- **Persistenz vs. Default:** `initSettings()` (in `xComProc`) lädt die persistierten Bits
+  aus dem NVS-Namespace `"devcfg"` und überlagert damit `STG_DEFAULT`; nicht persistierte
+  Bits (Lidar-Motor) starten immer auf ihrem Default (an). `saveSettings()` schreibt nur die
+  `STG_PERSIST`-Bits.
+- **Protokoll:** neue msgCodes `settingsRequest(11)` (ohne Payload — „melde deine
+  Einstellungen") und `settingsReport(12)` mit `settingsPayload{supported,values,actions}`.
+  Neue cmd-Codes `cmdSetSetting(20)` (`info=(idx<<1)|value`) und `cmdCopyPose(21)`. Die
+  Kalibrier-Auslösung nutzt das vorhandene `cmdCalibrate(18)`. Gemeinsame Prozeduren in
+  `xComProc`: `handleCommonMsg()` (beantwortet `settingsRequest`/`poseRequest`, führt
+  `cmdSetSetting` aus + sendet `settingsReport`), `sendSettingsReport()`, `sendPoseReport()`,
+  `copyPoseFromGroup()`.
+- **Anzeige-Settings betreffen nur die LED/Anzeige, nicht die Funktion:** HB-/catObserved-
+  Anzeige werden per `settingOn(...)` vor dem Setzen der Pixel geprüft (Radar/Lidar/Manager);
+  Broadcasts/Detektion laufen unverändert weiter. Beim Manager sind es die EMPFANGS-Anzeigen.
+- **Automatik/Aktionen:** Radar prüft `stgAutoCalib` vor dem Auto-Trigger und `stgAutoCopyPose`
+  für periodische Gruppen-Pose-Übernahme; Aktion „Kalibrieren" = `cmdCalibrate`, „Pose
+  kopieren" = `cmdCopyPose` → `copyPoseFromGroup()`. Lidar: `stgLidarMotor` schaltet den Scan
+  (`lidar.stop()`/`startScan()`). „Pose kopieren" (`actCopyPose`) nutzt, dass Geräte derselben
+  relativen Koordinatengruppe dieselbe Welt-Pose teilen (poseRequest/poseReport).
+- **Display (Touch):** `Displays/Bedienung_Einstellungen/` ist eine **vollständige Kopie des
+  Display-Prototyps** (`Udisp6_3_0`) — gleiche Display-Auswahl per `#define`
+  (CYD28/CYD35/Sunton7/Sunton5/M5Core2/M5Tab5/Wave7), gleiche LovyanGFX-Profile
+  (`dispDevLoGFX.h`) und Bildschirm-Definitionen (`dispDef.h`). Das Karten-/Menü-Betriebs-
+  programm wurde entfernt und durch eine **autoskalierte Touch-Bedienung** ersetzt: Seite 1
+  Geräteauswahl (Geräte, die `settingsReport` gemeldet haben), Seite 2 die Einstellungen als
+  AN/AUS-Schalter und die Aktionen als Buttons. Bedienung per `gfx.getTouch()`, Ziel-IPs aus
+  den HBs gelernt. Default-Build **CYD35** (per USB), OTA aktiv.
+- **VPS-Webinterface + Rückkanal (entschieden):** Das Dashboard erhält einen Tab
+  **„Steuerung"** (umschaltbar wie die Karten), der je aktivem Gerät die Settings-Schalter und
+  Aktions-Buttons zeigt. Da der VPS die 192.168.0.x-Geräte **nicht direkt** erreicht, wirkt der
+  **Manager als Gateway in beide Richtungen**: er reicht die `settingsReport` per `/ingest`
+  an den VPS weiter und **pollt** `GET /commands` (CSV „target,cmd,info"), um vom Webinterface
+  angeforderte Kommandos auf den lokalen Bus zu geben (`POST /command`). `target 255` =
+  Broadcast `settingsRequest` (alle Geräte melden sich).
   
 
 

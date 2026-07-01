@@ -74,6 +74,8 @@ void setup() {
   setUpOTA();
 //  setUpTime();
   ensureNoShotMap();
+  initSettings();                    // Anzeige-Settings (HB-/catObserved-Empfang) aus NVS
+  sendSettingsReport();              // eigene Einstellungen annoncieren
   Serial << "ready" << endl;
 }
 
@@ -90,7 +92,10 @@ void loop() {
     xMsg uc = lastUcMsg;
     uint8_t reqOctet = lastUcSenderOctet;
     ucDataReceived = false;
-    if (uc.header.msgCode == mapRequest) {
+    if (handleCommonMsg(uc)) {         // settingsRequest/cmdSetSetting (eigene Anzeige-Settings)
+      // erledigt
+    }
+    else if (uc.header.msgCode == mapRequest) {
       mapReqPayload req;
       if (getPayload(uc, req)) {
         Serial << "mapRequest type=" << req.mapType << " from ." << reqOctet << endl;
@@ -103,21 +108,30 @@ void loop() {
     xMsg mcMsg;
     mcMsg=lastMcMsg;
     printSensorData(mcMsg);
+    handleCommonMsg(mcMsg);            // settingsRequest/poseRequest generisch beantworten
 
     if (mcMsg.header.msgCode == HB) {
       hbPayload hb;
       if (getHbPayload(mcMsg, hb)) gwAddHb(mcMsg.header.sender, hb.ip);   // Gateway
-      allPixel(0x00FF00);
-      blinkOn = true;
-      timer = millis()+ HB_blinkPeriode;
+      if (settingOn(stgHbLed)) {                                         // HB-Empfang-Anzeige schaltbar
+        allPixel(0x00FF00);
+        blinkOn = true;
+        timer = millis()+ HB_blinkPeriode;
+      }
     }
     else if (mcMsg.header.msgCode == catObserved) {
       posPayload pos;
       if (getPayload(mcMsg, pos)) gwAddEvent(mcMsg.header.sender, pos);   // Gateway
-      allPixel(0x0000FF);
-      targetAlarm = true;
-      blinkOn = false;
-      timer = millis()+ Alarm_blinkPeriode;
+      if (settingOn(stgCatLed)) {                                        // catObserved-Empfang-Anzeige schaltbar
+        allPixel(0x0000FF);
+        targetAlarm = true;
+        blinkOn = false;
+        timer = millis()+ Alarm_blinkPeriode;
+      }
+    }
+    else if (mcMsg.header.msgCode == settingsReport) {
+      settingsPayload sp;
+      if (getPayload(mcMsg, sp)) gwAddSettings(mcMsg.header.sender, sp); // Gateway: an VPS weiterreichen
     }
     mcDataReceived = false;
   }

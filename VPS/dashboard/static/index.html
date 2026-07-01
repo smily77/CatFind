@@ -33,6 +33,14 @@
   #legend div { display:flex; align-items:center; gap:6px; }
   #legend i { width:10px; height:10px; border-radius:2px; display:inline-block; }
   .hint { color:#666; font-size:11px; padding:4px 12px; }
+  #ctrl { height:100%; overflow:auto; padding:10px 14px; }
+  .card { border:1px solid #333; border-radius:8px; padding:8px 10px; margin-bottom:10px; background:#16161b; }
+  .card h3 { margin:0 0 6px; font-size:14px; }
+  .srow { display:flex; align-items:center; gap:8px; margin:5px 0; }
+  .srow span { flex:1; font-size:13px; }
+  .sw { border:none; border-radius:6px; padding:5px 14px; cursor:pointer; color:#fff; font-size:13px; min-width:64px; }
+  .sw.on { background:#1f8a3b; } .sw.off { background:#7a2230; }
+  .act { border:none; border-radius:6px; padding:7px 14px; margin:5px 0; cursor:pointer; color:#fff; font-size:13px; background:#2d6cdf; width:100%; text-align:left; }
 </style>
 </head>
 <body>
@@ -43,6 +51,7 @@
   <button class="tab" data-v="g1">Gruppe 1</button>
   <button class="tab" data-v="g2">Gruppe 2</button>
   <button class="tab" data-v="g3">Gruppe 3</button>
+  <button class="tab" data-v="ctrl">Steuerung</button>
   <button id="reset">Karten zurücksetzen</button>
 </header>
 <div class="wrap">
@@ -58,26 +67,64 @@
   </div>
   <div class="main">
     <div id="list"></div>
+    <div id="ctrl" style="display:none"></div>
     <canvas id="cv" style="display:none"></canvas>
     <div id="legend" style="display:none"></div>
     <div class="hint" id="hint" style="display:none"></div>
   </div>
 </div>
 <script>
-let events=[], resetSeq=null, mapPoints=null, view="list";
+let events=[], resetSeq=null, mapPoints=null, view="list", lastSettings={};
 
 function colorFor(sender, sensor){ const h=(sender*53 + sensor*97)%360; return `hsl(${h},85%,55%)`; }
 function fmtTime(t){ return new Date(t*1000).toLocaleTimeString(); }
 
-document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{
-  view=b.dataset.v;
+// Einstellungen/Aktionen (Bit-Index = stg*/act* aus xComDef6_3.h)
+const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor"];
+const ACT=[{l:"Pose kopieren",cmd:21,info:0},{l:"Kalibrieren",cmd:18,info:45000}];
+const CMD_SET_SETTING=20;
+
+function setView(v,b){
+  view=v;
   document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active", x===b));
-  document.getElementById("list").style.display   = view==="list" ? "block":"none";
-  document.getElementById("cv").style.display     = view==="list" ? "none":"block";
-  document.getElementById("legend").style.display = view==="list" ? "none":"block";
-  document.getElementById("hint").style.display   = view==="list" ? "none":"block";
-  if(view!=="list") drawCurrent();
-});
+  const isList=v==="list", isCtrl=v==="ctrl", isMap=!isList&&!isCtrl;
+  document.getElementById("list").style.display   = isList?"block":"none";
+  document.getElementById("ctrl").style.display   = isCtrl?"block":"none";
+  document.getElementById("cv").style.display     = isMap?"block":"none";
+  document.getElementById("legend").style.display = isMap?"block":"none";
+  document.getElementById("hint").style.display   = isMap?"block":"none";
+  if(isMap) drawCurrent();
+  if(isCtrl){ renderCtrl(lastSettings); reqAll(); }
+}
+document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>setView(b.dataset.v,b));
+
+async function postCmd(target,cmd,info){
+  try{ await fetch("/command",{method:"POST",headers:{"Content-Type":"application/json"},
+       body:JSON.stringify({target,cmd,info})}); }catch(e){}
+}
+function toggle(id,idx,val){ postCmd(id,CMD_SET_SETTING,(idx<<1)|val); }
+function doAct(id,cmd,info){ postCmd(id,cmd,info); }
+function reqAll(){ postCmd(255,0,0); }   // Manager broadcastet settingsRequest an alle
+
+function renderCtrl(settings){
+  const el=document.getElementById("ctrl");
+  const ids=Object.keys(settings||{}).sort((a,b)=>a-b);
+  let h=`<div style="margin-bottom:8px"><button class="tab" onclick="reqAll()">Geräte aktualisieren</button></div>`;
+  if(!ids.length){ el.innerHTML=h+`<div class="hint">— keine steuerbaren Geräte gemeldet —</div>`; return; }
+  for(const id of ids){
+    const s=settings[id], sup=s.sup, val=s.val, act=s.act;
+    h+=`<div class="card"><h3>${s.name} <small style="color:#666">#${id}${s.ip?` .${s.ip}`:""} · ${Math.round(s.age)}s</small></h3>`;
+    for(let i=0;i<STG.length;i++) if(sup&(1<<i)){
+      const on=(val&(1<<i))!==0;
+      h+=`<div class="srow"><span>${STG[i]}</span><button class="sw ${on?'on':'off'}" onclick="toggle(${id},${i},${on?0:1})">${on?'AN':'AUS'}</button></div>`;
+    }
+    for(let i=0;i<ACT.length;i++) if(act&(1<<i))
+      h+=`<button class="act" onclick="doAct(${id},${ACT[i].cmd},${ACT[i].info})">▶ ${ACT[i].l}</button>`;
+    if(!s.ip) h+=`<div style="color:#c93;font-size:11px">IP noch unbekannt (Manager wartet auf HB)</div>`;
+    h+=`</div>`;
+  }
+  el.innerHTML=h;
+}
 document.getElementById("reset").onclick=async()=>{
   if(confirm("Alle eingetragenen catObserved löschen?")){ await fetch("/reset",{method:"POST"}); events=[]; drawCurrent(); }
 };
@@ -149,7 +196,9 @@ async function tick(){
   try{
     const st = await (await fetch("/state")).json();
     renderDebug(st.debug); renderDevices(st.devices, st.now);
+    lastSettings = st.settings || {};
     if(view==="list") renderList(st.summary);
+    if(view==="ctrl") renderCtrl(lastSettings);
     if(resetSeq===null) resetSeq=st.reset_seq;
     if(st.reset_seq!==resetSeq){ events=[]; resetSeq=st.reset_seq; }
     const ev = await (await fetch("/events?since="+events.length)).json();

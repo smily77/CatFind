@@ -6,7 +6,7 @@ void  heardBeat() {
     rhb.deadZoneDist = deadZone;
     broadcastMsg(HB, rhb);
     statusLightOn = true;
-    setPixel(minPix,0x00FF00);
+    if (settingOn(stgHbLed)) setPixel(minPix,0x00FF00);   // HB-Anzeige schaltbar
     timer = millis();
   }
   if (statusLightOn && ((timer + statusLightDuration) < millis())) {

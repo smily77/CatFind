@@ -17,7 +17,7 @@ void statusLeds() {
 
 // Detektions-LEDs: rot wenn aktuell ein Ziel im schiessbaren Bereich, Pixel 1 = Richtung.
 void updateDetectLeds() {
-  const bool det = (millis() - lastDetectMs) < DETECT_HOLD_MS;
+  const bool det = (millis() - lastDetectMs) < DETECT_HOLD_MS && settingOn(stgCatLed);  // Anzeige schaltbar
   if (det) { leds[0] = CRGB::Red; leds[1] = CHSV(lastHue, 255, 255); }
   else     { leds[0] = CRGB::Black; leds[1] = CRGB::Black; }
   FastLED.show();
@@ -98,5 +98,6 @@ void finishInit() {
   phase = myPose.validWorldPose ? PH_ACTIVE : PH_NOLOC;
   statusLeds();
   sendStatusText();
+  sendSettingsReport();              // Einstellungen erneut annoncieren (Display/VPS)
   Serial << "Phase 2: Ueberwachung aktiv." << endl;
 }

@@ -12,3 +12,11 @@ uint8_t BRIGHTNESS = 5;
 
 #define HB_blinkPeriode 1
 #define Alarm_blinkPeriode 500
+
+// --- Einstellungen & Steuerung (settingsPayload / xComProc initSettings) ---------------
+// Spezialfall Manager: Anzeige beim EMPFANG. HB-Empfang (gruen) und catObserved-Empfang
+// (blau) je ein-/ausschaltbar, im NVS gespeichert. Keine Automatik/Aktionen.
+#define STG_SUPPORTED ((1u<<stgHbLed)|(1u<<stgCatLed))
+#define STG_DEFAULT   STG_SUPPORTED
+#define STG_PERSIST   STG_SUPPORTED
+#define STG_ACTIONS   0u

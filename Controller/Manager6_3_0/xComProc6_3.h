@@ -27,6 +27,10 @@
 //void savePose(const worldPose &p)                              - Ist-Pose ins NVS schreiben
 //bool loadPose(worldPose &p)                                    - Ist-Pose aus NVS lesen (validWorldPose bleibt false)
 //void clearPose()                                               - gespeicherte Pose im NVS loeschen (erzwingt Neukalibrierung)
+//void initSettings() / saveSettings() / bool settingOn(idx)     - Geraete-Einstellungen (NVS "devcfg", STG_*-Masken aus hwDef)
+//void sendSettingsReport() / sendPoseReport()                   - eigene Einstellungen / Welt-Pose broadcasten
+//bool handleCommonMsg(const xMsg&)                              - settingsRequest/poseRequest/cmdSetSetting generisch behandeln
+//bool copyPoseFromGroup(waitMs)                                 - Welt-Pose eines Gruppenmitglieds uebernehmen (Aktion actCopyPose)
 //uint32_t crc32Bytes(const uint8_t* d, size_t n)                - CRC32 (zlib-kompatibel)
 //bool mapFileInfo(const char* path, uint16_t& v, uint32_t& crc, uint32_t& len)  - LittleFS-Karte: Version/CRC/Laenge
 //bool serveMap(uint8_t mapType, const char* path, uint8_t reqOctet)  - Karte gechunkt an Anforderer senden (Manager)
@@ -509,6 +513,135 @@ void clearPose() {
   posePrefs.begin("pose", false);
   posePrefs.clear();
   posePrefs.end();
+}
+
+//---------------------------------------------------------------------------------------
+// Geraete-Einstellungen & Steuerung (generisch). Ein Geraet meldet per settingsReport,
+// welche Anzeige-Settings/Aktionen es hat und wie sie eingestellt sind; ein Display oder
+// das VPS setzt sie per commandMsg/cmdSetSetting bzw. loest Aktionen per Kommando aus.
+// Welche Bits ein Geraet unterstuetzt, legt die hwDef ueber die STG_*-Masken fest:
+//   STG_SUPPORTED  vorhandene Settings (stg*-Bits)
+//   STG_DEFAULT    Boot-Zustand (nicht persistierte Bits nehmen immer diesen Wert)
+//   STG_PERSIST    welche Bits im NVS gespeichert/geladen werden
+//   STG_ACTIONS    ausloesbare Aktionen (act*-Bits)
+//---------------------------------------------------------------------------------------
+#ifndef STG_SUPPORTED
+#define STG_SUPPORTED 0u
+#endif
+#ifndef STG_DEFAULT
+#define STG_DEFAULT 0u
+#endif
+#ifndef STG_PERSIST
+#define STG_PERSIST 0u
+#endif
+#ifndef STG_ACTIONS
+#define STG_ACTIONS 0u
+#endif
+
+inline bool settingOn(uint8_t idx) { return (mySettings.values >> idx) & 1u; }
+
+void saveSettings() {
+  Preferences p; p.begin("devcfg", false);
+  p.putUShort("v", (uint16_t)(mySettings.values & (uint16_t)STG_PERSIST));
+  p.end();
+}
+
+// Beim Boot aufrufen: supported/actions aus der hwDef, values = Default mit den
+// persistierten Bits aus dem NVS ueberlagert. Nicht persistierte Bits (z.B. Lidar-Motor)
+// starten immer auf ihrem Default.
+void initSettings() {
+  mySettings.supported = (uint16_t)STG_SUPPORTED;
+  mySettings.actions   = (uint16_t)STG_ACTIONS;
+  Preferences p; p.begin("devcfg", true);
+  uint16_t saved = p.getUShort("v", (uint16_t)STG_DEFAULT);
+  p.end();
+  uint16_t v = ((uint16_t)STG_DEFAULT & ~(uint16_t)STG_PERSIST) | (saved & (uint16_t)STG_PERSIST);
+  mySettings.values = v & (uint16_t)STG_SUPPORTED;
+}
+
+// Aktuellen Einstellungszustand als settingsReport broadcasten -> Display + Manager-Gateway
+// (und darueber der VPS) lernen ihn.
+void sendSettingsReport() {
+  settingsPayload sp;
+  sp.supported = mySettings.supported;
+  sp.values    = mySettings.values;
+  sp.actions   = mySettings.actions;
+  broadcastMsg(settingsReport, sp);
+}
+
+// Eigene Welt-Pose als poseReport broadcasten (Antwort auf poseRequest / Annonce).
+void sendPoseReport() {
+  worldPosePayload wp;
+  wp.validWorldPose = myPose.validWorldPose ? 1 : 0;
+  wp.worldX = myPose.worldX; wp.worldY = myPose.worldY;
+  wp.heading = myPose.heading; wp.mirror = myPose.mirror;
+  broadcastMsg(poseReport, wp);
+}
+
+// Gemeinsame Nachrichten generisch behandeln (aus loop() VOR der geraetespezifischen
+// Auswertung aufrufen). true = war eine gemeinsame Nachricht (settingsRequest/poseRequest/
+// cmdSetSetting) und wurde erledigt -> der Sketch muss sie nicht mehr behandeln.
+bool handleCommonMsg(const xMsg& m) {
+  switch (m.header.msgCode) {
+    case settingsRequest:
+      if (mySettings.supported || mySettings.actions) sendSettingsReport();
+      return true;
+    case poseRequest:
+      sendPoseReport();
+      return true;
+    case commandMsg: {
+      cmdPayload c;
+      if (!getPayload(m, c)) return false;
+      if (c.cmd == cmdSetSetting) {
+        uint8_t idx = (uint8_t)((uint32_t)c.info >> 1);
+        bool    on  = (uint32_t)c.info & 1u;
+        if (idx < 16 && ((mySettings.supported >> idx) & 1u)) {
+          if (on) mySettings.values |= (uint16_t)(1u << idx);
+          else    mySettings.values &= (uint16_t)~(1u << idx);
+          saveSettings();
+          sendSettingsReport();
+        }
+        return true;
+      }
+      return false;   // andere Kommandos sind geraetespezifisch
+    }
+    default:
+      return false;
+  }
+}
+
+//---------------------------------------------------------------------------------------
+// Welt-Pose aus der eigenen relativen Koordinatengruppe uebernehmen. Geraete derselben
+// Gruppe teilen dasselbe lokale Koordinatensystem -> dieselbe Welt-Pose gilt fuer alle.
+// Fragt per poseRequest (Broadcast) und wartet kurz auf ein poseReport eines
+// Gruppenmitglieds (gleiche group) mit validWorldPose. true = Pose uebernommen+gespeichert.
+//---------------------------------------------------------------------------------------
+bool copyPoseFromGroup(unsigned long waitMs) {
+  uint8_t myGroup = device[ID].group;
+  if (myGroup == groupNone) { sendUdpTextln("Pose kopieren: keine Gruppe"); return false; }
+  broadcastMsg(poseRequest);
+  unsigned long t0 = millis();
+  while (millis() - t0 < waitMs) {
+    ArduinoOTA.handle();
+    if (mcDataReceived) {
+      xMsg m = lastMcMsg; mcDataReceived = false;
+      if (m.header.msgCode == poseReport && m.header.sender != ID &&
+          device[m.header.sender].group == myGroup) {
+        worldPosePayload wp;
+        if (getPayload(m, wp) && wp.validWorldPose) {
+          myPose.worldX = wp.worldX; myPose.worldY = wp.worldY;
+          myPose.heading = wp.heading; myPose.mirror = wp.mirror;
+          myPose.validWorldPose = true; savePose(myPose);
+          sendUdpTextln("Pose aus Gruppe " + String(myGroup) + " kopiert (von #" +
+                        String(m.header.sender) + ")");
+          return true;
+        }
+      }
+    }
+    delay(2);
+  }
+  sendUdpTextln("Pose kopieren: kein Gruppenmitglied mit gueltiger Pose");
+  return false;
 }
 
 //---------------------------------------------------------------------------------------

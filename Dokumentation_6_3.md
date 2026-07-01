@@ -129,7 +129,7 @@ Länge kann es gar nicht mehr falsch machen.
 Alle Structs sind `__attribute__((packed))` — das Leitungsformat ist damit
 exakt definiert (Little-Endian, da alle Geräte ESP32 sind):
 msgHeader = 12, hbPayload = 5, radarHbPayload = 9, pa2HbPayload = 23,
-posPayload = 34, cmdPayload = 5, worldPosePayload = 13 Bytes.
+posPayload = 34, cmdPayload = 5, worldPosePayload = 13, settingsPayload = 6 Bytes.
 
 > **Hinweis (globale Koordinaten, ab dieser 6_3-Erweiterung):** `posPayload`
 > wurde von 25 auf 34 Bytes erweitert (Welt-Koordinatenfelder, siehe unten).
@@ -151,6 +151,8 @@ posPayload = 34, cmdPayload = 5, worldPosePayload = 13 Bytes.
 | `mapRequest` | 8 | `mapReqPayload` | Unicast | "Sende Karte vom Typ X" (an den Manager) |
 | `mapInfo` | 9 | `mapInfoPayload` | Unicast | Karten-Metadaten (Antwort auf `mapRequest`) |
 | `mapChunk` | 10 | `mapChunkMeta` + Daten | Unicast | ein Datenstück der Karte (variabel, siehe Kap. 4.2) |
+| `settingsRequest` | 11 | — (kein Payload) | Broadcast/Unicast | "melde deine Einstellungen" (siehe Kap. 5.12) |
+| `settingsReport` | 12 | `settingsPayload` | Broadcast | Welche Anzeige-/Automatik-Settings/Aktionen ein Gerät hat und wie sie stehen |
 
 **posPayload** (34 Bytes) — Positionsmeldung. `x/y/radius/angle` sind **relativ**
 (sensor-/aktorlokal); `worldX/worldY` sind **Welt-Koordinaten** und nur gültig,
@@ -174,6 +176,16 @@ wenn `worldValid==1`:
 | `validWorldPose` | uint8 | 1 = Pose gültig |
 | `worldX`, `worldY` | int32 | Welt-Position des Geräte-Ursprungs in mm |
 | `heading` | float | Ausrichtung in PA-Einheiten (0..4096, 0 = welt-ausgerichtet) |
+
+**settingsPayload** (6 Bytes) — Einstellungen & Aktionen eines Geräts (Antwort auf
+`settingsRequest`). Bit-Indizes: `stgHbLed(0)`, `stgCatLed(1)`, `stgAutoCopyPose(2)`,
+`stgAutoCalib(3)`, `stgLidarMotor(4)`; Aktionen `actCopyPose(0)`, `actCalibrate(1)`:
+
+| Feld | Typ | Bedeutung |
+|---|---|---|
+| `supported` | uint16 | Bitmaske: welche Anzeige-/Automatik-Settings das Gerät hat |
+| `values` | uint16 | Bitmaske: aktueller on/off-Zustand je Setting |
+| `actions` | uint16 | Bitmaske: welche Aktionen ausgelöst werden können |
 
 **hbPayload** (5 Bytes) — Basis-Heartbeat, steht bei *allen* HB-Varianten am Anfang:
 
@@ -227,7 +239,11 @@ gerichtet; `info` = Kalibrier-Fensterdauer in ms (0 = Geräte-Default). Startet 
 Sensor; siehe GesamtKonzeptCatFinder.md). `cmdClearPose` (**19**) — löscht die gespeicherte
 Welt-Pose (NVS) und setzt `validWorldPose=false`; nötig, wenn das Gerät **bewegt** wurde
 (grobe Pose-Fehler erkennt der Health-Check nicht selbst, Kap. 5.2). Beide werden z.B. vom
-Touch-Remote in Kap. 5.11 ausgelöst.
+Touch-Remote in Kap. 5.11 ausgelöst. `cmdSetSetting` (**20**) — setzt ein Anzeige-/Automatik-
+Setting (`info = (settingIndex<<1) | wert`), speichert es (falls persistiert) und annonciert
+danach ein `settingsReport`. `cmdCopyPose` (**21**) — Aktion `actCopyPose`: übernimmt die
+Welt-Pose eines Mitglieds der eigenen relativen Koordinatengruppe (siehe Kap. 5.12). Beide
+werden vom Touch-Bediendisplay (Kap. 5.12) und vom VPS-Webinterface ausgelöst.
 
 ### 3.3 Warum HB-Varianten unterschiedlicher Länge?
 
@@ -479,6 +495,14 @@ Jedes Programm folgt demselben Grundgerüst:
   Fällt der Manager aus, läuft das lokale Netz weiter — nur die Visualisierung
   pausiert. (Burst-Verlust durch den Single-Buffer-Empfang ist für die
   akkumulierende Karte unkritisch.)
+- **Steuer-Gateway (Rückkanal):** der Manager reicht zusätzlich die `settingsReport`
+  der Geräte an den VPS weiter (`/ingest`, Feld `settings`) und **pollt** `GET /commands`,
+  um vom VPS-Webinterface angeforderte Kommandos auf den lokalen Bus zu geben
+  (`gwInjectCommand`: Unicast `commandMsg`, bzw. `target 255` = Broadcast `settingsRequest`).
+  So kann das Webinterface Geräte steuern, obwohl der VPS die 192.168.0.x-Geräte nicht
+  direkt erreicht (siehe Kap. 5.12).
+- **Eigene Anzeige-Settings:** der Manager hat selbst zwei schaltbare Anzeige-Settings
+  (HB-Empfang grün, catObserved-Empfang blau), im NVS gespeichert.
 
 ### 5.2 Radar6_3_0 — Bewegungssensor (HLK-Radar, "Dome"-Familie)
 
@@ -517,6 +541,8 @@ beide Bahnen und liefert die Transformation (Details: GesamtKonzeptCatFinder.md,
   Abweichungen gelten als „anderes Ziel" und werden ignoriert (dann hilft der Knopf).
 - **Nach Kalibrierung:** eigene `catObserved` tragen zusätzlich `worldX/worldY`
   (`worldValid=1`) via `localToWorld`.
+- **Einstellungen (Kap. 5.12):** HB-/Target-Anzeige schaltbar, Auto-Kalibrierung und
+  Auto-Pose-Übernahme schaltbar (NVS); Aktionen „Kalibrieren" und „Pose kopieren".
 
 ### 5.3 LD06_6_3_0 — Lidar-Sensor
 
@@ -686,6 +712,10 @@ No-Shot-Karte, aus = bereit, rot = nicht lokalisiert; bei Detektion im
 schießbaren Bereich rot + Richtungs-Pixel. Nach der Init ein knapper
 Text-Multicast (`LidarC1 loc=… x=… y=… h=… ns=…`).
 
+Einstellungen (Kap. 5.12): Detektions-Anzeige (catObserved) schaltbar und im NVS
+gespeichert; **Lidar-Motor** an/aus (`lidar.stop()`/`startScan()`), Default an und
+**nicht** persistiert — der Sensor bootet immer mit laufendem Motor.
+
 > **VPS-Lokalisierungsdienst** (`VPS/localizer/`): Docker-Container mit einem
 > HTTP-Dienst, der den 360-Bin-Scan mit `Map/RasenKarte.csv` (direkt aus dem
 > GitHub-Repo geladen) global matcht (portiert aus
@@ -724,6 +754,47 @@ Knopfdruck steuert (siehe Kap. 4.1 und GesamtKonzeptCatFinder.md, Aufgabe
 - Sendet selbst **keinen HB** (reines Bediengerät) und taucht daher nicht in der
   HB-/Geräteliste auf — wie die anderen Displays.
 
+### 5.12 Bedienung_Einstellungen — Touch-Bediendisplay für Einstellungen & Steuerung
+
+Bedien-Display, mit dem sich die **Anzeige-/Automatik-Einstellungen** und **Aktionen**
+aller aktiven Geräte per Touch bedienen lassen (siehe GesamtKonzeptCatFinder.md, Aufgabe
+„Einstellung und Steuerung der CatFinder Elemente"). Ordner
+`Displays/Bedienung_Einstellungen/`.
+
+- **Vollständige Kopie des Display-Prototyps** (`Udisp6_3_0`): dieselbe Display-Auswahl
+  per `#define` (CYD28/CYD35/Sunton7/Sunton5/M5Core2/M5Tab5/Wave7), dieselben
+  LovyanGFX-Profile (`dispDevLoGFX.h`) und Bildschirm-Definitionen (`dispDef.h`). Das
+  Karten-/Menü-Betriebsprogramm (Sprite-Layer, Encoder-Menü) wurde entfernt und durch eine
+  **autoskalierte Touch-Bedienung** ersetzt (keine abgespeckte Variante — der volle
+  Prototyp bleibt Basis).
+- **Bedienmodell:** Jedes Gerät führt eine Bitmaske `mySettings` (`deviceSettings`):
+  `supported`/`values`/`actions`. WELCHE Bits ein Gerät hat, legt seine `hwDef.h` über
+  `STG_SUPPORTED`/`STG_DEFAULT`/`STG_PERSIST`/`STG_ACTIONS` fest. `initSettings()` lädt die
+  persistierten Bits aus dem NVS-Namespace `"devcfg"`; nicht persistierte Bits (Lidar-Motor)
+  starten auf Default. Setting-Indizes `stgHbLed/stgCatLed/stgAutoCopyPose/stgAutoCalib/
+  stgLidarMotor`, Aktionen `actCopyPose/actCalibrate`.
+- **Seite 1 (Geräteauswahl):** listet die Geräte, die per `settingsReport` ihre
+  Fähigkeiten gemeldet haben (Broadcast `settingsRequest` beim Start und periodisch). Touch
+  wählt ein Gerät → Seite 2.
+- **Seite 2 (Details):** je unterstütztem Setting ein **AN/AUS-Schalter** (Touch →
+  `commandMsg/cmdSetSetting`, `info=(idx<<1)|wert`) und je Aktion ein **Button** (Touch →
+  `cmdCopyPose` bzw. `cmdCalibrate`). Der Zustand wird optimistisch gesetzt und durch das
+  zurückkommende `settingsReport` bestätigt. Ziel-IPs werden aus den HBs gelernt.
+- **Anzeige-Settings betreffen nur die LED/Anzeige**, nicht die Funktion: die Geräte prüfen
+  `settingOn(...)` nur vor dem Setzen der Pixel; Broadcasts/Detektion laufen weiter. Beim
+  Manager sind es die Empfangs-Anzeigen (HB grün / catObserved blau).
+- **Hardware/Build:** Default **CYD35** (per USB, wie das Touch-Remote in 5.11); OTA aktiv.
+  Das Display sendet keinen HB (Bediengerät) und teilt sich die ID des jeweiligen
+  Screen-Typs.
+
+> **VPS-Webinterface (Steuerungs-Tab):** Alternativ zur Display-Bedienung bietet das
+> VPS-Dashboard einen Tab **„Steuerung"** (umschaltbar wie die Karten) mit denselben
+> Schaltern/Aktionen je aktivem Gerät. Da der VPS die 192.168.0.x-Geräte nicht direkt
+> erreicht, wirkt der **Manager als Steuer-Gateway**: er meldet die `settingsReport` an den
+> VPS (`/ingest`) und **pollt** `GET /commands` (CSV „target,cmd,info"), um vom Webinterface
+> (`POST /command`) angeforderte Kommandos auf den lokalen Bus zu geben. `target 255` =
+> Broadcast `settingsRequest`.
+
 ---
 
 ## 6. Gemeinsame Infrastruktur (xComProc6_3.h)
@@ -745,6 +816,10 @@ Knopfdruck steuert (siehe Kap. 4.1 und GesamtKonzeptCatFinder.md, Aufgabe
 | `mapFileInfo` / `serveMap` | Karte aus LittleFS analysieren / gechunkt senden (Kap. 4.2) |
 | `requestMap` / `mapBeginRx` / `mapFeedChunk` | Karte anfordern / empfangen (Kap. 4.2) |
 | `loadNoShot` / `insideNoShot` | No-Shot-Polygon(e) aus LittleFS laden / Welt-Punkt im schießbaren Bereich? (Point-in-Polygon) |
+| `initSettings` / `saveSettings` / `settingOn` | Geräte-Einstellungen (NVS "devcfg", STG_*-Masken aus hwDef) laden/speichern/abfragen (Kap. 5.12) |
+| `sendSettingsReport` / `sendPoseReport` | eigene Einstellungen / Welt-Pose broadcasten |
+| `handleCommonMsg` | settingsRequest/poseRequest/cmdSetSetting generisch behandeln |
+| `copyPoseFromGroup` | Welt-Pose eines Gruppenmitglieds übernehmen (Aktion `actCopyPose`) |
 | `acquireNoShot` | No-Shot-Karte generisch vom Manager beziehen/cachen (für jedes welt-fähige Gerät) |
 | `vpsLocalize` / `resolvePose` | Scan an den VPS → Pose / Pose gegen NVS plausibilisieren + speichern (`vpsLocalize` nur mit `USE_VPS_LOCALIZE`) |
 | `writeComment` / `writelnComment` | Debug-Ausgabe-Hooks — jedes Programm definiert selbst, wohin (Serial, Display, Canvas) |
@@ -770,7 +845,8 @@ CatFind/                          (Repo 1 — die Programme)
 │                                    daneben: Development/ Infrastructur_test/ Tests/
 ├── Radar_HKL/Radar6_3_0/
 ├── Displays/Udisp6_3_0/          ← + dispDef.h/dispDevLoGFX.h/dispProcLoGFX.ino
-│   └── ../radarCalibrationButton/ ← Touch-Remote: startet Radar-Kalibrierung (CYD35, siehe 5.11)
+│   ├── ../radarCalibrationButton/ ← Touch-Remote: startet Radar-Kalibrierung (CYD35, siehe 5.11)
+│   └── ../Bedienung_Einstellungen/ ← Touch-Bediendisplay Einstellungen/Steuerung (Kopie des Prototyps, siehe 5.12)
 ├── Simulator/Sim6_3_0/
 ├── LaserMarker/
 │   ├── LaserMarker6_3/           ← Zielmarkierer (ID 15, siehe 5.9)
