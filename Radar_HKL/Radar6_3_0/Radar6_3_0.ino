@@ -54,6 +54,7 @@ void setup() {
   initText2Udp();
   setUpOTA();
   setUpTime();
+  initSettings();                    // Anzeige-/Automatik-Settings aus NVS (STG_* aus hwDef)
   // NVS-Pose laden. Das Radar wird im Normalfall NICHT bewegt (Aus/Ein), darum wird
   // einer vorhandenen gespeicherten Pose direkt vertraut (validWorldPose=true) statt jedes
   // Mal neu zu kalibrieren. Der Health-Check (coObserveCheck) verwirft sie automatisch,
@@ -65,6 +66,7 @@ void setup() {
                   " y=" + String(myPose.worldY) + ") - Health-Check prueft");
   }
   Serial2.begin(S2_baud,SERIAL_8N1,S2_RX,S2_TX);
+  sendSettingsReport();              // Einstellungen annoncieren (Display/VPS lernen sie)
   timer = millis();  //heardBeat
 }
 
@@ -80,9 +82,15 @@ void loop() {
 
 // Kommando per Unicast: Kalibrierfenster per Knopf/commandMsg starten.
 void handleCommand(const xMsg& m) {
+  if (handleCommonMsg(m)) return;    // settingsRequest/poseRequest/cmdSetSetting generisch
   cmdPayload cmd;
   if (!getPayload(m, cmd)) return;
-  if (cmd.cmd == cmdCalibrate) {
+  if (cmd.cmd == cmdCopyPose) {      // Aktion: Welt-Pose aus der Gruppe uebernehmen
+    setPixel(minPix, 0xFFFF00);
+    bool ok = copyPoseFromGroup(1500);
+    setPixel(minPix, ok ? 0x00FF00 : 0xFF0000);
+  }
+  else if (cmd.cmd == cmdCalibrate) {
     unsigned long win = (cmd.info > 0) ? (unsigned long)cmd.info : CALIB_WINDOW_MS;
     coCalibBegin(calib, win, false);
     setPixel(minPix, 0xFF00FF);   // Kalibriermodus sichtbar
@@ -102,6 +110,7 @@ void handleCommand(const xMsg& m) {
 // catObserved vom Bus: welt-posierte Beobachtungen als Referenz nutzen
 // (im Fenster sammeln; sonst Health-Check der eigenen Pose).
 void handleObservation(const xMsg& m) {
+  if (handleCommonMsg(m)) return;    // settingsRequest/poseRequest (Broadcast) generisch
   if (m.header.msgCode != catObserved || m.header.sender == ID) return;
   posPayload obs;
   if (!getPayload(m, obs) || !obs.worldValid) return;   // nur welt-valide Quellen taugen
@@ -142,7 +151,7 @@ void processTargets() {
       lastTargetX = target[i].x; lastTargetY = target[i].y; lastTargetMs = millis();
     }
   }
-  setPixel(maxPix, validTarget ? 0x0000FF : 0x000000);
+  setPixel(maxPix, (validTarget && settingOn(stgCatLed)) ? 0x0000FF : 0x000000);  // Anzeige schaltbar
 }
 
 // Kalibrierfenster abschliessen bzw. Auto-Trigger bedienen.
@@ -155,10 +164,19 @@ void serviceCalibration() {
     return;
   }
   if (calib.active) return;                             // laeuft noch
+  if (myPose.validWorldPose) return;                    // Pose schon vorhanden
 
-  // Auto-Trigger: keine valide Pose + anhaltende Co-Observation (eigenes Target UND
-  // welt-valide Beobachtung gleichzeitig) -> Kalibrierung selbsttaetig starten.
-  if (!myPose.validWorldPose) {
+  // Automatik 1: Welt-Pose aus einem Gruppenmitglied uebernehmen (falls aktiviert). Periodisch
+  // versuchen, solange keine gueltige Pose vorliegt (blockiert kurz -> nicht zu haeufig).
+  static unsigned long lastCopyTry = 0;
+  if (settingOn(stgAutoCopyPose) && (millis() - lastCopyTry > 15000)) {
+    lastCopyTry = millis();
+    if (copyPoseFromGroup(800)) return;                 // uebernommen -> fertig
+  }
+
+  // Automatik 2 (Radar-Spezialfall): keine valide Pose + anhaltende Co-Observation (eigenes
+  // Target UND welt-valide Beobachtung gleichzeitig) -> Kalibrierung selbsttaetig starten.
+  if (settingOn(stgAutoCalib)) {
     bool concurrent = (millis() - lastWorldObsMs < CONCURRENT_MS) &&
                       (millis() - lastTargetMs   < CONCURRENT_MS);
     if (concurrent) {
@@ -172,5 +190,7 @@ void serviceCalibration() {
     } else {
       autoArmMs = 0;
     }
+  } else {
+    autoArmMs = 0;
   }
 }

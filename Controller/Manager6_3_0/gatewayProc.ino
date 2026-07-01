@@ -19,6 +19,27 @@ struct GwHb { uint8_t sender, ip; };
 static GwHb    gwHb[GW_MAX_HB];         static int gwHbN = 0;
 static unsigned long gwLastFlush = 0;
 
+// Einstellungen der Geraete (settingsReport vom Bus). Anders als Events/HB werden sie
+// NICHT nach dem Flush geleert, sondern bei jedem Push mitgeschickt -> der VPS kennt den
+// aktuellen Stand auch nach einem Neustart. Pro Sender ein Eintrag (jeweils neuester).
+#define GW_MAX_SETTINGS 18
+struct GwSet { uint8_t sender; uint16_t sup, val, act; bool used; };
+static GwSet gwSet[GW_MAX_SETTINGS];
+static bool  gwSettingsDirty = false;   // erzwingt einen Push, sobald neue Settings kamen
+
+void gwAddSettings(uint8_t sender, const settingsPayload& sp) {
+  gwSettingsDirty = true;
+  for (int i = 0; i < GW_MAX_SETTINGS; i++)
+    if (gwSet[i].used && gwSet[i].sender == sender) {
+      gwSet[i].sup = sp.supported; gwSet[i].val = sp.values; gwSet[i].act = sp.actions; return;
+    }
+  for (int i = 0; i < GW_MAX_SETTINGS; i++)
+    if (!gwSet[i].used) {
+      gwSet[i].sender = sender; gwSet[i].sup = sp.supported;
+      gwSet[i].val = sp.values; gwSet[i].act = sp.actions; gwSet[i].used = true; return;
+    }
+}
+
 static String jsonEsc(const String& s) {
   String o; o.reserve(s.length() + 4);
   for (size_t i = 0; i < s.length(); i++) {
@@ -45,7 +66,8 @@ void gwAddHb(uint8_t sender, uint8_t ip) {
 
 void gwFlush() {
   if (WiFi.status() != WL_CONNECTED) { gwEventN = gwDebugN = gwHbN = 0; return; }
-  if (gwEventN == 0 && gwDebugN == 0 && gwHbN == 0) return;
+  if (gwEventN == 0 && gwDebugN == 0 && gwHbN == 0 && !gwSettingsDirty) return;
+  gwSettingsDirty = false;
 
   String body = "{\"events\":[";
   for (int i = 0; i < gwEventN; i++) {
@@ -58,6 +80,13 @@ void gwFlush() {
   for (int i = 0; i < gwDebugN; i++) { if (i) body += ','; body += "\"" + jsonEsc(gwDebug[i]) + "\""; }
   body += "],\"hb\":[";
   for (int i = 0; i < gwHbN; i++) { if (i) body += ','; body += "{\"sender\":" + String(gwHb[i].sender) + ",\"ip\":" + String(gwHb[i].ip) + "}"; }
+  body += "],\"settings\":[";
+  bool firstS = true;
+  for (int i = 0; i < GW_MAX_SETTINGS; i++) if (gwSet[i].used) {
+    if (!firstS) body += ','; firstS = false;
+    body += "{\"sender\":" + String(gwSet[i].sender) + ",\"sup\":" + String(gwSet[i].sup)
+          + ",\"val\":" + String(gwSet[i].val) + ",\"act\":" + String(gwSet[i].act) + "}";
+  }
   body += "]}";
 
   HTTPClient http;
@@ -71,7 +100,47 @@ void gwFlush() {
   gwEventN = gwDebugN = gwHbN = 0;
 }
 
-// Aus loop() aufrufen: periodisch flushen.
+// Ein vom VPS-Webinterface angefordertes Kommando auf den lokalen Bus geben. Der VPS ist
+// vom lokalen 192.168.0.x-Netz aus nicht direkt an die Geraete adressierbar -> der Manager
+// wirkt als Gateway. target 255 = Broadcast settingsRequest (alle melden ihre Einstellungen).
+void gwInjectCommand(int target, int cmd, long info) {
+  if (target == 255) { broadcastMsg(settingsRequest); return; }
+  if (target < 0 || target >= 18) return;
+  cmdPayload c; c.cmd = (uint8_t)cmd; c.info = (int32_t)info;
+  unicastMsg(commandMsg, c, device[target].IP);   // sendet nichts, wenn IP noch 0 (nie gesehen)
+}
+
+// VPS nach anstehenden Kommandos fragen (GET /commands). Antwort = CSV-Zeilen "target,cmd,info".
+void gwPollCommands() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  HTTPClient http;
+  String url = "http://" + ipVPS.toString() + ":80/commands";
+  if (!http.begin(url)) return;
+  http.setTimeout(3000);
+  int code = http.GET();
+  if (code == 200) {
+    String body = http.getString();
+    int start = 0;
+    while (start < (int)body.length()) {
+      int nl = body.indexOf('\n', start);
+      String line = (nl < 0) ? body.substring(start) : body.substring(start, nl);
+      line.trim();
+      int c1 = line.indexOf(','), c2 = line.indexOf(',', c1 + 1);
+      if (c1 > 0 && c2 > c1) {
+        int  t  = line.substring(0, c1).toInt();
+        int  cc = line.substring(c1 + 1, c2).toInt();
+        long ii = line.substring(c2 + 1).toInt();
+        gwInjectCommand(t, cc, ii);
+        Serial << "inject cmd: target=" << t << " cmd=" << cc << " info=" << ii << endl;
+      }
+      if (nl < 0) break;
+      start = nl + 1;
+    }
+  }
+  http.end();
+}
+
+// Aus loop() aufrufen: periodisch flushen und Kommandos vom VPS abholen.
 void gwTick() {
-  if (millis() - gwLastFlush >= GW_FLUSH_MS) { gwFlush(); gwLastFlush = millis(); }
+  if (millis() - gwLastFlush >= GW_FLUSH_MS) { gwFlush(); gwPollCommands(); gwLastFlush = millis(); }
 }

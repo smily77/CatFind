@@ -111,6 +111,8 @@ stationDefinitions device[18] = {
 #define mapRequest  8   // Anfrage an den Manager: "sende Karte vom Typ X" (mapReqPayload)
 #define mapInfo     9   // Antwort: Metadaten der Karte (mapInfoPayload)
 #define mapChunk   10   // ein Datenstueck der Karte (mapChunkMeta + Datenbytes, variabel)
+#define settingsRequest 11   // "melde deine Einstellungen" (ohne Payload; Broadcast=alle, Unicast=eines)
+#define settingsReport  12   // Antwort/Annonce: settingsPayload (supported/values/actions)
 
 // Karten-Typen (fuer mapRequest/mapInfo/mapChunk)
 #define mapNoShot   1   // Schusszonen-/No-Shot-Karte (innerhalb = Feuern erlaubt)
@@ -230,6 +232,34 @@ struct __attribute__((packed)) mapChunkMeta {
 // Datenbytes pro Chunk so gewaehlt, dass mapChunkMeta + Daten in den Payload passen
 constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen (64)
 
+//------------------------- Einstellungen & Steuerung der Geraete ------------------------
+// Jedes Geraet fuehrt visuelles Feedback (LED-Pixel/Anzeige) und automatische Aufgaben aus.
+// Diese lassen sich generisch ueber Display-Touch oder das VPS-Webinterface ein-/ausschalten
+// bzw. ausloesen. Ein Geraet meldet per settingsReport eine Bitmaske, WELCHE Settings/Aktionen
+// es hat (supported/actions) und den aktuellen Zustand (values). Welche Bits ein Geraet
+// unterstuetzt, legt seine hwDef.h ueber STG_SUPPORTED/STG_DEFAULT/STG_PERSIST/STG_ACTIONS fest.
+//
+// Setting-Indizes (Bit-Position in settingsPayload.supported/values). Die Anzeige-Settings
+// beziehen sich NUR auf die LED-/Anzeige-Ausgabe, nicht auf die Funktion selbst.
+#define stgHbLed        0   // HB-Anzeige an/aus (beim Manager: HB EMPFANGEN)          [persistiert]
+#define stgCatLed       1   // catObserved-Anzeige an/aus (Manager: catObserved EMPFANGEN) [persistiert]
+#define stgAutoCopyPose 2   // Auto: Welt-Pose eines Gruppenmitglieds uebernehmen        [persistiert]
+#define stgAutoCalib    3   // Radar: automatische Co-Observation-Kalibrierung          [persistiert]
+#define stgLidarMotor   4   // Lidar: Motor an/aus (Default an, NICHT persistiert)
+#define STG_COUNT       5
+
+// Ausloesbare Aktionen (Bit-Position in settingsPayload.actions).
+#define actCopyPose     0   // Welt-Pose jetzt aus der Gruppe kopieren  -> cmdCopyPose
+#define actCalibrate    1   // Kalibrierung jetzt ausloesen             -> cmdCalibrate
+#define ACT_COUNT       2
+
+// settingsReport-Payload: was das Geraet kann und wie es aktuell eingestellt ist.
+struct __attribute__((packed)) settingsPayload {
+  uint16_t supported;   // Bitmaske der vorhandenen Settings (stg*)
+  uint16_t values;      // aktueller on/off-Zustand je Setting
+  uint16_t actions;     // Bitmaske der ausloesbaren Aktionen (act*)
+};
+
 //cmd Codes für cmdPayload
 #define cmdRichtung                1   // info: absoluten PA-Winkel 0..4096 anfahren (Jog/Encoder-Test)
 #define cmdLaser                   2
@@ -254,6 +284,9 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
 // per gleichzeitiger Beobachtung einer Person mit einem welt-posierten Sensor).
 #define cmdCalibrate              18   // info: Fensterdauer in ms (0 = Default); startet Kalibriermodus
 #define cmdClearPose              19   // info: ignoriert - loescht die gespeicherte Welt-Pose (NVS), validWorldPose=false
+// Einstellungen & Steuerung (an jedes Geraet; Display-Touch / VPS-Webinterface)
+#define cmdSetSetting             20   // info = (settingIdx<<1)|value : Setting setzen+persistieren, dann settingsReport
+#define cmdCopyPose               21   // info: ignoriert - Aktion actCopyPose: Welt-Pose aus der Gruppe kopieren
 
 //---------------------------------------------------------------------------------------
 // Welt-Pose dieses Geraets (jedes Geraet besitzt diese Variablen, damit die
@@ -268,6 +301,16 @@ struct worldPose {
   bool    validWorldPose;  // false nach Boot
 };
 worldPose myPose = { 0, 0, 0.0f, 1, false };
+
+//---------------------------------------------------------------------------------------
+// Einstellungen dieses Geraets. supported/actions kommen aus der hwDef (STG_*), values
+// wird beim Boot aus dem NVS geladen bzw. auf STG_DEFAULT gesetzt (initSettings in xComProc).
+struct deviceSettings {
+  uint16_t supported;
+  uint16_t values;
+  uint16_t actions;
+};
+deviceSettings mySettings = { 0, 0, 0 };
 
 //---------------------------------------------------------------------------------------
 IPAddress multiCastIP (239,0,0,57);

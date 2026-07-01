@@ -11,11 +11,13 @@ auf einer Web-Seite dar:
 
 Endpunkte:
   GET  /                index.html (Single-Page-UI)
-  POST /ingest          Manager-Push: {"events":[...],"debug":[...],"hb":[...]}
-  GET  /state           Debug + Geräte + Minuten-Zusammenfassung (klein, oft gepollt)
+  POST /ingest          Manager-Push: {"events":[...],"debug":[...],"hb":[...],"settings":[...]}
+  GET  /state           Debug + Geräte + Minuten-Zusammenfassung + Geräte-Einstellungen
   GET  /events?since=N  neue catObserved ab Index N (für die Karten)
   POST /reset           akkumulierte Ereignisse löschen
   GET  /map             RasenKarte-Punkte (aus dem GitHub-Repo) für die Welt-Karte
+  POST /command         Webinterface -> Kommando-Queue {"target":id,"cmd":c,"info":i}
+  GET  /commands        Manager holt anstehende Kommandos ab (CSV "target,cmd,info"), leert die Queue
 """
 import os, time, threading, urllib.request
 from collections import deque, OrderedDict
@@ -41,6 +43,10 @@ _debug = deque(maxlen=80)        # {t, msg}
 _devices = {}                    # sender -> {t, ip}
 _events = []                     # {t, sender, sensor, wx, wy, wv, x, y, group}
 _reset_seq = 0
+_settings = {}                   # sender -> {sup, val, act, t}  (aus settingsReport)
+
+_cmd_lock = threading.Lock()
+_cmd_queue = []                  # [(target, cmd, info)]  Webinterface -> Manager -> Bus
 
 _map_lock = threading.Lock()
 _map = []                        # [[x,y],...] Meter
@@ -102,6 +108,10 @@ def ingest():
         for h in data.get("hb", []):
             sid = int(h.get("sender", -1))
             _devices[sid] = {"t": now, "ip": int(h.get("ip", 0))}
+        for s in data.get("settings", []):
+            sid = int(s.get("sender", -1))
+            _settings[sid] = {"sup": int(s.get("sup", 0)), "val": int(s.get("val", 0)),
+                              "act": int(s.get("act", 0)), "t": now}
         for e in data.get("events", []):
             sid = int(e.get("sender", -1))
             _devices.setdefault(sid, {"t": now, "ip": 0})["t"] = now
@@ -143,9 +153,15 @@ def state():
             if age <= HB_WINDOW_S:
                 devs.append({"id": sid, "name": DEVICES.get(sid, ("?", 0))[0],
                              "ip": d["ip"], "age": round(age, 1)})
+        settings = {str(sid): {"sup": s["sup"], "val": s["val"], "act": s["act"],
+                               "name": DEVICES.get(sid, ("?", 0))[0],
+                               "ip": _devices.get(sid, {}).get("ip", 0),
+                               "age": round(now - s["t"], 1)}
+                    for sid, s in _settings.items()}
         return jsonify(now=now, reset_seq=_reset_seq,
                        debug=list(_debug)[-60:], devices=devs,
-                       summary=minute_summary(), event_count=len(_events))
+                       summary=minute_summary(), event_count=len(_events),
+                       settings=settings)
 
 
 @app.get("/events")
@@ -172,6 +188,30 @@ def get_map():
     load_map()
     with _map_lock:
         return jsonify(points=_map)
+
+
+@app.post("/command")
+def command():
+    # Webinterface stellt ein Kommando in die Queue; der Manager holt es per /commands ab
+    # und gibt es auf den lokalen Bus (der VPS erreicht die 192.168.0.x-Geräte nicht direkt).
+    # target 255 = Broadcast settingsRequest (alle Geräte melden ihre Einstellungen).
+    d = request.get_json(force=True, silent=True) or {}
+    t = int(d.get("target", -1))
+    c = int(d.get("cmd", 0))
+    i = int(d.get("info", 0))
+    with _cmd_lock:
+        _cmd_queue.append((t, c, i))
+        n = len(_cmd_queue)
+    return jsonify(ok=True, queued=n)
+
+
+@app.get("/commands")
+def commands():
+    with _cmd_lock:
+        q = _cmd_queue[:]
+        _cmd_queue.clear()
+    body = "".join("%d,%d,%d\n" % (t, c, i) for (t, c, i) in q)
+    return body, 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 
 load_map()

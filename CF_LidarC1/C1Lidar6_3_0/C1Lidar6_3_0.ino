@@ -82,15 +82,32 @@ void setup() {
   lidar.begin(Serial1);
   lidar.startScan();
 
+  initSettings();                    // Anzeige-/Motor-Settings aus NVS (STG_* aus hwDef)
   hadNVSpose = loadPose(myPose);     // Pose aus NVS lesen (validWorldPose bleibt vorerst false)
   startCalibration();                // -> PH_CALIB (blau)
   sendHB();
+  sendSettingsReport();              // Einstellungen annoncieren (Display/VPS lernen sie)
 }
 
 void loop() {
   ArduinoOTA.handle();
 
   if (millis() - lastHBms >= periodeForHB) sendHB();
+
+  // Eingehende Steuer-/Einstellungsnachrichten generisch verarbeiten
+  // (cmdSetSetting per Unicast, settingsRequest/poseRequest per Multicast).
+  if (ucDataReceived) { xMsg um = lastUcMsg; ucDataReceived = false; handleCommonMsg(um); }
+  if (mcDataReceived) { xMsg cm = lastMcMsg; mcDataReceived = false; handleCommonMsg(cm); }
+
+  // Motor an/aus (Lidar-Spezial-Setting): stop()/startScan() beim Umschalten.
+  static bool motorRunning = true;
+  bool wantMotor = settingOn(stgLidarMotor);
+  if (wantMotor != motorRunning) {
+    motorRunning = wantMotor;
+    if (wantMotor) lidar.startScan(); else lidar.stop();
+    sendUdpTextln(String("Lidar-Motor ") + (wantMotor ? "an" : "aus"));
+  }
+  if (!motorRunning) return;         // Motor aus -> keine Messung/Detektion
 
   RPLidarMeasurement m;
   if (!lidar.readMeasurement(m)) return;

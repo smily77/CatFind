@@ -67,6 +67,15 @@
 
 #define LED_TYPE WS2811
 
+// --- Einstellungen & Steuerung (settingsPayload / xComProc initSettings) ---------------
+// Anzeige: HB-Blitz und Target-LED ein-/ausschaltbar. Automatik: Welt-Pose aus der Gruppe
+// uebernehmen und (Radar-Spezialfall) automatische Co-Observation-Kalibrierung.
+// Aktionen: Pose jetzt kopieren, Kalibrierung jetzt ausloesen.
+#define STG_SUPPORTED ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCopyPose)|(1u<<stgAutoCalib))
+#define STG_DEFAULT   ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCalib))   // Auto-Kalib default an
+#define STG_PERSIST   STG_SUPPORTED                                         // alle im NVS
+#define STG_ACTIONS   ((1u<<actCopyPose)|(1u<<actCalibrate))
+
 byte radarBuffer[30];
 int gi = 0; // globale laufvariabele für Radasignal
 struct targetData {
