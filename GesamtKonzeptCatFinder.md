@@ -374,7 +374,84 @@ und im VPS-Dashboard (`VPS/dashboard/`).
   an den VPS weiter und **pollt** `GET /commands` (CSV „target,cmd,info"), um vom Webinterface
   angeforderte Kommandos auf den lokalen Bus zu geben (`POST /command`). `target 255` =
   Broadcast `settingsRequest` (alle Geräte melden sich).
-  
 
+## Aufgabe: Katze oder Störung — Ereignis-Validierung
+
+### Grobkonzept
+Radar und Lidar-C1 laufen und liefern `catObserved` — aber auch Störungen:
+einzelne Zufallsereignisse, Sonneneinstrahlung ins Lidar (haufenweise
+Fehlmeldungen auf einmal), Insekten nahe am Sensor, Vegetation im Wind. Bevor
+die Feuerlogik (PA) auf Beobachtungen schiesst, braucht es eine Validierung:
+**Ist das eine Katze oder eine Störung?**
+
+Randbedingungen:
+- Lange warten und viele Treffer zählen geht nicht — eine Katze kann schnell
+  sein und ist sonst über den Rasen, bevor das System reagiert.
+- Beide Sensoren zwingend verlangen (UND) geht nicht — das Lidar sieht die
+  Katze je nach Fellfarbe/Reflektivität nicht.
+- Ground Truth ist unsicher — die Wildkamera zeichnet nicht jede Katze auf.
+
+### Prinzip: Spuren bewerten statt Treffer zählen
+Eine echte Katze liefert bei ~10 Hz Sensorrate schon in 0,3–0,5 s mehrere
+Beobachtungen, die **physikalisch zusammenhängen**: plausible Geschwindigkeit,
+plausible Beschleunigung, Netto-Verschiebung über den Rasen. Störungen können
+einzelne Ereignisse vortäuschen, aber fast nie eine kohärente Bahn:
+
+| Störung | Signatur | scheitert an |
+|---|---|---|
+| Einzel-Zufallsereignis | 1 Beobachtung, dann nichts | keine Fortsetzung im Gate |
+| Sonne ins Lidar | Burst: viele Bins gleichzeitig, Positionen springen | keine kohärente Bahn |
+| Insekten | nur nah am Sensor, 1–2 Bins, erratisch | Nahbereichs-Gate, Winkelausdehnung |
+| Vegetation im Wind (Radar) | oszilliert am festen Ort | Netto-Verschiebung ≈ 0 |
+| Regen | beide Sensoren rauschen überall gleichzeitig | Sturm-Modus |
+
+### Drei Ebenen
+
+**Ebene 1 — Selbstdiagnose im Sensor („Sturm-Modus"):** Der Sensor erkennt
+selbst, wenn er gerade unglaubwürdig ist. Lidar: zu viele markierte Punkte pro
+Umdrehung (Gegenstück zu `MIN_DETECT_POINTS`) oder zu weite Winkelstreuung →
+ganze Umdrehung verwerfen; mehrere Sturm-Umdrehungen in Folge → Sensor meldet
+sich ab (sendet nichts mehr, bis es einige Sekunden ruhig war; optional
+Text-Multicast „Lidar degraded"). Radar analog über die Ereignisrate
+(Dauerfeuer am selben Fleck = Clutter). Die Fehlmeldungs-**Haufen** der Sonne
+sind so gerade das Erkennungsmerkmal.
+
+**Ebene 2 — Track-Bestätigung beim Konsumenten (Feuerlogik im PA):**
+Beobachtungen in Welt-Koordinaten werden per Nearest-Neighbor mit Gate
+(max. Katzengeschwindigkeit × Δt) zu Tracks assoziiert. Ein Track ist
+bestätigt, wenn: ≥ 4 Beobachtungen innerhalb ≤ 1 s, Netto-Verschiebung
+≥ 0,4 m, Geschwindigkeit durchgehend 0,1–4 m/s, liefernder Sensor nicht im
+Sturm-Modus. Bestätigung nach ~0,5 s; der PA verfolgt danach die aktuelle
+Track-Position (nicht die erste Beobachtung) — 0,75 m Katzenweg bei 1,5 m/s
+sind verkraftbar.
+
+**Ebene 3 — Fusion als Beschleuniger, nicht als Pflicht:** Kein UND, sondern
+gestuft: (a) beide Sensoren sehen dasselbe Objekt (< 0,5 m, < 0,5 s) →
+**sofort bestätigt** (~0,2 s); (b) ein Sensor allein → Track-Bestätigung nach
+Ebene 2 (~0,5 s); (c) beide Sensoren rauschen gleichzeitig überall → Umwelt
+(Regen/Sturm) → systemweiter Feuer-Stopp.
+
+### Ground Truth ohne verlässliche Wildkamera
+1. **Langzeitaufnahmen mit dem Simulator** (2. Ausbau, Kap. 5.7 der Doku):
+   Nächte ohne Katze = reine Störungs-Bibliothek, Sonnenstunden = Sonnen-
+   Signatur. Damit die Schwellwerte (Gate, Burst-Limit, Verschiebung) offline
+   tunen und per Replay gegen die Feuerlogik testen.
+2. **Kontrollierte Positiv-Daten:** die Kalibrier-Läufe (Person läuft kurvige
+   Bahn) sind aufgezeichnete echte Tier-Bahnen; Testläufe mit bekannter
+   Katze/Hund liefern weitere.
+3. Optional später: **ESP32-CAM als Eigen-Trigger** — schiesst bei bestätigtem
+   Track ein Foto der Track-Position; das System verifiziert seine eigenen
+   Entscheidungen, statt auf den Zufalls-Trigger der Wildkamera zu hoffen.
+
+### Festlegungen / Reihenfolge der Umsetzung
+1. **Sturm-Modus im Lidar** (kleinster Eingriff, grösster Effekt gegen die
+   Sonne — Erweiterung der Umdrehungs-Auswertung im C1-Sketch).
+2. **Langzeit-Datensammlung** mit dem Simulator (Szenen 1–9, läuft nachts mit).
+3. **Track-Bestätigung** als generischer Baustein in `xComProc` (nutzen beide
+   PAs); Schwellwerte aus den gesammelten Daten.
+4. Optional: Fusion-Schnellpfad (Ebene 3a) + ESP32-CAM.
+
+(Noch nicht umgesetzt — Stand 2026-07-02: Strategie festgelegt, Umsetzung
+beginnt mit dem Sturm-Modus und der Datensammlung.)
 
 
