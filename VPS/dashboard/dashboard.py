@@ -153,11 +153,18 @@ def state():
             if age <= HB_WINDOW_S:
                 devs.append({"id": sid, "name": DEVICES.get(sid, ("?", 0))[0],
                              "ip": d["ip"], "age": round(age, 1)})
-        settings = {str(sid): {"sup": s["sup"], "val": s["val"], "act": s["act"],
-                               "name": DEVICES.get(sid, ("?", 0))[0],
-                               "ip": _devices.get(sid, {}).get("ip", 0),
-                               "age": round(now - s["t"], 1)}
-                    for sid, s in _settings.items()}
+        # Steuerung nur fuer AKTIVE Geraete (HB in den letzten HB_WINDOW_S Sekunden gesehen).
+        # Ein abgeschaltetes Geraet faellt so aus der Steuerungsliste, auch wenn sein letzter
+        # settingsReport noch bekannt ist.
+        settings = {}
+        for sid, s in _settings.items():
+            dev = _devices.get(sid)
+            if not dev or (now - dev["t"]) > HB_WINDOW_S:
+                continue
+            settings[str(sid)] = {"sup": s["sup"], "val": s["val"], "act": s["act"],
+                                  "name": DEVICES.get(sid, ("?", 0))[0],
+                                  "ip": dev.get("ip", 0),
+                                  "age": round(now - dev["t"], 1)}
         return jsonify(now=now, reset_seq=_reset_seq,
                        debug=list(_debug)[-60:], devices=devs,
                        summary=minute_summary(), event_count=len(_events),

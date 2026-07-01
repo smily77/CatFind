@@ -40,13 +40,14 @@
 #define periodeForHB   10000       // HB-Periode (ms)
 
 // --- Einstellungen & Steuerung (settingsPayload / xComProc initSettings) ---------------
-// Anzeige: Detektions-LED (catObserved) schaltbar [persistiert]. Spezialfall Lidar: Motor
-// an/aus, Default an, NICHT persistiert (bootet immer mit laufendem Motor). Keine Aktionen
-// (der Lidar lokalisiert sich selbst; group = groupNone).
-#define STG_SUPPORTED ((1u<<stgCatLed)|(1u<<stgLidarMotor))
-#define STG_DEFAULT   ((1u<<stgCatLed)|(1u<<stgLidarMotor))
-#define STG_PERSIST   (1u<<stgCatLed)      // Motor bewusst nicht persistiert
+// Anzeige: HB-Blitz (gruen) und Detektions-LED (catObserved) schaltbar [persistiert].
+// Spezialfall Lidar: Motor an/aus, Default an, NICHT persistiert (bootet immer mit laufendem
+// Motor). Keine Aktionen (der Lidar lokalisiert sich selbst; group = groupNone).
+#define STG_SUPPORTED ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgLidarMotor))
+#define STG_DEFAULT   ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgLidarMotor))
+#define STG_PERSIST   ((1u<<stgHbLed)|(1u<<stgCatLed))   // Motor bewusst nicht persistiert
 #define STG_ACTIONS   0u
+#define HB_BLINK_MS   150      // Dauer des gruenen HB-Blitzes (nur im aktiven Zustand PH_ACTIVE)
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846

@@ -15,12 +15,26 @@ void statusLeds() {
   }
 }
 
-// Detektions-LEDs: rot wenn aktuell ein Ziel im schiessbaren Bereich, Pixel 1 = Richtung.
-void updateDetectLeds() {
-  const bool det = (millis() - lastDetectMs) < DETECT_HOLD_MS && settingOn(stgCatLed);  // Anzeige schaltbar
-  if (det) { leds[0] = CRGB::Red; leds[1] = CHSV(lastHue, 255, 255); }
-  else     { leds[0] = CRGB::Black; leds[1] = CRGB::Black; }
-  FastLED.show();
+// Status-Pixel im aktiven Zustand (PH_ACTIVE), jede loop()-Iteration aufgerufen:
+//   Detektion (rot + Richtungs-Hue) hat Vorrang, sonst gruener HB-Blitz (beide schaltbar),
+//   sonst aus. State-diffed -> FastLED.show() nur bei tatsaechlicher Aenderung.
+// In den Init-Phasen bestimmt statusLeds() die Farbe (Init-Anzeige immer an).
+void updateLeds() {
+  if (phase != PH_ACTIVE) return;
+  const bool det  = (millis() - lastDetectMs) < DETECT_HOLD_MS && settingOn(stgCatLed);
+  const bool hbOn = settingOn(stgHbLed) && (millis() < hbBlinkUntil);
+  const uint8_t want = det ? 2 : (hbOn ? 1 : 0);        // 0=aus, 1=HB gruen, 2=Detektion
+  static uint8_t shown = 255, shownHue = 0;
+  if (want == 2) {
+    if (shown != 2 || shownHue != lastHue) {
+      leds[0] = CRGB::Red; leds[1] = CHSV(lastHue, 255, 255); FastLED.show();
+      shown = 2; shownHue = lastHue;
+    }
+  } else if (want == 1) {
+    if (shown != 1) { leds[0] = CRGB::Green; leds[1] = CRGB::Black; FastLED.show(); shown = 1; }
+  } else {
+    if (shown != 0) { leds[0] = CRGB::Black; leds[1] = CRGB::Black; FastLED.show(); shown = 0; }
+  }
 }
 
 void startCalibration() {
