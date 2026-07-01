@@ -111,12 +111,7 @@ const int pages = sizeof(menueItems) / sizeof(menueItems[0]);
   #define stEnable true
   #define noSprites 6
   #define scaling true
-  // 8 Encoder begin
-  #define sdaWire 18 //19 //18
-  #define sclWire 17 //11 //17
-  TwoWire I2Cone = TwoWire(0);
-  M5_8EN terminal;
-  // 8 Encoder end
+  // 8-Encoder des Prototyps hier nicht noetig (Touch-Bedienung)
 #elif defined(M5Core2)
   #define screenWidth  320
   #define screenHight  240
@@ -124,12 +119,7 @@ const int pages = sizeof(menueItems) / sizeof(menueItems[0]);
   #define stEnable true
   #define noSprites 6
   #define scaling true
-  // 8 Encoder begin  
-  #define sda 32 // 26
-  #define scl 33 // 32 
-  TwoWire I2Cone = TwoWire(0);
-  UNIT_8ENCODER terminal;
-  // 8 Encoder end  
+  // 8-Encoder des Prototyps hier nicht noetig (Touch-Bedienung)
 #elif defined(M5Tab5)
   #define screenWidth  1280
   #define screenHight  720
