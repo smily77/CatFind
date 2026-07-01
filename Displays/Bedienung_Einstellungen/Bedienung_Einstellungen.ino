@@ -44,8 +44,8 @@ DevState devSt[18];
 const char* stgLabel[STG_COUNT] = {
   "HB-Anzeige", "Cat-Anzeige", "Auto Pose kop.", "Auto-Kalib.", "Lidar-Motor"
 };
-const char* actLabel[ACT_COUNT] = { "Pose kopieren", "Kalibrieren" };
-const uint8_t actCmd[ACT_COUNT] = { cmdCopyPose,     cmdCalibrate };
+const char* actLabel[ACT_COUNT] = { "Pose kopieren", "Kalibrieren", "Pose loeschen" };
+const uint8_t actCmd[ACT_COUNT] = { cmdCopyPose,     cmdCalibrate, cmdClearPose  };
 
 // --- UI-Zustand -----------------------------------------------------------------------
 enum { PAGE_LIST, PAGE_DETAIL };

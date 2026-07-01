@@ -339,7 +339,7 @@ und im VPS-Dashboard (`VPS/dashboard/`).
   ein Gerät führt, legt seine `hwDef.h` über die Masken `STG_SUPPORTED`/`STG_DEFAULT`/
   `STG_PERSIST`/`STG_ACTIONS` fest — so bleiben die Variablen der Einstellungen wie gefordert
   in der `hwDef.h` des jeweiligen Elements. Setting-Indizes: `stgHbLed`, `stgCatLed`,
-  `stgAutoCopyPose`, `stgAutoCalib`, `stgLidarMotor`; Aktionen: `actCopyPose`, `actCalibrate`.
+  `stgAutoCopyPose`, `stgAutoCalib`, `stgLidarMotor`; Aktionen: `actCopyPose`, `actCalibrate`, `actClearPose`.
 - **Persistenz vs. Default:** `initSettings()` (in `xComProc`) lädt die persistierten Bits
   aus dem NVS-Namespace `"devcfg"` und überlagert damit `STG_DEFAULT`; nicht persistierte
   Bits (Lidar-Motor) starten immer auf ihrem Default (an). `saveSettings()` schreibt nur die

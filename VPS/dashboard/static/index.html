@@ -81,7 +81,7 @@ function fmtTime(t){ return new Date(t*1000).toLocaleTimeString(); }
 
 // Einstellungen/Aktionen (Bit-Index = stg*/act* aus xComDef6_3.h)
 const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor"];
-const ACT=[{l:"Pose kopieren",cmd:21,info:0},{l:"Kalibrieren",cmd:18,info:45000}];
+const ACT=[{l:"Pose kopieren",cmd:21,info:0},{l:"Kalibrieren",cmd:18,info:45000},{l:"Pose löschen",cmd:19,info:0}];
 const CMD_SET_SETTING=20;
 
 function setView(v,b){

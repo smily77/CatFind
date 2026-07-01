@@ -251,7 +251,8 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
 // Ausloesbare Aktionen (Bit-Position in settingsPayload.actions).
 #define actCopyPose     0   // Welt-Pose jetzt aus der Gruppe kopieren  -> cmdCopyPose
 #define actCalibrate    1   // Kalibrierung jetzt ausloesen             -> cmdCalibrate
-#define ACT_COUNT       2
+#define actClearPose    2   // gespeicherte Welt-Pose loeschen          -> cmdClearPose
+#define ACT_COUNT       3
 
 // settingsReport-Payload: was das Geraet kann und wie es aktuell eingestellt ist.
 struct __attribute__((packed)) settingsPayload {
