@@ -649,17 +649,41 @@ festen Hindernisse aufnehmen.
 
 Der Simulator ist das Test-Werkzeug: er konserviert echte Katzen-Ereignisse
 und spielt sie beliebig oft wieder ab — damit lassen sich PA2, Display und
-Manager testen, ohne auf eine echte Katze zu warten.
+Manager testen, ohne auf eine echte Katze zu warten. Seit dem 2. Ausbau
+(2026-07) verwaltet er **mehrere Szenen** und ist für **Langzeitaufnahmen**
+(über Nacht / mehrere Tage) ausgelegt.
 
-- **Aufzeichnen** (Taste 1): jede empfangene `catObserved`-Nachricht wird
-  als Header + Payload (variable Recordlänge!) an `/data.bin` auf der
-  SD-Karte angehängt.
-- **Abspielen** (Taste 2): liest Record für Record (erst Header, dann
-  `payloadLen` Bytes) und sendet ihn mit `broadcastRawMsg()` unverändert —
-  **Original-Sender und -Zeitstempel bleiben erhalten**, die Empfänger können
-  die Wiedergabe nicht von einer echten Detektion unterscheiden (Abstand
-  derzeit fix 20 ms pro Record).
-- **Löschen** (Taste 3): entfernt die Datei.
+- **9 Szenen-Dateien** `/scene1.bin` … `/scene9.bin` auf der SD-Karte; die
+  **Tasten 1–9** wählen die aktive Szene. Eine alte Einzeldatei `/data.bin`
+  wird beim Boot automatisch zu Szene 1 umbenannt (Recordformat unverändert:
+  Header + Payload, variable Recordlänge).
+- **Aufzeichnen** (Taste `r`, Umschalter): jede empfangene
+  `catObserved`-Nachricht wird an die aktive Szene angehängt — **nur**
+  `catObserved`, keine HBs (langzeittauglich: wenige Ereignisse = kleine
+  Datei). Jeder Record wird einzeln geschrieben und die Datei geschlossen —
+  bei Stromausfall gehen frühere Records nicht verloren. SD-Schreibfehler
+  (z.B. volle Karte) werden im Display gemeldet statt still ignoriert.
+- **Abspielen** (Taste `p`): sendet die aktive Szene Record für Record mit
+  `broadcastRawMsg()` unverändert — **Original-Sender und -Zeitstempel
+  bleiben erhalten**, die Empfänger können die Wiedergabe nicht von einer
+  echten Detektion unterscheiden (Abstand fix 20 ms pro Record;
+  Fortschrittsbalken, Abbruch mit beliebiger Taste). Vor dem Abspielen wird
+  eine laufende Aufnahme automatisch beendet, damit sich der Simulator nicht
+  selbst aufzeichnet; mitgehörte eigene Pakete werden danach verworfen.
+- **Löschen** (Taste `d`, **zweimal** innerhalb 3 s — Schutz für mühsam
+  aufgezeichnete Langzeit-Szenen): entfernt die aktive Szene.
+- **Langzeitbetrieb:** WLAN-Überwachung mit automatischem Reconnect und
+  Multicast-Rejoin (nächtlicher Router-Ausfall wird überbrückt); Display
+  schaltet nach 2 min ohne Taste dunkel (erster Tastendruck weckt nur auf);
+  NTP-Sync mit Timeout statt Endlosschleife (mobiles Gerät evtl. ohne
+  Internet — Records tragen ohnehin die Zeitstempel der Original-Sender).
+- **UI:** farbige Statusseite mit großen Fonts statt Scrolltext — Kopfzeile
+  (Uhrzeit, WLAN-Status, grüner Punkt = Multicast-Verkehr in den letzten
+  2 s), Szene + großer Record-Zähler, Statuszeile (blinkendes REC seit
+  HH:MM, Zeit des letzten Records — lebt die Langzeitaufnahme noch?) und
+  Tastenhilfe.
+- **OTA aktiv** (Hostname `Simulator`); einen eigenen HB sendet der
+  Simulator weiterhin nicht.
 - Seit 6_3 nutzt der Simulator dieselben gemeinsamen Header wie alle anderen
   Programme (vorher: eigene udpDef/udpProc in Version 5_4), holt die
   WLAN-Zugangsdaten aus `Credentials.h` und ist als `Sim` in der device dB.
