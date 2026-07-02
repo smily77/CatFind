@@ -524,17 +524,39 @@ Modell auf dem ESP32 implementiert.
    Zeitbereich (optional auf einen Sensor beschränkt) bekommt ein Label
    (Katze, Einzelereignis, Insekt, Vegetation, Sonne/Lidar, Regen/Sturm,
    Vogel, unbekannt); Labels sind persistent und in der Zeitleiste sichtbar.
-5. **Modell auf dem VPS:** bildet aus den Events des Fensters **Tracks**
-   (Nearest-Neighbor mit Geschwindigkeits-Gate, in Welt-Koordinaten) und
-   bewertet sie nach den Regeln der Aufgabe „Katze oder Störung":
-   Track-Bestätigung (≥4 Beobachtungen in ≤1 s, Netto-Verschiebung ≥0,4 m,
-   Geschwindigkeit 0,1–4 m/s), **Sturm-Erkennung** je Sensor über die
-   Ereignisrate, **Sensor-Gewichte** (Radar hoch, Lidar niedrig — Lidar allein
-   bestätigt nicht) und **Fusion als Beschleuniger** (zwei Sensoren sehen
-   dasselbe → sofort bestätigt). Bestätigte Tracks werden auf Karte und
-   Zeitleiste als **`CatDetected`** markiert, mit Begründung. Alle
-   Schwellwerte stehen in einer **Parameter-JSON im Volume** und sind ohne
-   Container-Neubau im UI änderbar; Modell-**Code**-Änderungen sind ein
+5. **Modell auf dem VPS (v2 — Score statt starrer Regeln):** bildet aus den
+   Events **Tracks** (Nearest-Neighbor mit Geschwindigkeits-Gate, in
+   Welt-Koordinaten; **Track-Stitching** überbrückt kurze Aussetzer, z.B.
+   wenn eine sitzende Katze aus dem Radar fällt) und bewertet jeden Track
+   mit einem **Score 0–100** („Katzen-Wahrscheinlichkeit", mit
+   Aufschlüsselung im UI):
+   - **Pflicht** ist eine **kohärente Bewegungsphase** irgendwo im Track
+     (sonst wäre oszillierende Vegetation eine „sitzende Katze"); dabei
+     zählen **Sensor-Gewichte je Gerätetyp** — die Typen (HLK, Lidar, …)
+     liest der VPS **dynamisch aus `xComDef6_3.h`** (GitHub raw, wie die
+     RasenKarte): neue Sensoren brauchen keinen VPS-Eingriff, und die
+     Gerätedatenbank bleibt die Quelle der Wahrheit. HLK-Radar wiegt hoch,
+     Lidar niedrig — Lidar allein bestätigt nie.
+   - **Erfassungsgrenzen empirisch:** die Langzeitdaten selbst definieren die
+     Abdeckung jedes Sensors (Belegungsraster, im UI einblendbar — inkl.
+     Bewuchs-Verdeckung, die eine statische FOV-Angabe nicht kennt). Eine
+     Katze läuft in den Erfassungsbereich **hinein und hinaus**:
+     Track-Geburt/-Tod nahe dem Rand der **Gesamt-Abdeckung** (Vereinigung
+     aller Sensoren — Übergaben zwischen überlappenden Sensoren zählen so
+     nicht als Austritt) gibt **Bonus**; Auftauchen/Verschwinden mitten im
+     Feld nur einen **weichen Malus** („kann sein, muss nicht").
+   - **Eine Katze darf stehenbleiben (koten!):** „sitzt am Ende stabil"
+     gibt Bonus + Flag **STATIONAER**; ein am Fensterende noch offener
+     Track bekommt keinen Austritts-Malus (Flag OFFEN).
+   - **Sturm-Erkennung** je Sensor über Rate **und räumliche Streuung**
+     (hohe Rate allein ist auch eine normal getrackte Katze; ein Burst ist
+     gleichzeitig überall). **Fusion** (mehrere Sender sehen dasselbe)
+     gibt Bonus; weitere Boni/Maluse: Feld-Durchquerung, langer Track,
+     sehr kurzer Track, unphysikalische Sprünge.
+   Tracks ab `confirm_score` (mit Bewegungsphase) werden auf Karte und
+   Zeitleiste als **`CatDetected`** markiert, mit Score und Begründung.
+   Alle Schwellwerte stehen in einer **Parameter-JSON im Volume** und sind
+   ohne Container-Neubau im UI änderbar; Modell-**Code**-Änderungen sind ein
    Container-Rebuild — die Daten bleiben davon unberührt.
 6. **Mehr-Sensor-fähig:** alles arbeitet je `(sender, sensor)` — es kommen
    sicher 1–2 weitere Radarsensoren dazu, evtl. mehr. Das Modell trackt in

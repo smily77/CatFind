@@ -18,12 +18,29 @@ const ANA = {
   rec: null,
   modelOn: true,
   follow: false,
+  showCov: false,       // empirische Abdeckung einblenden
+  coverage: null,       // /acoverage (Zellmittelpunkte je Sender)
   sensorOff: new Set(), // "sender.sensor" ausgeblendet
   view: null,           // Karten-Transform {cx,cy,s} (Welt-mm -> px)
   selTrack: null,
   sel: null,            // Zeit-Selektion auf der Zeitleiste {t0,t1}
   fetchTimer: null,
 };
+
+function devInfo(sid){
+  const d = (ANA.model && ANA.model.devices) ? ANA.model.devices[String(sid)] : null;
+  return d || {name:"#"+sid, type:""};
+}
+
+function senderKeys(sid){
+  const keys = [];
+  for(const e of (ANA.data?.events||[]))
+    if(String(e.sender) === String(sid)){
+      const k = e.sender + "." + e.sensor;
+      if(!keys.includes(k)) keys.push(k);
+    }
+  return keys;
+}
 
 function anaEl(id){ return document.getElementById(id); }
 function fmtDur(s){
@@ -228,6 +245,18 @@ function drawAnaMap(){
   ctx.strokeStyle = "#1d1d24"; ctx.lineWidth = 1;
   for(let gx=Math.ceil(wx0/step)*step; gx<=wx1; gx+=step){ ctx.beginPath(); ctx.moveTo(X(gx),0); ctx.lineTo(X(gx),H); ctx.stroke(); }
   for(let gy=Math.ceil(wy0/step)*step; gy<=wy1; gy+=step){ ctx.beginPath(); ctx.moveTo(0,Y(gy)); ctx.lineTo(W,Y(gy)); ctx.stroke(); }
+  // empirische Sensor-Abdeckung (aus den Langzeitdaten)
+  if(ANA.showCov && ANA.coverage){
+    const cell = ANA.coverage.cell_mm, cw = Math.max(cell * v.s, 1);
+    ctx.globalAlpha = 0.13;
+    for(const [sid, cells] of Object.entries(ANA.coverage.senders)){
+      const keys = senderKeys(sid);
+      if(keys.length && !keys.some(k=>!ANA.sensorOff.has(k))) continue;   // Sender komplett ausgeblendet
+      ctx.fillStyle = colorFor(+sid, 0);
+      for(const [cx,cy] of cells) ctx.fillRect(X(cx-cell/2), Y(cy+cell/2), cw, cw);
+    }
+    ctx.globalAlpha = 1;
+  }
   // RasenKarte
   if(mapPoints) { ctx.fillStyle="#556"; mapPoints.forEach(p=>ctx.fillRect(X(p[0]*1000)-1.5, Y(p[1]*1000)-1.5, 3, 3)); }
   // Events des Fensters (Alter im Fenster -> Helligkeit)
@@ -255,7 +284,8 @@ function drawAnaMap(){
       ctx.strokeStyle = "#2ecc71"; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(X(cp[1]), Y(cp[2]), 9, 0, 7); ctx.stroke();
       ctx.fillStyle = "#2ecc71"; ctx.font = "bold 11px system-ui";
-      ctx.fillText("CatDetected #" + tr.id, X(cp[1]) + 12, Y(cp[2]) - 6);
+      const tag = (tr.flags||[]).includes("STATIONAER") ? " · sitzt!" : "";
+      ctx.fillText("CatDetected " + tr.score + tag, X(cp[1]) + 12, Y(cp[2]) - 6);
     }
   }
   // Massstab
@@ -326,9 +356,10 @@ function renderSensors(){
   el.innerHTML = Object.keys(cnt).sort().map(k=>{
     const c = cnt[k], off = ANA.sensorOff.has(k);
     const st = (storms[String(c.sender)]||[]).length ? " ⚡" : "";
-    return `<label class="anaSens${off?' off':''}" data-k="${k}">
+    const d = devInfo(c.sender);
+    return `<label class="anaSens${off?' off':''}" data-k="${k}" title="${escapeHtml(d.name)} (${escapeHtml(d.type)})">
       <input type="checkbox" ${off?'':'checked'}>
-      <i style="background:${colorFor(c.sender,c.sensor)}"></i>#${k}${st}
+      <i style="background:${colorFor(c.sender,c.sensor)}"></i>${escapeHtml(d.name)}.${c.sensor}${st}
       <small>${c.n}${c.nw<c.n?` (${c.n-c.nw} o.Welt)`:''}</small></label>`;
   }).join("") || "<div class='hint'>— keine Events im Fenster —</div>";
   el.querySelectorAll(".anaSens input").forEach(inp=>{
@@ -340,16 +371,27 @@ function renderSensors(){
   });
 }
 
+const FLAG_TXT = {STATIONAER:"sitzt! (koten?)", OFFEN:"läuft noch", EINTRITT:"Eintritt am Rand",
+                  AUSTRITT:"Austritt am Rand", FUSION:"mehrere Sensoren"};
+
 function renderTracks(){
   const el = anaEl("anaTracks"); if(!el) return;
   if(!ANA.model){ el.innerHTML = "<div class='hint'>— Modell aus / kein Ergebnis —</div>"; return; }
   const trs = ANA.model.tracks.filter(t=>t.n>=2 || t.confirmed)
-              .sort((a,b)=>(b.confirmed-a.confirmed) || (b.n-a.n)).slice(0,80);
-  el.innerHTML = `<div class="hint">${ANA.model.n_confirmed}× CatDetected / ${ANA.model.tracks.length} Tracks</div>` +
-    trs.map(t=>`<div class="anaTrack${t.confirmed?' cat':''}${ANA.selTrack===t.id?' sel':''}" data-id="${t.id}">
-      ${t.confirmed?'🐱':'·'} #${t.id} n=${t.n} ${fmtDur(t.t1-t.t0)} ${(t.net_mm/1000).toFixed(1)}m
-      ${t.v_mean? (t.v_mean/1000).toFixed(1)+'m/s':''}
-      <small>${t.confirmed ? t.reasons.join(",") : escapeHtml(t.reject||"")}</small></div>`).join("");
+              .sort((a,b)=>(b.confirmed-a.confirmed) || (b.score-a.score) || (b.n-a.n)).slice(0,80);
+  const edge = ANA.model.edge_active ? "" :
+        `<div class="hint" style="color:#c93">Randlogik inaktiv — noch zu wenig Abdeckungsdaten</div>`;
+  el.innerHTML = `<div class="hint">${ANA.model.n_confirmed}× CatDetected / ${ANA.model.tracks.length} Tracks</div>` + edge +
+    trs.map(t=>{
+      const flags = (t.flags||[]).map(f=>FLAG_TXT[f]||f).join(" · ");
+      const det = (ANA.selTrack===t.id && t.score_detail)
+        ? `<small>${t.score_detail.map(d=>`${d[1]>0?'+':''}${d[1]} ${escapeHtml(d[0])}`).join("<br>")}</small>`
+        : `<small>${escapeHtml(t.confirmed ? flags : (t.reject||"") + (flags?` · ${flags}`:""))}</small>`;
+      return `<div class="anaTrack${t.confirmed?' cat':''}${ANA.selTrack===t.id?' sel':''}" data-id="${t.id}">
+      ${t.confirmed?'🐱':'·'} <b>${t.score}</b> #${t.id} n=${t.n} · ${fmtDur(t.t1-t.t0)} · ${(t.net_mm/1000).toFixed(1)}m
+      ${t.v_mean? '· '+(t.v_mean/1000).toFixed(1)+'m/s':''}
+      ${det}</div>`;
+    }).join("");
   el.querySelectorAll(".anaTrack").forEach(d=>{
     d.onclick = ()=>{
       const id = +d.dataset.id;
@@ -423,6 +465,13 @@ async function anaShow(){
     anaEl("anaZo").onclick = ()=>anaZoomTime(1.6);
     anaEl("anaBNow").onclick = anaNow;
     anaEl("anaModelChk").onchange = e=>{ ANA.modelOn = e.target.checked; anaFetchWindow(); };
+    anaEl("anaCovChk").onchange = async e=>{
+      ANA.showCov = e.target.checked;
+      if(ANA.showCov && !ANA.coverage){
+        try{ ANA.coverage = await anaJson("/acoverage"); }catch(err){ ANA.coverage = null; }
+      }
+      drawAnaMap();
+    };
     anaEl("anaFollowChk").onchange = e=>{ ANA.follow = e.target.checked; if(ANA.follow) anaNow(); };
     anaEl("anaBParams").onclick = anaParams;
     anaEl("anaBLabel").onclick = anaAddLabel;
