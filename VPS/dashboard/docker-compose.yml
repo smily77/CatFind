@@ -6,5 +6,11 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+    volumes:
+      # Persistente Analyse-Daten (SQLite + Modell-Parameter) — überleben
+      # Container-Neubauten und liegen NICHT in GitHub.
+      - /opt/catfinder/data:/data
     environment:
       MAP_URL: "https://raw.githubusercontent.com/smily77/CatFind/main/Map/RasenKarte.csv"
+      DB_PATH: "/data/catfinder.db"
+      PARAMS_PATH: "/data/model_params.json"

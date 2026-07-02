@@ -514,7 +514,12 @@ Jedes Programm folgt demselben Grundgerüst:
   Bus und leitet `catObserved`, `HB` und die Text-Debug-Meldungen gebündelt per
   HTTP-POST an das VPS-Dashboard weiter (`ipVPS:80/ingest`, ~alle 1,5 s,
   `gatewayProc.ino`). Pro Event geht `sender`, `sensor`, Welt- und
-  Relativkoordinaten sowie die Koordinatengruppe (`device[sender].group`) mit.
+  Relativkoordinaten sowie die Koordinatengruppe (`device[sender].group`) mit —
+  und seit der Analyse-Erweiterung zusätzlich die **Empfangszeit `ms`**
+  (`millis()`, für ms-genaue Event-Zeiten auf dem VPS trotz 1,5-s-Bündelung),
+  der **`targetSpeed`** des Radars sowie pro Push `now_ms` und ein
+  **Drop-Zähler** (`dropped`, vom Burst-Schutz verworfene Events — bei
+  Lidar-Sonnen-Bursts ist die Menge das Erkennungsmerkmal).
   Fällt der Manager aus, läuft das lokale Netz weiter — nur die Visualisierung
   pausiert. (Burst-Verlust durch den Single-Buffer-Empfang ist für die
   akkumulierende Karte unkritisch.)
@@ -793,7 +798,21 @@ gespeichert; **Lidar-Motor** an/aus (`lidar.stop()`/`startScan()`), Default an u
 > aktiven Geräte (HB), eine pro Minute zusammengefasste Ereignisliste (Zeit,
 > **Trefferzahl** und meldende Sensoren) und Karten der `catObserved` in Welt-
 > bzw. relativen Gruppen-Koordinaten (Farbe je Sensor/Ziel, Reset-Button). State
-> im RAM (kumuliert bis Reset).
+> der Live-Ansichten im RAM (kumuliert bis Reset).
+>
+> **Tab „Analyse"** (Aufgabe „VPS-Modellierung der Katzenerkennung",
+> GesamtKonzeptCatFinder.md): zeichnet alle `catObserved` **persistent** in
+> eine SQLite-DB im Docker-Volume `/opt/catfinder/data/` auf (REC-Schalter =
+> Pause/Append, Zustand persistent; überlebt Container-Neubauten, nichts in
+> GitHub). UI: Zeitleiste mit Ereignisdichte über die ganze Aufnahme (Fenster
+> verschieben per Ziehen, strecken/stauchen per Mausrad, Shift+Ziehen =
+> Bereich für Label), Welt-Karte mit Pan/Zoom, Sensoren einzeln ausblendbar,
+> Labels (Katze/Störungsarten) persistent. Das **Modell** (`catmodel.py`:
+> Track-Bildung, Sturm-Erkennung je Sensor, Ebene-2-Bestätigung,
+> Sensor-Gewichte — Lidar allein bestätigt nie —, Fusion) markiert bestätigte
+> Tracks als **CatDetected**; alle Schwellwerte in `model_params.json` im
+> Volume, ohne Rebuild im UI änderbar (Endpunkte `/rec /density /adata /amodel
+> /aparams /alabels`).
 
 ### 5.11 radarCalibrationButton — Touch-Fernbedienung für die Radar-Kalibrierung
 

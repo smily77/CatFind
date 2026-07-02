@@ -41,6 +41,33 @@
   .sw { border:none; border-radius:6px; padding:5px 14px; cursor:pointer; color:#fff; font-size:13px; min-width:64px; }
   .sw.on { background:#1f8a3b; } .sw.off { background:#7a2230; }
   .act { border:none; border-radius:6px; padding:7px 14px; margin:5px 0; cursor:pointer; color:#fff; font-size:13px; background:#2d6cdf; width:100%; text-align:left; }
+  /* ---- Analyse-Tab ---- */
+  #ana { height:100%; display:flex; flex-direction:column; }
+  #anaBar { display:flex; align-items:center; gap:6px; padding:6px 8px; flex-wrap:wrap; background:#16161b; border-bottom:1px solid #2a2a30; }
+  #anaBar button, #anaBar select { background:#2a2a33; color:#ccc; border:1px solid #3a3a44; border-radius:5px; padding:4px 8px; cursor:pointer; font-size:12px; }
+  #anaBar label { font-size:12px; color:#aaa; display:flex; gap:4px; align-items:center; }
+  #anaWinInfo { font-size:12px; color:#89a; padding:2px 10px; background:#111; }
+  #anaTl { height:92px !important; min-height:92px; width:100%; border-bottom:1px solid #2a2a30; cursor:crosshair; }
+  #anaMain { position:relative; flex:1; min-height:0; display:flex; }
+  #anaMapWrap { flex:1; min-width:0; position:relative; }
+  #anaMap { position:absolute; inset:0; width:100%; height:100%; cursor:grab; }
+  #anaSide { width:260px; min-width:260px; border-left:1px solid #333; overflow:auto; font-size:12px; }
+  #anaSide h2 { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:#888; margin:0; padding:5px 8px; background:#16161b; border-bottom:1px solid #2a2a30; position:sticky; top:0; }
+  .anaSens { display:flex; gap:5px; padding:3px 8px; align-items:center; cursor:pointer; }
+  .anaSens i { width:9px; height:9px; border-radius:2px; display:inline-block; }
+  .anaSens.off { opacity:.45; }
+  .anaSens small { margin-left:auto; color:#777; }
+  .anaTrack { padding:3px 8px; border-bottom:1px solid #1e1e24; cursor:pointer; }
+  .anaTrack.cat { color:#7fe0a4; }
+  .anaTrack.sel { background:#22304a; }
+  .anaTrack small { display:block; color:#667; }
+  .anaLbl { display:flex; align-items:center; gap:5px; padding:3px 8px; }
+  .anaLbl i { width:9px; height:9px; border-radius:2px; display:inline-block; }
+  .anaLbl small { color:#777; }
+  .anaLbl button { margin-left:auto; background:none; border:none; color:#c66; cursor:pointer; }
+  #anaParamsOv { position:absolute; inset:0; background:#000a; display:flex; align-items:center; justify-content:center; z-index:5; }
+  #anaParamsBox { background:#1a1a22; border:1px solid #444; border-radius:8px; padding:12px; width:min(560px,90%); }
+  #anaParamsBox textarea { width:100%; height:320px; background:#0d0d12; color:#cde; font:12px ui-monospace,monospace; border:1px solid #333; }
 </style>
 </head>
 <body>
@@ -51,6 +78,7 @@
   <button class="tab" data-v="g1">Gruppe 1</button>
   <button class="tab" data-v="g2">Gruppe 2</button>
   <button class="tab" data-v="g3">Gruppe 3</button>
+  <button class="tab" data-v="ana">Analyse</button>
   <button class="tab" data-v="ctrl">Steuerung</button>
   <button id="reset">Karten zurücksetzen</button>
 </header>
@@ -71,6 +99,45 @@
     <canvas id="cv" style="display:none"></canvas>
     <div id="legend" style="display:none"></div>
     <div class="hint" id="hint" style="display:none"></div>
+    <div id="ana" style="display:none">
+      <div id="anaBar">
+        <span id="anaRec"></span>
+        <button id="anaB1" title="viel zurück">⏮</button>
+        <button id="anaB2" title="zurück">◀</button>
+        <button id="anaB3" title="vor">▶</button>
+        <button id="anaB4" title="viel vor">⏭</button>
+        <button id="anaZi" title="Fenster strecken (rein-zoomen)">＋</button>
+        <button id="anaZo" title="Fenster stauchen (raus-zoomen)">－</button>
+        <button id="anaBNow">Jetzt</button>
+        <label><input type="checkbox" id="anaModelChk" checked> Modell</label>
+        <label><input type="checkbox" id="anaFollowChk"> live folgen</label>
+        <button id="anaBParams">Parameter…</button>
+        <select id="anaLblSel"></select>
+        <select id="anaLblSender"></select>
+        <button id="anaBLabel" title="labelt die Zeit-Selektion (Shift+Ziehen in der Zeitleiste), sonst das ganze Fenster">Label setzen</button>
+        <span id="anaModelErr" style="color:#e66;font-size:12px"></span>
+      </div>
+      <div id="anaWinInfo"></div>
+      <canvas id="anaTl" title="Ziehen = Fenster verschieben · Rad = strecken/stauchen · Shift+Ziehen = Bereich für Label wählen"></canvas>
+      <div id="anaMain">
+        <div id="anaMapWrap"><canvas id="anaMap" title="Ziehen = verschieben · Rad = zoomen · Doppelklick = einpassen"></canvas></div>
+        <div id="anaSide">
+          <h2>Sensoren (Fenster)</h2><div id="anaSensors"></div>
+          <h2>Tracks (Modell)</h2><div id="anaTracks"></div>
+          <h2>Labels (Fenster)</h2><div id="anaLabels"></div>
+        </div>
+      </div>
+      <div id="anaParamsOv" style="display:none">
+        <div id="anaParamsBox">
+          <h3 style="margin:0 0 8px">Modell-Parameter (JSON, im Volume persistiert)</h3>
+          <textarea id="anaParamsTxt" spellcheck="false"></textarea>
+          <div style="margin-top:8px;display:flex;gap:8px">
+            <button class="act" style="width:auto" id="anaParamsSave">Speichern + neu rechnen</button>
+            <button class="tab" id="anaParamsClose">Abbrechen</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 <script>
@@ -87,14 +154,16 @@ const CMD_SET_SETTING=20;
 function setView(v,b){
   view=v;
   document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active", x===b));
-  const isList=v==="list", isCtrl=v==="ctrl", isMap=!isList&&!isCtrl;
+  const isList=v==="list", isCtrl=v==="ctrl", isAna=v==="ana", isMap=!isList&&!isCtrl&&!isAna;
   document.getElementById("list").style.display   = isList?"block":"none";
   document.getElementById("ctrl").style.display   = isCtrl?"block":"none";
+  document.getElementById("ana").style.display    = isAna?"flex":"none";
   document.getElementById("cv").style.display     = isMap?"block":"none";
   document.getElementById("legend").style.display = isMap?"block":"none";
   document.getElementById("hint").style.display   = isMap?"block":"none";
   if(isMap) drawCurrent();
   if(isCtrl){ renderCtrl(lastSettings); reqAll(); }
+  if(isAna) anaShow();
 }
 document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>setView(b.dataset.v,b));
 
@@ -210,5 +279,6 @@ async function tick(){
 }
 (async()=>{ try{ mapPoints=(await (await fetch("/map")).json()).points; }catch(e){ mapPoints=[]; } tick(); setInterval(tick,1500); })();
 </script>
+<script src="static/analysis.js"></script>
 </body>
 </html>

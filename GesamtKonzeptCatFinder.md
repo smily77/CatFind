@@ -451,7 +451,102 @@ Ebene 2 (~0,5 s); (c) beide Sensoren rauschen gleichzeitig überall → Umwelt
    PAs); Schwellwerte aus den gesammelten Daten.
 4. Optional: Fusion-Schnellpfad (Ebene 3a) + ESP32-CAM.
 
-(Noch nicht umgesetzt — Stand 2026-07-02: Strategie festgelegt, Umsetzung
-beginnt mit dem Sturm-Modus und der Datensammlung.)
+(Stand 2026-07-02: Strategie festgelegt. Die Umsetzung beginnt — anders als
+oben zunächst geplant — mit der **VPS-Modellierung der Katzenerkennung**
+(nächste Aufgabe unten): erst das Erkennungsmodell auf dem VPS an echten
+Langzeitdaten entwickeln, dann die abgeleiteten Regeln lokal umsetzen.
+Sturm-Modus im C1 und Track-Bestätigung in `xComProc` bleiben gültige
+Bausteine und folgen danach.)
+
+## Aufgabe: VPS-Modellierung der Katzenerkennung (CatDetected)
+
+### Grobkonzept
+
+Ziel ist die **qualifizierte Aussage `CatDetected`**: das System hat aus den
+rohen `catObserved`-Beobachtungen geschlossen, dass es sich tatsächlich um eine
+Katze handelt. Die Aktoren sollen künftig auf `CatDetected` reagieren statt auf
+rohe `catObserved` (sie prüfen weiterhin selbst No-Shot, Limits, Sicherheit).
+Die Live-Entscheidung muss am Ende **lokal im CatFind-Netz** laufen — geplant
+auf einem **spezialisierten ESP32** (ein Raspberry Pi nur, wenn es wirklich,
+wirklich nicht anders geht — also fast sicher nicht). Der VPS ist **nicht** Teil
+der Live-Kette; er ist das **Modellierungs- und Analysewerkzeug**, mit dem das
+Erkennungsmodell an echten Daten entwickelt wird, bevor es auf den ESP32 kommt.
+(Das Dokument `CatDetectionModelingStrategy.md` war hierfür die Inspiration;
+verbindlich sind die Festlegungen in dieser Aufgabe.)
+
+**Erkenntnisse aus den Outdoor-Tests (2026-07, Kalibrierung erfolgreich):**
+
+- Das **Radar** ist der **primäre Katzendetektor**: eine Katze wird mit recht
+  hoher Wahrscheinlichkeit erkannt; Störungen kommen vor, sind aber beherrschbar.
+- Der **LidarC1** produziert je nach Wetter/Tageszeit extrem viele
+  Fehlereignisse und sieht die Katze meist gar nicht — **super zum
+  Lokalisieren, wenig nützlich zum Detektieren**. Er darf die Erkennung
+  unterstützen, seine Bestätigung darf aber nie Pflicht sein.
+- Die **Detektionsgrenzen** helfen bei der Wahrscheinlichkeits-Bewertung:
+  beim Radar ist der **Öffnungswinkel eher hart** (Achtung: Bewuchs kann Teile
+  verdecken), die **Maximalreichweite dagegen weich** (objektgrössenabhängig).
+
+**Arbeitsweise:** Der VPS zeichnet die `catObserved` über sehr lange Zeit
+persistent auf. Auf einer neuen, zoombaren Analyse-Karte geht man in der Zeit
+vorwärts/rückwärts, streckt und staucht das Zeitfenster, blendet einzelne
+Sensoren ein/aus, beurteilt die Signale und markiert (labelt) sie. Der VPS
+markiert die `CatDetected`-Ereignisse nach seinem Modell; wo das Modell
+danebenliegt, werden Parameter angepasst oder das Modell ergänzt — so lange,
+bis die Trefferwahrscheinlichkeit im Gesamten gut ist. Erst dann wird das
+Modell auf dem ESP32 implementiert.
+
+### Konkret / Festlegungen
+
+1. **Erweiterung, kein Umbau:** Alles, was auf dem VPS läuft (Live-Dashboard,
+   Karten, Steuerung, Localizer), läuft unverändert weiter. Die Analyse kommt
+   als **zusätzlicher Tab** ins bestehende Dashboard (`VPS/dashboard/`).
+2. **Persistenz:** Alle eingehenden `catObserved` werden — bei eingeschalteter
+   Aufnahme — in eine **SQLite-Datenbank in einem Docker-Volume**
+   (`/opt/catfinder/data/`) geschrieben. Die Daten überleben damit
+   Container-Neubauten (Modelländerungen!) und liegen **nicht** in GitHub.
+   Die Aufnahme hat **Pause/Append**: ein REC-Schalter im UI pausiert die
+   Aufzeichnung bzw. setzt sie fort (an dieselbe Datenbank anhängend); der
+   Zustand ist persistent. Labels und Modell-Parameter liegen im selben Volume.
+3. **Millisekunden-Zeitstempel (Manager-Erweiterung):** Der Manager bündelt
+   Events ~1,5 s — ohne Gegenmassnahme bekämen alle Events eines Pushes
+   dieselbe Zeit, und Geschwindigkeits-/Bahn-Features wären unmöglich. Der
+   Manager schickt deshalb pro Event zusätzlich seine **Empfangszeit
+   (`millis()`)**, den **targetSpeed** des Radars sowie pro Push `now_ms` und
+   einen **Drop-Zähler** (wie viele Events der Burst-Schutz verworfen hat —
+   bei Lidar-Sonnen-Bursts ist gerade die Menge das Erkennungsmerkmal). Der
+   VPS rechnet daraus ms-genaue Serverzeiten. Abwärtskompatibel: Events ohne
+   `ms` bekommen die Push-Zeit.
+4. **Analyse-Tab:** Zeitleiste mit Ereignisdichte über die **gesamte**
+   Aufnahme; das betrachtete Zeitfenster lässt sich verschieben, strecken und
+   stauchen. Darunter eine **Welt-Karte mit Pan/Zoom** (RasenKarte als
+   Hintergrund), auf der die Events des Fensters erscheinen (Farbe je
+   Sensor/Ziel). Einzelne Sensoren sind ein-/ausblendbar. **Labeln:** ein
+   Zeitbereich (optional auf einen Sensor beschränkt) bekommt ein Label
+   (Katze, Einzelereignis, Insekt, Vegetation, Sonne/Lidar, Regen/Sturm,
+   Vogel, unbekannt); Labels sind persistent und in der Zeitleiste sichtbar.
+5. **Modell auf dem VPS:** bildet aus den Events des Fensters **Tracks**
+   (Nearest-Neighbor mit Geschwindigkeits-Gate, in Welt-Koordinaten) und
+   bewertet sie nach den Regeln der Aufgabe „Katze oder Störung":
+   Track-Bestätigung (≥4 Beobachtungen in ≤1 s, Netto-Verschiebung ≥0,4 m,
+   Geschwindigkeit 0,1–4 m/s), **Sturm-Erkennung** je Sensor über die
+   Ereignisrate, **Sensor-Gewichte** (Radar hoch, Lidar niedrig — Lidar allein
+   bestätigt nicht) und **Fusion als Beschleuniger** (zwei Sensoren sehen
+   dasselbe → sofort bestätigt). Bestätigte Tracks werden auf Karte und
+   Zeitleiste als **`CatDetected`** markiert, mit Begründung. Alle
+   Schwellwerte stehen in einer **Parameter-JSON im Volume** und sind ohne
+   Container-Neubau im UI änderbar; Modell-**Code**-Änderungen sind ein
+   Container-Rebuild — die Daten bleiben davon unberührt.
+6. **Mehr-Sensor-fähig:** alles arbeitet je `(sender, sensor)` — es kommen
+   sicher 1–2 weitere Radarsensoren dazu, evtl. mehr. Das Modell trackt in
+   Welt-Koordinaten (`worldValid=1`); Events ohne Welt-Koordinaten werden auf
+   der Analyse-Karte nicht dargestellt (die Sensoren sind inzwischen
+   welt-posiert).
+7. **Nicht Teil dieser Aufgabe** (Folgeaufgaben, notiert): das
+   `CatDetected`-Wire-Event und der ESP32-DetectionActor (erst wenn das Modell
+   steht); Sensor-/Aktorprofile in `xComDef6_3.h` (2. Priorität — auch für
+   Karten-Overlays der Detektionsbereiche und Aktor-Reichweiten); am Radar:
+   No-Shot-/RasenKarten-Gating, Mute je Sensor (VPS + Display, wegen mehrerer
+   Radars) und die Kopplung des Pose-Drift-Health-Checks an das
+   Auto-Kalibrierungs-Setting (läuft heute fälschlich auch bei „aus").
 
 
