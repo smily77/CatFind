@@ -33,7 +33,7 @@ Analyse (Aufgabe "VPS-Modellierung der Katzenerkennung", GesamtKonzeptCatFinder.
   POST /alabel          Label anlegen {t0,t1,sender,label,note}
   POST /alabel_del      Label löschen {id}
 """
-import os, time, json, sqlite3, threading, urllib.request
+import os, re, time, json, sqlite3, threading, urllib.request
 from collections import deque, OrderedDict
 from flask import Flask, request, jsonify, send_from_directory
 import catmodel
@@ -46,14 +46,73 @@ MAX_EVENTS   = int(os.environ.get("MAX_EVENTS", "20000"))
 HB_WINDOW_S  = int(os.environ.get("HB_WINDOW_S", "180"))    # "aktiv" = HB in den letzten 3 min
 DB_PATH      = os.environ.get("DB_PATH", "/data/catfinder.db")
 PARAMS_PATH  = os.environ.get("PARAMS_PATH", "/data/model_params.json")
+XCOMDEF_URL  = os.environ.get(
+    "XCOMDEF_URL",
+    "https://raw.githubusercontent.com/smily77/CatFind/main/Controller/Manager6_3_0/xComDef6_3.h")
 
-# Geräte-Verzeichnis (spiegelt device[] in xComDef6_3.h; nur für Anzeigenamen/Gruppen)
-DEVICES = {
-    0:("Manager",0), 1:("Dome",0), 2:("MiniDome",2), 3:("CompactDome",1),
-    4:("PA2i",1), 5:("Disp7",0), 6:("CYD",0), 7:("LD06",1), 8:("Schalter",0),
-    9:("Disp5",0), 10:("Core2",0), 11:("Tab5",0), 12:("CYD35Z",0), 13:("Wave7z",0),
-    14:("Sim",0), 15:("LaserMarker",0), 16:("PA1_1",2), 17:("LidarC1",0),
+# Fallback-Geräteverzeichnis (Namen/Typen/Gruppen), falls xComDef6_3.h nicht
+# erreichbar ist. Führend ist IMMER die live geparste xComDef6_3.h (s.u.).
+FALLBACK_DEVICES = {
+    0:("Manager","MananagementDevice",0), 1:("Dome","HLK",3), 2:("MiniDome","HLK",2),
+    3:("CompactDome","HLK",1), 4:("PA2i","PowerActor",1), 5:("Disp7","Screen",0),
+    6:("CYD","Controller",0), 7:("LD06","Lidar",1), 8:("Schalter","onOffSchalter",0),
+    9:("Disp5","Screen",0), 10:("Core2","Screen",0), 11:("Tab5","Screen",0),
+    12:("CYD35Z","Screen",0), 13:("Wave7z","Screen",0), 14:("Sim","MananagementDevice",0),
+    15:("LaserMarker","Marker",0), 16:("PA1_1","PowerActor",2), 17:("LidarC1","Lidar",0),
 }
+
+# ------------------------------------------------- Gerätetabelle aus xComDef6_3.h
+# xComDef6_3.h ist die Quelle der Wahrheit (Gerät -> Typ/Gruppe/Name); der VPS
+# liest sie dynamisch aus dem GitHub-Repo — neue Sensoren brauchen keinen
+# VPS-Eingriff. Der TYP steuert im Modell die Sensor-Gewichte (HLK vs. Lidar).
+
+_dev_lock = threading.Lock()
+_devtab = {i: {"name": n, "type": t, "group": g}
+           for i, (n, t, g) in FALLBACK_DEVICES.items()}
+_dev_ts = 0.0
+
+
+def parse_xcomdef(text):
+    m = re.search(r"stationDefinitions\s+device\s*\[\s*\d*\s*\]\s*=\s*\{(.*?)\}\s*;",
+                  text, re.S)
+    if not m:
+        return {}
+    defines = dict(re.findall(r"#define\s+(\w+)\s+(\d+)", text))
+    tab = {}
+    pat = re.compile(r"\{\s*(\w+)\s*,\s*\w+\s*,\s*\w+\s*,\s*(\w+)\s*,\s*\"([^\"]*)\"")
+    for i, em in enumerate(pat.finditer(m.group(1))):
+        typ, grp, name = em.groups()
+        tab[i] = {"name": name, "type": typ,
+                  "group": int(defines.get(grp, grp if grp.isdigit() else "0"))}
+    return tab
+
+
+def load_devices():
+    """Gerätetabelle liefern; alle 10 min frisch aus dem Repo geparst."""
+    global _devtab, _dev_ts
+    with _dev_lock:
+        if _devtab and time.time() - _dev_ts < 600:
+            return _devtab
+        try:
+            with urllib.request.urlopen(XCOMDEF_URL, timeout=10) as r:
+                tab = parse_xcomdef(r.read().decode("utf-8", "replace"))
+            if len(tab) >= 10:
+                _devtab = tab
+                print("xComDef geladen: %d Geräte" % len(tab), flush=True)
+        except Exception as e:                                   # noqa: BLE001
+            print("xComDef fetch failed: %s" % e, flush=True)
+        _dev_ts = time.time()
+        return _devtab
+
+
+def dev_name(sid):
+    d = _devtab.get(sid)
+    return d["name"] if d else "?"
+
+
+def dev_group(sid):
+    d = _devtab.get(sid)
+    return d["group"] if d else 0
 
 _lock = threading.Lock()
 _debug = deque(maxlen=80)        # {t, msg}
@@ -243,7 +302,7 @@ def state():
         for sid, d in sorted(_devices.items()):
             age = now - d["t"]
             if age <= HB_WINDOW_S:
-                devs.append({"id": sid, "name": DEVICES.get(sid, ("?", 0))[0],
+                devs.append({"id": sid, "name": dev_name(sid),
                              "ip": d["ip"], "age": round(age, 1)})
         # Steuerung nur fuer AKTIVE Geraete (HB in den letzten HB_WINDOW_S Sekunden gesehen).
         # Ein abgeschaltetes Geraet faellt so aus der Steuerungsliste, auch wenn sein letzter
@@ -254,7 +313,7 @@ def state():
             if not dev or (now - dev["t"]) > HB_WINDOW_S:
                 continue
             settings[str(sid)] = {"sup": s["sup"], "val": s["val"], "act": s["act"],
-                                  "name": DEVICES.get(sid, ("?", 0))[0],
+                                  "name": dev_name(sid),
                                   "ip": dev.get("ip", 0),
                                   "age": round(now - dev["t"], 1)}
         return jsonify(now=now, reset_seq=_reset_seq,
@@ -391,6 +450,52 @@ def adata():
     return jsonify(t0=t0, t1=t1, total=total, stride=stride, events=evs)
 
 
+# ------------------------------------------------- empirische Sensor-Abdeckung
+# Die LANGZEIT-Daten selbst definieren, wo jeder Sensor überhaupt sieht
+# (Belegungsraster). Das Modell bewertet Track-Geburt/-Tod am Rand der
+# GESAMT-Abdeckung (Katze läuft hinein/hinaus); Bewuchs-Verdeckung steckt
+# automatisch in der Empirie. Teuer -> gecacht (10 min TTL).
+
+_cov_lock = threading.Lock()
+_cov = None
+_cov_ts = 0.0
+_cov_key = None
+
+
+def get_coverage(p):
+    global _cov, _cov_ts, _cov_key
+    key = (p["cov_cell_mm"], p["cov_min_events"])
+    with _cov_lock:
+        if _cov is not None and key == _cov_key and time.time() - _cov_ts < 600:
+            return _cov
+        with _db_lock:
+            total = _db.execute("SELECT COUNT(*) FROM events WHERE wv=1").fetchone()[0]
+            stride = max(1, total // 300000)
+            rows = _db.execute(
+                "SELECT sender,wx,wy FROM events WHERE wv=1 AND (id % ?)=0",
+                (stride,)).fetchall()
+        pts = {}
+        for sid, x, y in rows:
+            pts.setdefault(sid, []).append((x, y))
+        min_ev = p["cov_min_events"] if stride == 1 else max(1, p["cov_min_events"] // stride)
+        _cov = catmodel.build_coverage(pts, p["cov_cell_mm"], min_ev)
+        _cov_ts, _cov_key = time.time(), key
+        return _cov
+
+
+@app.get("/acoverage")
+def acoverage():
+    # Abdeckungs-Zellen je Sensor fürs Karten-Overlay (Zellmittelpunkte, mm).
+    p = catmodel.merged_params(load_params())
+    cov = get_coverage(p)
+    cell = cov["cell_mm"]
+    out = {str(sid): [[(ix + 0.5) * cell, (iy + 0.5) * cell] for ix, iy in cells]
+           for sid, cells in cov["senders"].items()}
+    return jsonify(cell_mm=cell, senders=out,
+                   union_cells=len(cov["union"]),
+                   edge_active=len(cov["union"]) >= p["cov_min_cells"])
+
+
 @app.get("/amodel")
 def amodel():
     # Modell über ein Zeitfenster: Tracks + Stürme + CatDetected-Markierung.
@@ -408,8 +513,13 @@ def amodel():
             "WHERE t>=? AND t<=? AND wv=1 ORDER BY t", (t0, t1)).fetchall()
     evs = [{"t": r[0], "sender": r[1], "sensor": r[2], "wx": r[3], "wy": r[4],
             "speed": r[5]} for r in rows]
-    res = catmodel.analyze(evs, load_params())
+    params = catmodel.merged_params(load_params())
+    devices = load_devices()
+    res = catmodel.analyze(evs, params, devices=devices,
+                           coverage=get_coverage(params))
     res["t0"], res["t1"] = t0, t1
+    res["devices"] = {str(k): {"name": v["name"], "type": v["type"]}
+                      for k, v in devices.items()}
     return jsonify(res)
 
 
@@ -467,6 +577,7 @@ def alabel_del():
 
 init_db()
 load_map()
+load_devices()
 
 if __name__ == "__main__":
     from waitress import serve
