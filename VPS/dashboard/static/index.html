@@ -47,6 +47,7 @@
   #anaBar button, #anaBar select { background:#2a2a33; color:#ccc; border:1px solid #3a3a44; border-radius:5px; padding:4px 8px; cursor:pointer; font-size:12px; }
   #anaBar label { font-size:12px; color:#aaa; display:flex; gap:4px; align-items:center; }
   #anaWinInfo { font-size:12px; color:#89a; padding:2px 10px; background:#111; }
+  #anaRecWarn { background:#7a2230; color:#fff; font-size:13px; font-weight:600; padding:6px 12px; }
   #anaTl { height:92px !important; min-height:92px; width:100%; border-bottom:1px solid #2a2a30; cursor:crosshair; }
   #anaMain { position:relative; flex:1; min-height:0; display:flex; }
   #anaMapWrap { flex:1; min-width:0; position:relative; }
@@ -109,6 +110,7 @@
         <button id="anaZi" title="Fenster strecken (rein-zoomen)">＋</button>
         <button id="anaZo" title="Fenster stauchen (raus-zoomen)">－</button>
         <button id="anaBNow">Jetzt</button>
+        <button id="anaBAll" title="ganze Aufnahme zeigen">Alles</button>
         <label><input type="checkbox" id="anaModelChk" checked> Modell</label>
         <label><input type="checkbox" id="anaCovChk" title="empirische Sensor-Abdeckung aus den Langzeitdaten"> Abdeckung</label>
         <label><input type="checkbox" id="anaFollowChk"> live folgen</label>
@@ -118,8 +120,9 @@
         <button id="anaBLabel" title="labelt die Zeit-Selektion (Shift+Ziehen in der Zeitleiste), sonst das ganze Fenster">Label setzen</button>
         <span id="anaModelErr" style="color:#e66;font-size:12px"></span>
       </div>
+      <div id="anaRecWarn" style="display:none">⚠ AUFNAHME PAUSIERT — eingehende Events werden NICHT gespeichert! (REC-Knopf oben links startet sie)</div>
       <div id="anaWinInfo"></div>
-      <canvas id="anaTl" title="Ziehen = Fenster verschieben · Rad = strecken/stauchen · Shift+Ziehen = Bereich für Label wählen"></canvas>
+      <canvas id="anaTl" title="Ziehen = Fenster verschieben · Rad = strecken/stauchen · Shift+Ziehen = Bereich für Label wählen · grünes Band unten = aufgezeichnet"></canvas>
       <div id="anaMain">
         <div id="anaMapWrap"><canvas id="anaMap" title="Ziehen = verschieben · Rad = zoomen · Doppelklick = einpassen"></canvas></div>
         <div id="anaSide">

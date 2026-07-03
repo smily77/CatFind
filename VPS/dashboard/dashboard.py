@@ -151,16 +151,48 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         t0 REAL, t1 REAL, sender INT, label TEXT, note TEXT, created REAL)""")
     _db.execute("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)")
+    # Aufnahme-Abschnitte: wo wurde tatsächlich aufgezeichnet? (für die
+    # Zeitleiste — Lücken = Pause/Container-Downtime sichtbar machen)
+    _db.execute("""CREATE TABLE IF NOT EXISTS recspans(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, t0 REAL, t1 REAL)""")
     _db.commit()
     row = _db.execute("SELECT v FROM meta WHERE k='rec'").fetchone()
     _rec_on = (row is None) or (row[0] == "1")   # Default: Aufnahme AN
+    # Migration: Daten aus der Zeit vor Einführung der recspans bekommen
+    # einen Abschnitt über ihre gesamte Zeitspanne.
+    if _db.execute("SELECT COUNT(*) FROM recspans").fetchone()[0] == 0:
+        row = _db.execute("SELECT MIN(t),MAX(t) FROM events").fetchone()
+        if row and row[0] is not None:
+            _db.execute("INSERT INTO recspans(t0,t1) VALUES(?,?)", (row[0], row[1]))
+            _db.commit()
     print("db ready: %s (rec=%s)" % (DB_PATH, _rec_on), flush=True)
 
 
+_span_id = None                  # offener Aufnahme-Abschnitt (None = noch keiner)
+_span_upd = 0.0
+
+
+def _span_touch(now):
+    """Aufnahme-Abschnitt fortschreiben (unter _db_lock aufrufen).
+    Liefert True, wenn in der DB etwas geändert wurde."""
+    global _span_id, _span_upd
+    if _span_id is None:
+        cur = _db.execute("INSERT INTO recspans(t0,t1) VALUES(?,?)", (now, now))
+        _span_id = cur.lastrowid
+        _span_upd = now
+        return True
+    if now - _span_upd >= 5:
+        _db.execute("UPDATE recspans SET t1=? WHERE id=?", (now, _span_id))
+        _span_upd = now
+        return True
+    return False
+
+
 def set_rec(on):
-    global _rec_on
+    global _rec_on, _span_id
     with _db_lock:
         _rec_on = bool(on)
+        _span_id = None          # Pause beendet den Abschnitt; Start öffnet neuen
         _db.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('rec',?)",
                     ("1" if _rec_on else "0",))
         _db.commit()
@@ -267,15 +299,19 @@ def ingest():
         if len(_events) > MAX_EVENTS:
             del _events[0:len(_events) - MAX_EVENTS]
     dropped = int(data.get("dropped", 0) or 0)
-    if _rec_on and (db_rows or dropped):
+    if _rec_on:
         with _db_lock:
+            # Abschnitt auch OHNE Events fortschreiben: solange der Manager
+            # pusht, wurde aufgezeichnet (nur war nichts zu sehen).
+            changed = _span_touch(now)
             if db_rows:
                 _db.executemany("""INSERT INTO events
                     (t,sender,sensor,wx,wy,wv,x,y,grp,speed)
                     VALUES(?,?,?,?,?,?,?,?,?,?)""", db_rows)
             if dropped:
                 _db.execute("INSERT INTO drops(t,dropped) VALUES(?,?)", (now, dropped))
-            _db.commit()
+            if changed or db_rows or dropped:
+                _db.commit()
     return jsonify(ok=True)
 
 
@@ -427,7 +463,11 @@ def density():
         b = min(int(b), bins - 1)
         if b >= 0:
             drops[b] += int(n or 0)
-    return jsonify(t0=t0, t1=t1, bins=bins, per_sender=per, drops=drops)
+    with _db_lock:
+        spans = _db.execute("SELECT t0,t1 FROM recspans WHERE t1>=? AND t0<=? "
+                            "ORDER BY t0", (t0, t1)).fetchall()
+    return jsonify(t0=t0, t1=t1, bins=bins, per_sender=per, drops=drops,
+                   spans=[[a, b] for a, b in spans])
 
 
 @app.get("/adata")
