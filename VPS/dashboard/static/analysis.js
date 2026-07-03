@@ -70,7 +70,24 @@ async function anaRefreshRec(){
 
 async function anaRefreshDensity(){
   try{ ANA.dens = await anaJson("/density?bins=700"); }catch(e){ ANA.dens = null; }
+  // Sender-Auswahl fürs Labeln aktuell halten (neue Sensoren tauchen auf)
+  const sel = anaEl("anaLblSender");
+  if(sel && ANA.dens){
+    const cur = sel.value;
+    sel.innerHTML = `<option value="-1">alle Sensoren</option>` +
+      Object.keys(ANA.dens.per_sender).map(s=>`<option value="${s}">nur #${s}</option>`).join("");
+    sel.value = [...sel.options].some(o=>o.value===cur) ? cur : "-1";
+  }
   drawTimeline();
+}
+
+function anaAll(){
+  const d = ANA.dens;
+  if(!d || d.t1 <= d.t0) return;
+  const pad = (d.t1 - d.t0) * 0.02;
+  ANA.win = {t0: d.t0 - pad, t1: d.t1 + pad};
+  ANA.follow = false;
+  anaScheduleFetch();
 }
 
 function anaScheduleFetch(){
@@ -132,7 +149,7 @@ function drawTimeline(){
   ctx.fillStyle = "#0c0c10"; ctx.fillRect(0,0,W,H);
   const d = ANA.dens;
   if(!d || d.t1 <= d.t0){ ctx.fillStyle="#555"; ctx.fillText("keine Aufnahme-Daten", 10, 20); return; }
-  const densH = H - 16;
+  const densH = H - 21;                       // darunter: Aufnahme-Band + Label-Band
   // Dichte je Sender gestapelt (log-Skala, damit Bursts die Nächte nicht plattdrücken)
   const senders = Object.keys(d.per_sender);
   const totals = new Array(d.bins).fill(0);
@@ -154,6 +171,14 @@ function drawTimeline(){
   // verworfene Burst-Events (Manager-Drop-Zähler) als rote Marker oben
   ctx.fillStyle = "#f33";
   d.drops.forEach((n,i)=>{ if(n) ctx.fillRect(i*bw, 0, Math.max(bw,1), 3); });
+  // Aufnahme-Band: grün = aufgezeichnet, dunkel = Lücke (Pause/Ausfall)
+  ctx.fillStyle = "#3a1518";
+  ctx.fillRect(0, H-19, W, 4);
+  ctx.fillStyle = "#2ecc71";
+  for(const [a,b] of (d.spans||[])){
+    const x0 = Math.max(0, tlX(a,W)), x1 = Math.min(W, tlX(b,W));
+    if(x1 > x0) ctx.fillRect(x0, H-19, Math.max(x1-x0, 1.5), 4);
+  }
   // Labels als Bänder unten
   for(const l of (ANA.labels||[])){
     ctx.fillStyle = (LBL_COLORS[l.label]||"#999") + "cc";
@@ -322,17 +347,22 @@ function mapBind(){
 
 function renderRec(){
   const el = anaEl("anaRec"); if(!el) return;
+  const warn = anaEl("anaRecWarn");
   const r = ANA.rec;
   if(!r){ el.innerHTML = "<span style='color:#c66'>keine Verbindung</span>"; return; }
   const mb = (r.bytes/1048576).toFixed(1);
-  el.innerHTML =
-    `<button class="sw ${r.on?'on':'off'}" id="anaRecBtn">${r.on?'● REC':'⏸ Pause'}</button>
-     <span style="color:#888;font-size:12px">${r.rows.toLocaleString("de-CH")} Events · ${mb} MB` +
-     (r.t_min ? ` · seit ${fmtDT(r.t_min)}` : "") + `</span>`;
+  const info = `<span style="color:#888;font-size:12px">${r.rows.toLocaleString("de-CH")} Events · ${mb} MB` +
+               (r.t_min ? ` · seit ${fmtDT(r.t_min)}` : "") + `</span>`;
+  el.innerHTML = r.on
+    ? `<button class="sw on" id="anaRecBtn" title="klicken = Aufnahme pausieren">● Aufnahme läuft</button> ${info}`
+    : `<button class="sw off" id="anaRecBtn" title="klicken = Aufnahme starten (Append)">⏸ AUFNAHME AUS — Klick startet</button> ${info}`;
+  if(warn) warn.style.display = r.on ? "none" : "block";
   anaEl("anaRecBtn").onclick = async ()=>{
+    if(r.on && !confirm("Aufnahme wirklich PAUSIEREN?\nEs werden dann keine Events mehr gespeichert."))
+      return;
     ANA.rec = await anaJson("/rec", {method:"POST",
       headers:{"Content-Type":"application/json"}, body:JSON.stringify({on: r.on?0:1})});
-    renderRec();
+    renderRec(); anaRefreshDensity();
   };
 }
 
@@ -464,6 +494,7 @@ async function anaShow(){
     anaEl("anaZi").onclick = ()=>anaZoomTime(1/1.6);
     anaEl("anaZo").onclick = ()=>anaZoomTime(1.6);
     anaEl("anaBNow").onclick = anaNow;
+    anaEl("anaBAll").onclick = anaAll;
     anaEl("anaModelChk").onchange = e=>{ ANA.modelOn = e.target.checked; anaFetchWindow(); };
     anaEl("anaCovChk").onchange = async e=>{
       ANA.showCov = e.target.checked;
@@ -487,11 +518,13 @@ async function anaShow(){
   await anaRefreshDensity();
   if(!ANA.win){
     const d = ANA.dens;
-    const t1 = d ? d.t1 : Date.now()/1000;
-    ANA.win = {t0: t1 - 3600, t1};          // Start: letzte Stunde
-    // Sender-Liste fürs Label-Ziel
-    anaEl("anaLblSender").innerHTML = `<option value="-1">alle Sensoren</option>` +
-      Object.keys(d?.per_sender||{}).map(s=>`<option value="${s}">nur #${s}</option>`).join("");
+    if(d && d.t1 > d.t0 + 1){               // Start: die GANZE Aufnahme zeigen
+      const pad = (d.t1 - d.t0) * 0.02;
+      ANA.win = {t0: d.t0 - pad, t1: d.t1 + pad};
+    } else {
+      const t1 = Date.now()/1000;
+      ANA.win = {t0: t1 - 3600, t1};
+    }
   }
   anaFetchWindow();
 }
