@@ -69,6 +69,9 @@ DEFAULT_PARAMS = {
     "crossing_net_mm": 800,
     "long_track_points": 10,
     "short_track_ms": 800,
+    # Weg-Obergrenze: RoboMäher/Personen laufen in EINEM Track hunderte Meter
+    # zusammenhängend ab — eine Katze nicht. Längerer Pfad => keine Katze. 0 = aus.
+    "max_path_mm": 40000,
     # --- Erfassungsgrenzen (empirische Abdeckung)
     "edge_dist_mm": 900,            # "nahe am Rand" der Gesamtabdeckung
     "cov_cell_mm": 300,             # Rasterzelle der Abdeckung
@@ -453,8 +456,14 @@ def score_track(pts, storms, cov, devices, p, tid, w_t0, w_t1):
         if jumpy / len(vs_all) > 0.2:
             add("unphysikalische Sprünge", -p["penalty_jumpy"])
 
+    # RoboMäher/Person: ein einzelner kohärenter Track mit sehr langem Weg ist
+    # keine Katze (Mäher mäht systematisch, Personen gehen Runden). Hartes K.o.
+    too_far = p["max_path_mm"] > 0 and feats["path_mm"] > p["max_path_mm"]
+    if too_far:
+        add("Weg zu lang (%d m) - Mäher/Person?" % round(feats["path_mm"] / 1000), -100)
+
     score = max(0, min(100, score))
-    confirmed = bool(move) and score >= p["confirm_score"]
+    confirmed = bool(move) and score >= p["confirm_score"] and not too_far
     feats["score"] = score
     feats["score_detail"] = detail
     feats["confirmed"] = confirmed
@@ -463,6 +472,8 @@ def score_track(pts, storms, cov, devices, p, tid, w_t0, w_t1):
         feats["reject"] = None
     elif not clean:
         feats["reject"] = "Sturm/Burst"
+    elif too_far:
+        feats["reject"] = "Weg zu lang (Mäher/Person?)"
     elif not move:
         feats["reject"] = ("Einzelereignis" if feats["n"] == 1 else
                            "keine kohärente Bewegung")
@@ -479,12 +490,20 @@ def score_track(pts, storms, cov, devices, p, tid, w_t0, w_t1):
     return feats
 
 
-def analyze(events, params=None, devices=None, coverage=None):
+def analyze(events, params=None, devices=None, coverage=None, exclude=None):
     """events: [{t,sender,sensor,wx,wy,speed}] (nur worldValid).
     devices:  {sender: {"name","type"}} — dynamisch aus xComDef6_3.h.
     coverage: build_coverage()-Ergebnis aus den LANGZEIT-Daten (nicht nur dem
-    Fenster), oder None (Randlogik dann neutral)."""
+    Fenster), oder None (Randlogik dann neutral).
+    exclude:  [(t0,t1), ...] — Zeitfenster, die NICHT analysiert werden (z.B.
+    per Label „Mäher" markierte RoboMäher-Läufe). Die Events bleiben in der
+    Aufnahme und in der Karten-/Zeitleisten-Darstellung — sie fließen nur nicht
+    in Tracking/Bestätigung ein."""
     p = merged_params(params)
+    n_raw = len(events)
+    if exclude:
+        events = [e for e in events
+                  if not any(a <= e["t"] <= b for a, b in exclude)]
     evs = sorted(events, key=lambda e: e["t"])
     storms = detect_storms(evs, p)
     tracks = stitch_tracks(build_tracks(evs, p), p)
@@ -496,6 +515,7 @@ def analyze(events, params=None, devices=None, coverage=None):
         "tracks": scored,
         "storms": {str(k): v for k, v in storms.items()},
         "n_events": len(evs),
+        "n_excluded": n_raw - len(evs),
         "n_confirmed": sum(1 for t in scored if t["confirmed"]),
         "edge_active": bool(coverage) and
                        len(coverage.get("union", ())) >= p["cov_min_cells"],

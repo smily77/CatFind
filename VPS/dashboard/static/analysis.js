@@ -14,8 +14,11 @@
 const LBL_COLORS = {
   "Katze":"#2ecc71", "Einzelereignis":"#8a8f98", "Insekt":"#e67e22",
   "Vegetation":"#7a9e35", "Vogel":"#3ad0d0", "Sonne/Lidar":"#e6c522",
-  "Regen/Sturm":"#3a7bd5", "unbekannt":"#b06fd8"
+  "Regen/Sturm":"#3a7bd5", "Mäher":"#c0743a", "unbekannt":"#b06fd8"
 };
+// "Mäher"-Label = Analyse-Ausschluss: Events im Fenster bleiben aufgezeichnet und
+// sichtbar (gut zum Ausleuchten der Erfassungsbereiche), aber das Modell
+// überspringt sie (kein Tracking/CatDetected). Serverseitig in /amodel.
 const ANA = {
   win: null,            // {t0,t1} betrachtetes Fenster = gesamte Zeitleiste
   dens: null,           // /density des Fensters (beim Pannen kurz veraltet, wird nachgeladen)
@@ -386,7 +389,7 @@ function drawAnaMap(){
     if(tr.pts.length < 2 && !tr.confirmed) continue;
     const hot = ANA.selTrack === tr.id;
     const mk = marks[tr.key];
-    const col = tr.confirmed ? (mk==="nocat" ? "#e67e22" : "#2ecc71")
+    const col = tr.confirmed ? ((mk && mk!=="cat") ? "#e67e22" : "#2ecc71")
                              : (mk==="cat" ? "#2ecc71" : "#888a");
     ctx.strokeStyle = col;
     ctx.lineWidth = hot ? 3.5 : (tr.confirmed ? 2 : 1);
@@ -498,7 +501,14 @@ function renderSensors(){
 }
 
 const FLAG_TXT = {STATIONAER:"sitzt! (koten?)", OFFEN:"läuft noch", EINTRITT:"Eintritt am Rand",
-                  AUSTRITT:"Austritt am Rand", FUSION:"mehrere Sensoren"};
+                  AUSTRITT:"Austritt am Rand", FUSION:"mehrere Sensoren sehen dasselbe Objekt"};
+// kompakte, IMMER sichtbare Flag-Chips in der Track-Zeile (Tooltip = FLAG_TXT)
+const FLAG_CHIP = {STATIONAER:"⏺ sitzt", OFFEN:"… offen", EINTRITT:"→ rein",
+                   AUSTRITT:"raus →", FUSION:"⧉ 2+ Sensoren"};
+// manuelle Track-Bewertung: was war es wirklich? (alles ausser "cat" = keine Katze)
+const MARKS = {cat:"🐱 Katze", person:"🧍 Person", bird:"🐦 Vogel",
+               mower:"🤖 Mäher", nocat:"✕ Störung"};
+const MARK_ICON = {cat:"🐱", person:"🧍", bird:"🐦", mower:"🤖", nocat:"✕"};
 
 // manuelle Bewertung eines Tracks setzen/entfernen (Klick auf gesetzten Haken = entfernen)
 async function anaSetMark(tr, mark){
@@ -519,11 +529,12 @@ function renderTracks(){
   const all = ANA.model.tracks.filter(t=>t.n>=2 || t.confirmed);
   const trs = all.slice()
               .sort((a,b)=>(b.confirmed-a.confirmed) || (b.score-a.score) || (b.n-a.n)).slice(0,80);
-  // Übereinstimmung Modell vs. Mensch: ohne Markierung gilt "einverstanden".
+  // Übereinstimmung Modell vs. Mensch: ohne Markierung gilt "einverstanden";
+  // jede Markierung ausser "cat" (Person/Vogel/Mäher/Störung) = "keine Katze".
   let diffNoCat = 0, diffCat = 0;
   for(const t of all){
     const mk = marks[t.key];
-    if(t.confirmed && mk === "nocat") diffNoCat++;       // Modell sagt Katze, ich nicht
+    if(t.confirmed && mk && mk !== "cat") diffNoCat++;   // Modell sagt Katze, ich nicht
     if(!t.confirmed && mk === "cat") diffCat++;          // ich sage Katze, Modell nicht
   }
   const agree = all.length - diffNoCat - diffCat;
@@ -532,32 +543,36 @@ function renderTracks(){
       (diffNoCat ? ` · <span style="color:#e67e22">${diffNoCat}× Modell-Katze abgelehnt</span>` : "") +
       (diffCat   ? ` · <span style="color:#3ad0d0">${diffCat}× Katze übersehen</span>` : "") + `</div>`
     : "";
+  const excl = ANA.model.n_excluded
+    ? `<div class="hint" style="color:#c0743a">${ANA.model.n_excluded} Events in „Mäher"-Fenstern von der Analyse ausgeschlossen</div>`
+    : "";
   const edge = ANA.model.edge_active
     ? (ANA.model.cov_source==="empirisch"
         ? `<div class="hint" style="color:#c93">Abdeckung noch empirisch — keine Sensor-Posen bekannt (Knopf „Geräte ⟳")</div>` : "")
     : `<div class="hint" style="color:#c93">Randlogik inaktiv — keine Abdeckungsdaten</div>`;
   el.innerHTML = `<div class="hint">${ANA.model.n_confirmed}× CatDetected / ${ANA.model.tracks.length} Tracks</div>`
-    + agreeTxt + edge +
+    + agreeTxt + excl + edge +
     trs.map(t=>{
       const mk = marks[t.key];
-      const flags = (t.flags||[]).map(f=>FLAG_TXT[f]||f).join(" · ");
-      const dis = (t.confirmed && mk==="nocat") || (!t.confirmed && mk==="cat");
-      const badge = mk ? `<span class="mkBadge">${mk==="cat"?"✋🐱":"✋✕"}</span>` : "";
+      const chips = (t.flags||[]).map(f=>
+        `<span class="flg" title="${escapeHtml(FLAG_TXT[f]||f)}">${escapeHtml(FLAG_CHIP[f]||f)}</span>`).join("");
+      const dis = (t.confirmed && mk && mk!=="cat") || (!t.confirmed && mk==="cat");
+      const badge = mk ? `<span class="mkBadge" title="meine Bewertung: ${escapeHtml(MARKS[mk]||mk)}">✋${MARK_ICON[mk]||"?"}</span>` : "";
       let det;
       if(ANA.selTrack===t.id){
         const sd = (t.score_detail||[]).map(d=>`${d[1]>0?'+':''}${d[1]} ${escapeHtml(d[0])}`).join("<br>");
         det = `<small>Aufnahme: ${fmtDT(t.t0)} → ${fmtDT(t.t1)}</small>` +
               (sd ? `<small>${sd}</small>` : "") +
-              `<div class="mkRow">
-                 <button class="mk${mk==='cat'?' on':''}" data-mk="cat" title="meine Einschätzung: das IST eine Katze">🐱 Katze</button>
-                 <button class="mk${mk==='nocat'?' on':''}" data-mk="nocat" title="meine Einschätzung: KEINE Katze">✕ keine Katze</button>
-               </div>`;
+              `<div class="mkRow">` +
+                Object.entries(MARKS).map(([k,txt])=>
+                  `<button class="mk${mk===k?' on':''}" data-mk="${k}" title="meine Einschätzung: das war ${escapeHtml(txt)} (nochmal klicken = entfernen)">${txt}</button>`).join("") +
+              `</div>`;
       } else {
-        det = `<small>${escapeHtml(t.confirmed ? flags : (t.reject||"") + (flags?` · ${flags}`:""))}</small>`;
+        det = t.confirmed ? "" : `<small>${escapeHtml(t.reject||"")}</small>`;
       }
       return `<div class="anaTrack${t.confirmed?' cat':''}${ANA.selTrack===t.id?' sel':''}${dis?' dis':''}" data-id="${t.id}">
       ${t.confirmed?'🐱':'·'} <b>${t.score}</b> #${t.id}${badge} n=${t.n} · ${fmtDur(t.t1-t.t0)} · ${(t.net_mm/1000).toFixed(1)}m
-      ${t.v_mean? '· '+(t.v_mean/1000).toFixed(1)+'m/s':''}
+      ${t.v_mean? '· '+(t.v_mean/1000).toFixed(1)+'m/s':''} ${chips}
       ${det}</div>`;
     }).join("");
   el.querySelectorAll(".anaTrack").forEach(d=>{

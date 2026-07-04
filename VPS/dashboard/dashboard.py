@@ -642,8 +642,16 @@ def amodel():
             "speed": r[5]} for r in rows]
     params = catmodel.merged_params(load_params())
     devices = load_devices()
+    # „Mäher"-Labels = Analyse-Ausschlussfenster: der RoboMäher erzeugt stundenlange
+    # kohärente Bahnen (perfekt zum Ausleuchten der Erfassungsbereiche, darum wird
+    # WEITER aufgezeichnet und dargestellt) — aber Tracking/Bestätigung überspringen
+    # diese Fenster. Zusätzlich fängt max_path_mm unmarkierte Mäher-Läufe ab.
+    with _db_lock:
+        mow = _db.execute("SELECT t0,t1 FROM labels WHERE label='Mäher' "
+                          "AND t1>=? AND t0<=?", (t0, t1)).fetchall()
     res = catmodel.analyze(evs, params, devices=devices,
-                           coverage=get_coverage(params))
+                           coverage=get_coverage(params),
+                           exclude=[(a, b) for a, b in mow])
     res["t0"], res["t1"] = t0, t1
     res["devices"] = {str(k): {"name": v["name"], "type": v["type"],
                                "covL": v.get("covL", 0), "covR": v.get("covR", 0),
@@ -657,19 +665,24 @@ def amodel():
     return jsonify(res)
 
 
+AMARKS = ("cat", "person", "bird", "mower", "nocat")   # erlaubte Track-Bewertungen
+
+
 @app.post("/amark")
 def amark():
     # manuelle Bewertung eines Tracks setzen/löschen. mark: "cat" (ist Katze),
-    # "nocat" (ist keine Katze), "" = Markierung entfernen (= einverstanden
-    # mit der Modellbewertung). Die Modellbewertung selbst bleibt unberührt —
-    # der Vergleich Modell vs. Mensch läuft im UI (Übereinstimmungs-Statistik).
+    # "person"/"bird"/"mower" (was es stattdessen war), "nocat" (Störung/sonstiges),
+    # "" = Markierung entfernen (= einverstanden mit der Modellbewertung). Die
+    # Modellbewertung selbst bleibt unberührt — der Vergleich Modell vs. Mensch
+    # läuft im UI (Übereinstimmungs-Statistik; alles ausser "cat" zählt als
+    # "keine Katze"). Die Kategorien sind gelabelte Ground-Truth fürs Iterieren.
     d = request.get_json(force=True, silent=True) or {}
     key = str(d.get("key", ""))[:80]
     if not key:
         return jsonify(error="key fehlt"), 400
     mark = str(d.get("mark", ""))
     with _db_lock:
-        if mark in ("cat", "nocat"):
+        if mark in AMARKS:
             _db.execute("INSERT OR REPLACE INTO track_marks(key,t0,t1,mark,created) "
                         "VALUES(?,?,?,?,?)",
                         (key, float(d.get("t0", 0)), float(d.get("t1", 0)),
