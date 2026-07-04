@@ -161,6 +161,16 @@ void gwInjectCommand(int target, int cmd, long info) {
   if (target == 254) { broadcastMsg(poseRequest); return; }
   if (target < 0 || target >= 18) return;
   cmdPayload c; c.cmd = (uint8_t)cmd; c.info = (int32_t)info;
+  if (target == ID) {                             // Kommando an den Manager selbst: ein UDP-
+    xMsg m;                                       // Unicast an die eigene IP loopt nicht in den
+    m.header.version    = XCOM_VERSION;           // eigenen Socket zurueck -> lokal ausfuehren
+    m.header.sender     = ID;                     // (cmdSetSetting via handleCommonMsg; die
+    m.header.msgCode    = commandMsg;             // VPS-Anzeige aktualisiert der naechste
+    m.header.payloadLen = sizeof(c);              // gwFlush aus mySettings)
+    memcpy(m.payload, &c, sizeof(c));
+    handleCommonMsg(m);
+    return;
+  }
   unicastMsg(commandMsg, c, device[target].IP);   // sendet nichts, wenn IP noch 0 (nie gesehen)
 }
 

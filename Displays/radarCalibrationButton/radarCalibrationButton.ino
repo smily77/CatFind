@@ -3,7 +3,8 @@
 // Basiert auf Udisp6_3_0 (gleiches CYD35-LovyanGFX-Profil inkl. XPT2046-Touch),
 // aber UI-reduziert auf Zielauswahl + zwei Touch-Buttons:
 //   * Ziel-Radar     -> Auswahl-Chips oben (alle HLK-Radare aus der Geraetetabelle)
-//   * KALIBRIEREN    -> commandMsg/cmdCalibrate  (startet Co-Observation-Kalibrierung)
+//   * KALIBRIEREN    -> commandMsg/cmdCalibrate  (startet Co-Observation-Kalibrierung;
+//                       der Button zaehlt danach das 45-s-Fenster sichtbar herunter)
 //   * POSE LOESCHEN  -> commandMsg/cmdClearPose  (gespeicherte Welt-Pose vergessen,
 //                       validWorldPose=false -> erzwingt Neukalibrierung)
 // Beide gehen per Unicast an das GEWAEHLTE Radar. Statusmeldungen der Radare
@@ -32,6 +33,8 @@ cmdPayload    cmdToSend;
 String        lastStatus = "bereit";
 bool          btnDown = false;            // Touch-Entprellung (nur Press-Flanke feuert)
 unsigned long btnFlashUntil = 0;          // bis wann der gedrueckte Button hervorgehoben wird
+unsigned long calibUntil = 0;             // laufendes Kalibrierfenster: Countdown-Ende (0 = keins)
+int           lastCountSec = -1;          // zuletzt gezeichnete Restsekunden (nur bei Wechsel malen)
 
 // Ziel-Radare: alle HLK-Geraete aus device[] (in setup() gefuellt)
 uint8_t radarIdx[MAX_RADARS];             // device[]-Indizes der Radare
@@ -59,6 +62,22 @@ bool inChip(int i, int x, int y) {
 bool inBtn1(int x, int y) { return x >= bx && x < bx + bw && y >= b1y && y < b1y + bH; }
 bool inBtn2(int x, int y) { return x >= bx && x < bx + bw && y >= b2y && y < b2y + bH; }
 
+// KALIBRIEREN-Button zeichnen. Waehrend ein Kalibrierfenster laeuft, zaehlt er die
+// Restsekunden herunter ("laeuft ... 37s") - nur dieser Button wird dann sekuendlich
+// neu gemalt, der Rest des Bildschirms bleibt stehen (kein Flackern).
+void drawBtn1(bool pressed) {
+  long remainMs = (calibUntil != 0) ? (long)(calibUntil - millis()) : 0;
+  int  sec = (remainMs > 0) ? (int)((remainMs + 999) / 1000) : 0;
+  uint32_t c1 = pressed ? TFT_ORANGE : (sec > 0 ? 0xb8860bU : 0x1f7a1fU);  // laeuft = ocker
+  gfx.fillRoundRect(bx, b1y, bw, bH, 14, c1);
+  gfx.drawRoundRect(bx, b1y, bw, bH, 14, TFT_WHITE);
+  gfx.setTextColor(TFT_WHITE, c1); gfx.setTextSize(4);
+  gfx.setTextDatum(textdatum_t::middle_center);
+  gfx.drawString(sec > 0 ? ("laeuft ... " + String(sec) + "s") : "KALIBRIEREN",
+                 screenWidth / 2, b1y + bH / 2);
+  lastCountSec = sec;
+}
+
 // pressed: 0 = keiner, 1 = KALIBRIEREN, 2 = POSE LOESCHEN (Hervorhebung orange)
 void drawUI(int pressed) {
   gfx.fillScreen(TFT_BLACK);
@@ -84,11 +103,7 @@ void drawUI(int pressed) {
     gfx.drawString(ip ? ("." + String(ip)) : "kein HB", chipX(i) + chipW() / 2, chY + 42);
   }
 
-  uint32_t c1 = (pressed == 1) ? TFT_ORANGE : 0x1f7a1fU;   // gruen / gedrueckt orange
-  gfx.fillRoundRect(bx, b1y, bw, bH, 14, c1);
-  gfx.drawRoundRect(bx, b1y, bw, bH, 14, TFT_WHITE);
-  gfx.setTextColor(TFT_WHITE, c1); gfx.setTextSize(4);
-  gfx.drawString("KALIBRIEREN", screenWidth / 2, b1y + bH / 2);
+  drawBtn1(pressed == 1);
 
   uint32_t c2 = (pressed == 2) ? TFT_ORANGE : 0x7a1f1fU;   // dunkelrot / gedrueckt orange
   gfx.fillRoundRect(bx, b2y, bw, bH, 14, c2);
@@ -116,6 +131,7 @@ void sendCmd(uint8_t code, const String& okMsg, int pressed) {
   cmdToSend.info = (code == cmdCalibrate) ? CALIB_WINDOW_MS : 0;
   bool ok = unicastMsg(commandMsg, cmdToSend, ip);
   lastStatus = ok ? (device[di].Name + ": " + okMsg) : "Senden fehlgeschlagen";
+  if (ok && code == cmdCalibrate) calibUntil = millis() + CALIB_WINDOW_MS;  // Countdown starten
   btnFlashUntil = millis() + 500;
   drawUI(pressed);
 }
@@ -159,6 +175,14 @@ void loop() {
 
   // Button-Highlight nach kurzer Zeit zuruecknehmen
   if (btnFlashUntil && millis() > btnFlashUntil) { btnFlashUntil = 0; drawUI(0); }
+
+  // Kalibrier-Countdown: sekuendlich nur den KALIBRIEREN-Button nachzeichnen;
+  // am Ende einmal zuruecksetzen (das Ergebnis meldet das Radar per Text-Multicast)
+  if (calibUntil && !btnFlashUntil) {
+    long remain = (long)(calibUntil - millis());
+    if (remain <= 0) { calibUntil = 0; drawBtn1(false); }
+    else if ((int)((remain + 999) / 1000) != lastCountSec) drawBtn1(false);
+  }
 
   // HB lernt IPs automatisch (initMcUdp-Callback); neu zeichnen, wenn sich die IP
   // eines Radars geaendert hat (Chip-Anzeige "kein HB" -> ".xx")
