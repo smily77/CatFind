@@ -25,11 +25,15 @@ Erreichbar unter **`http://<VPS-IP>/`** (Port 80).
 | Methode | Pfad | Zweck |
 |---|---|---|
 | `GET`  | `/` | Web-UI |
-| `POST` | `/ingest` | Manager-Push `{events,debug,hb}` |
+| `POST` | `/ingest` | Manager-Push `{events,debug,hb,settings,poses}` |
 | `GET`  | `/state` | Debug + aktive Geräte + Minuten-Zusammenfassung |
 | `GET`  | `/events?since=N` | neue catObserved ab Index N (für die Karten) |
 | `POST` | `/reset` | akkumulierte Ereignisse löschen |
 | `GET`  | `/map` | RasenKarte-Punkte (aus dem GitHub-Repo) |
+| `GET/POST` | `/rec` | Aufnahme-Status / Pause-Append |
+| `GET`  | `/density /adata /amodel /alabels /acoverage` | Analyse-Tab (Fenster-Daten, Modell, Abdeckungs-Sektoren) |
+| `POST` | `/alabel /alabel_del /amark` | Labels + manuelle Track-Bewertung (Katze/keine Katze) |
+| `POST` | `/devreload` | xComDef (Typen+Erfassungsbereiche) sofort neu lesen + poseRequest |
 
 State liegt im RAM (Ereignisse kumulieren bis Reset; gehen bei Container-Neustart
 verloren). `RasenKarte.csv` wird aus dem Repo geladen (Fallback: ins Image

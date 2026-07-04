@@ -10,13 +10,18 @@ Aufgabe "VPS-Modellierung der Katzenerkennung"):
   - Sensor-Gewichte je GERÄTETYP (HLK-Radar hoch, Lidar niedrig), die
     Typen kommen dynamisch aus der Gerätedatenbank xComDef6_3.h — neue
     Sensoren brauchen keine Modell-Änderung.
-  - Erfassungsgrenzen EMPIRISCH: die Langzeitdaten selbst definieren die
-    Abdeckung jedes Sensors (Belegungsraster). Eine Katze läuft in den
+  - Erfassungsgrenzen GEOMETRISCH aus der xComDef (covLeftDeg/covRightDeg/
+    covRangeMm je Gerät, z.B. HLK-Radar -60..+60 Grad 7 m, Lidar 360 Grad
+    12 m) + den per poseReport gemeldeten Welt-Posen der Sensoren
+    (build_coverage_geo). Vorteil gegenüber der früheren rein empirischen
+    Abdeckung: nach dem Versetzen eines Sensors stimmt der Bereich sofort
+    wieder — nichts muss neu "eingelaufen" werden. Eine Katze läuft in den
     Erfassungsbereich hinein und hinaus -> Track-Geburt/-Tod nahe der
-    Grenze der GESAMT-Abdeckung (Vereinigung aller Sensoren, damit
+    Grenze der GESAMT-Abdeckung (Vereinigung aller Sektoren, damit
     Überlappungen/Übergaben nicht als Austritt zählen) gibt Bonus;
     Auftauchen mitten im Feld nur einen weichen Malus ("kann sein, muss
-    nicht"). Bewuchs-Verdeckung steckt automatisch in der Empirie.
+    nicht"). Fallback, solange keine Posen bekannt sind: empirische
+    Abdeckung aus den Langzeitdaten (build_coverage).
   - Eine Katze darf STEHENBLEIBEN (koten!): kurze Radar-Aussetzer werden
     per Track-Stitching überbrückt; "sitzt am Ende" gibt Bonus + Flag
     STATIONAER; ein am Fensterende noch offener Track bekommt keinen
@@ -108,8 +113,21 @@ def _weight(p, devices, sender):
 
 # ---------------------------------------------------------------- Abdeckung
 
+def _cov_finish(senders, cell_mm, source, sectors=None):
+    """Gemeinsamer Abschluss beider Abdeckungs-Bauer: Union + Randzellen."""
+    union = set().union(*senders.values()) if senders else set()
+    boundary = []
+    for (ix, iy) in union:
+        if any((ix + dx, iy + dy) not in union
+               for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+            boundary.append(((ix + 0.5) * cell_mm, (iy + 0.5) * cell_mm))
+    return {"cell_mm": cell_mm, "senders": senders, "union": union,
+            "boundary": boundary, "source": source, "sectors": sectors or {}}
+
+
 def build_coverage(pts_by_sender, cell_mm, min_events):
-    """Empirische Abdeckung aus (Langzeit-)Punkten je Sender.
+    """Empirische Abdeckung aus (Langzeit-)Punkten je Sender (FALLBACK, wenn
+    keine Sensor-Posen bekannt sind).
 
     pts_by_sender: {sender: [(wx,wy), ...]}  ->  {
       cell_mm, senders: {sender: set((ix,iy))}, union: set, boundary: [(cx,cy)mm]
@@ -121,14 +139,56 @@ def build_coverage(pts_by_sender, cell_mm, min_events):
             c = (math.floor(x / cell_mm), math.floor(y / cell_mm))
             cnt[c] = cnt.get(c, 0) + 1
         senders[sid] = {c for c, n in cnt.items() if n >= min_events}
-    union = set().union(*senders.values()) if senders else set()
-    boundary = []
-    for (ix, iy) in union:
-        if any((ix + dx, iy + dy) not in union
-               for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
-            boundary.append(((ix + 0.5) * cell_mm, (iy + 0.5) * cell_mm))
-    return {"cell_mm": cell_mm, "senders": senders, "union": union,
-            "boundary": boundary}
+    return _cov_finish(senders, cell_mm, "empirisch")
+
+
+def build_coverage_geo(devices, poses, cell_mm):
+    """Geometrische Abdeckung aus den NOMINELLEN Erfassungsbereichen der
+    xComDef (covL/covR in Grad relativ zur Blickrichtung, covRange in mm) und
+    den Welt-Posen der Sensoren (poseReport über den Manager).
+
+    devices: {sender: {"type","name","covL","covR","covRange"}}
+    poses:   {sender: {"x","y","head","mir","valid"}}  head = PA-Einheiten 0..4096
+
+    Rasterisiert jeden Sektor auf dasselbe Zellraster wie die empirische
+    Abdeckung, damit Union/Rand/Edge-Distanz identisch weiterverwendet werden.
+    Winkelkonvention wie auf den Geräten (toPol): phi = atan2(x_lokal, y_lokal),
+    Blickrichtung = lokale +y-Achse, links negativ / rechts positiv."""
+    senders, sectors = {}, {}
+    for sid, dev in (devices or {}).items():
+        rng = float(dev.get("covRange", 0) or 0)
+        if rng <= 0:
+            continue
+        pose = (poses or {}).get(sid) or (poses or {}).get(str(sid))
+        if not pose or not pose.get("valid"):
+            continue
+        px, py = float(pose["x"]), float(pose["y"])
+        a = float(pose.get("head", 0)) * (2.0 * math.pi / 4096.0)
+        mir = -1 if int(pose.get("mir", 1)) < 0 else 1
+        ca, sa = math.cos(a), math.sin(a)
+        left, right = float(dev.get("covL", -180)), float(dev.get("covR", 180))
+        cells = set()
+        r_cells = int(math.ceil(rng / cell_mm)) + 1
+        cx0 = math.floor(px / cell_mm)
+        cy0 = math.floor(py / cell_mm)
+        for ix in range(cx0 - r_cells, cx0 + r_cells + 1):
+            for iy in range(cy0 - r_cells, cy0 + r_cells + 1):
+                wx = (ix + 0.5) * cell_mm
+                wy = (iy + 0.5) * cell_mm
+                dx, dy = wx - px, wy - py
+                if dx * dx + dy * dy > rng * rng:
+                    continue
+                # worldToLocal (vgl. xComProc): xl = dx*c + dy*s, yl = mir*(-dx*s + dy*c)
+                xl = dx * ca + dy * sa
+                yl = mir * (-dx * sa + dy * ca)
+                phi = math.degrees(math.atan2(xl, yl))
+                if left <= phi <= right:
+                    cells.add((ix, iy))
+        if cells:
+            senders[sid] = cells
+            sectors[sid] = {"x": px, "y": py, "head": float(pose.get("head", 0)),
+                            "mir": mir, "left": left, "right": right, "range": rng}
+    return _cov_finish(senders, cell_mm, "xComDef", sectors)
 
 
 def _edge_dist(cov, x, y):
@@ -318,6 +378,10 @@ def score_track(pts, storms, cov, devices, p, tid, w_t0, w_t1):
     vs_all = _speeds(pts)
     feats = {
         "id": tid, "t0": pts[0][0], "t1": pts[-1][0], "n": len(pts),
+        # stabiler Schlüssel für manuelle Markierungen (Katze/keine Katze):
+        # Geburtszeit (ms) + Geburtsort identifizieren den Track auch dann noch,
+        # wenn das Analysefenster anders liegt (die id ist nur der Fenster-Index)
+        "key": "%d_%d_%d" % (round(pts[0][0] * 1000), pts[0][1], pts[0][2]),
         "net_mm": round(math.hypot(pts[-1][1] - pts[0][1], pts[-1][2] - pts[0][2])),
         "path_mm": round(sum(math.hypot(b[1] - a[1], b[2] - a[2])
                              for a, b in zip(pts, pts[1:]))),
@@ -435,5 +499,6 @@ def analyze(events, params=None, devices=None, coverage=None):
         "n_confirmed": sum(1 for t in scored if t["confirmed"]),
         "edge_active": bool(coverage) and
                        len(coverage.get("union", ())) >= p["cov_min_cells"],
+        "cov_source": (coverage or {}).get("source", ""),
         "params": p,
     }

@@ -36,12 +36,25 @@
 #define groupPA1_1 2   // PA1_1 + MiniDome
 #define testGroup  3   // zum Testen
 
+// Erfassungsbereich eines Sensors, NOMINELL aus dem Datenblatt (weder exakt noch
+// konstant — weiter weg kann der Winkel abnehmen, kleine Katzen tragen weniger weit).
+// Trotzdem wichtig fuers Erkennungsmodell: Eintritt/Austritt am RAND des
+// Erfassungsbereichs unterscheidet die Katze (laeuft hinein/hinaus) vom Vogel
+// (taucht mitten im Feld auf/ab). Winkel in GRAD relativ zur Blickrichtung
+// (lokale +y-Achse, vgl. toPol: phi = atan2(x,y)), links negativ, rechts positiv.
+// covRangeMm = 0 -> Geraet ist kein Sensor (kein Erfassungsbereich).
+// HLK-Radare: -60/+60 Grad, 7 m. 360-Grad-Lidare: -180/+180 Grad, 12 m.
+// Der VPS parst diese Tabelle direkt aus dem Repo (dashboard.py parse_xcomdef) und
+// legt die Sektoren ueber die per poseReport gemeldeten Welt-Posen in die Karte.
 struct stationDefinitions {
   byte   type;
   byte   IP;
   byte   MAC;
   byte   group;   // relative Koordinatengruppe (groupNone/groupPA2/groupPA1_1/testGroup)
   String Name;
+  int16_t  covLeftDeg;    // linker Erfassungswinkel (Grad, negativ)
+  int16_t  covRightDeg;   // rechter Erfassungswinkel (Grad, positiv)
+  uint16_t covRangeMm;    // Reichweite (mm); 0 = kein Sensor
 };
 //Device
 #define Manager 0
@@ -73,24 +86,24 @@ struct stationDefinitions {
 #define Marker 8
 //  {MananagementDevice,180,0x01},
 stationDefinitions device[18] = {
-  {MananagementDevice,180,0x01,groupNone, "Manager_Dev"},  //Manager
-  {HLK,0,0,testGroup,  "Dome"},                            //Dome
-  {HLK,0,0,groupPA1_1, "Mini_Dome"},                       //MiniDome  -> Gruppe PA1_1
-  {HLK,0,0,groupPA2,   "Compact_Dome"},                    //CompactDome - auf PA M5PicoDome -> Gruppe PA2
-  {PowerActor,181,0x02,groupPA2, "PowerActor1"},           //PA1 (PA2i) -> Gruppe PA2
-  {Screen,0,0,groupNone, "Disp_7"},                        //Display 7 Inch
-  {Controller,0,0,groupNone, "CYD"},                       //CYD Controller
-  {Lidar,0,0,groupPA2, "LD6"},                             //LD06 -> Gruppe PA2
-  {onOffSchalter,0,0,groupNone, "Button"},                 //Schalter - achtung nicht Unique
-  {Screen,0,0,groupNone, "Disp_5"},                        //Display 5 Inch
-  {Screen,0,0,groupNone, "Core2"},                         //Core2
-  {Screen,0,0,groupNone, "Tab5"},                          //Tab5
-  {Screen,0,0,groupNone, "CYD35Zoll"},                     //CYD35Zoll
-  {Screen,0,0,groupNone, "Wavetec_7inch"},                 //Wavetec
-  {MananagementDevice,0,0,groupNone, "Simulator"},         //Simulator (Cardputer)
-  {Marker,182,0x03,groupNone, "Laser_Marker"},             //LaserMarker (ESP32-C3, feste IP .182)
-  {PowerActor,183,0x04,groupPA1_1, "PowerActor1_1"},       //PA1_1 (älterer PA mit Stepper/PCF8574/A4988, feste IP .183) -> Gruppe PA1_1
-  {Lidar,0,0,groupNone, "LidarC1"}                         //LidarC1 (RPLidar C1, welt-fähig via VPS-Lokalisierung, DHCP)
+  {MananagementDevice,180,0x01,groupNone, "Manager_Dev", 0,0,0},        //Manager
+  {HLK,0,0,testGroup,  "Dome",         -60, 60, 7000},                  //Dome
+  {HLK,0,0,groupPA1_1, "Mini_Dome",    -60, 60, 7000},                  //MiniDome  -> Gruppe PA1_1
+  {HLK,0,0,groupPA2,   "Compact_Dome", -60, 60, 7000},                  //CompactDome - auf PA M5PicoDome -> Gruppe PA2
+  {PowerActor,181,0x02,groupPA2, "PowerActor1", 0,0,0},                 //PA1 (PA2i) -> Gruppe PA2
+  {Screen,0,0,groupNone, "Disp_7", 0,0,0},                              //Display 7 Inch
+  {Controller,0,0,groupNone, "CYD", 0,0,0},                             //CYD Controller
+  {Lidar,0,0,groupPA2, "LD6",         -180, 180, 12000},                //LD06 -> Gruppe PA2
+  {onOffSchalter,0,0,groupNone, "Button", 0,0,0},                       //Schalter - achtung nicht Unique
+  {Screen,0,0,groupNone, "Disp_5", 0,0,0},                              //Display 5 Inch
+  {Screen,0,0,groupNone, "Core2", 0,0,0},                               //Core2
+  {Screen,0,0,groupNone, "Tab5", 0,0,0},                                //Tab5
+  {Screen,0,0,groupNone, "CYD35Zoll", 0,0,0},                           //CYD35Zoll
+  {Screen,0,0,groupNone, "Wavetec_7inch", 0,0,0},                       //Wavetec
+  {MananagementDevice,0,0,groupNone, "Simulator", 0,0,0},               //Simulator (Cardputer)
+  {Marker,182,0x03,groupNone, "Laser_Marker", 0,0,0},                   //LaserMarker (ESP32-C3, feste IP .182)
+  {PowerActor,183,0x04,groupPA1_1, "PowerActor1_1", 0,0,0},             //PA1_1 (älterer PA mit Stepper/PCF8574/A4988, feste IP .183) -> Gruppe PA1_1
+  {Lidar,0,0,groupNone, "LidarC1",    -180, 180, 12000}                 //LidarC1 (RPLidar C1, welt-fähig via VPS-Lokalisierung, DHCP)
 };
 
 // call -> device[ident].type
@@ -113,6 +126,9 @@ stationDefinitions device[18] = {
 #define mapChunk   10   // ein Datenstueck der Karte (mapChunkMeta + Datenbytes, variabel)
 #define settingsRequest 11   // "melde deine Einstellungen" (ohne Payload; Broadcast=alle, Unicast=eines)
 #define settingsReport  12   // Antwort/Annonce: settingsPayload (supported/values/actions)
+#define catDetected     13   // Erkennungsmodell hat eine KATZE bestaetigt (catDetectedPayload) -
+                             // ausgeloest BEVOR die Katze den Erfassungsbereich verlaesst, damit
+                             // Aktoren noch reagieren koennen. (Modell heute auf dem VPS, spaeter ESP32.)
 
 // Karten-Typen (fuer mapRequest/mapInfo/mapChunk)
 #define mapNoShot   1   // Schusszonen-/No-Shot-Karte (innerhalb = Feuern erlaubt)
@@ -185,6 +201,21 @@ struct __attribute__((packed)) markerHbPayload {
   uint8_t   r;           // Pixel-Rot   0..255
   uint8_t   g;           // Pixel-Gruen 0..255
   uint8_t   b;           // Pixel-Blau  0..255
+};
+
+// catDetected: das Erkennungsmodell (Referenz catmodel.py auf dem VPS, Ziel-
+// Implementierung ESP32) hat einen Track als Katze bestaetigt. Wird ausgeloest,
+// sobald der Score die Bestaetigungsschwelle erreicht — also waehrend die Katze
+// noch im Erfassungsbereich ist, nicht erst nach Track-Ende.
+#define catDetFlagStationary 0x01   // Katze sitzt gerade (koten? Ziel nicht verlieren)
+#define catDetFlagFusion     0x02   // mehrere Sensoren sehen dasselbe Objekt
+struct __attribute__((packed)) catDetectedPayload {
+  int32_t  worldX;      // Welt-Position der Katze bei Ausloesung (mm)
+  int32_t  worldY;
+  uint8_t  score;       // Modell-Score 0..100 (>= Bestaetigungsschwelle)
+  uint8_t  flags;       // catDetFlag*-Bits
+  uint32_t trackMs;     // bisherige Track-Dauer bei Ausloesung (ms)
+  int32_t  netMm;       // bisherige Netto-Verschiebung des Tracks (mm)
 };
 
 // commandMsg (ersetzt ucDataStruct) - typischerweise per Unicast

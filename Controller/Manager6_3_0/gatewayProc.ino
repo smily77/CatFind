@@ -32,6 +32,31 @@ struct GwSet { uint8_t sender; uint16_t sup, val, act; bool used; };
 static GwSet gwSet[GW_MAX_SETTINGS];
 static bool  gwSettingsDirty = false;   // erzwingt einen Push, sobald neue Settings kamen
 
+// Welt-Posen der Geraete (poseReport vom Bus). Der VPS braucht sie, um die
+// Erfassungsbereiche (xComDef: covLeft/covRight/covRange) als Sektoren in die
+// Welt-Karte zu legen. Wie die Settings: pro Sender der neueste Stand, wird bei
+// jedem Push mitgeschickt (nicht geleert). Periodisch fragt der Manager per
+// poseRequest-Broadcast nach (Geraete antworten generisch via handleCommonMsg).
+#define GW_MAX_POSES 18
+#define GW_POSE_REQ_MS 300000UL          // alle 5 min nach Posen fragen
+struct GwPose { uint8_t sender, valid; int32_t x, y; float head; int8_t mir; bool used; };
+static GwPose gwPose[GW_MAX_POSES];
+static bool   gwPosesDirty = false;
+static unsigned long gwLastPoseReq = 0;
+
+void gwAddPose(uint8_t sender, const worldPosePayload& wp) {
+  int slot = -1;
+  for (int i = 0; i < GW_MAX_POSES; i++)
+    if (gwPose[i].used && gwPose[i].sender == sender) { slot = i; break; }
+  if (slot < 0) for (int i = 0; i < GW_MAX_POSES; i++)
+    if (!gwPose[i].used) { slot = i; gwPose[i].used = true; gwPose[i].sender = sender; break; }
+  if (slot < 0) return;
+  gwPose[slot].valid = wp.validWorldPose;
+  gwPose[slot].x = wp.worldX; gwPose[slot].y = wp.worldY;
+  gwPose[slot].head = wp.heading; gwPose[slot].mir = wp.mirror;
+  gwPosesDirty = true;
+}
+
 void gwAddSettings(uint8_t sender, const settingsPayload& sp) {
   gwSettingsDirty = true;
   for (int i = 0; i < GW_MAX_SETTINGS; i++)
@@ -80,8 +105,9 @@ void gwFlush() {
     if (slot < 0) for (int i = 0; i < GW_MAX_SETTINGS; i++) if (!gwSet[i].used) { gwSet[i].used = true; gwSet[i].sender = ID; slot = i; break; }
     if (slot >= 0) { gwSet[slot].sup = mySettings.supported; gwSet[slot].val = mySettings.values; gwSet[slot].act = mySettings.actions; }
   }
-  if (gwEventN == 0 && gwDebugN == 0 && gwHbN == 0 && !gwSettingsDirty) return;
+  if (gwEventN == 0 && gwDebugN == 0 && gwHbN == 0 && !gwSettingsDirty && !gwPosesDirty) return;
   gwSettingsDirty = false;
+  gwPosesDirty = false;
 
   String body;
   body.reserve(2048 + gwEventN * 160);
@@ -105,6 +131,14 @@ void gwFlush() {
     body += "{\"sender\":" + String(gwSet[i].sender) + ",\"sup\":" + String(gwSet[i].sup)
           + ",\"val\":" + String(gwSet[i].val) + ",\"act\":" + String(gwSet[i].act) + "}";
   }
+  body += "],\"poses\":[";
+  bool firstP = true;
+  for (int i = 0; i < GW_MAX_POSES; i++) if (gwPose[i].used) {
+    if (!firstP) body += ','; firstP = false;
+    body += "{\"sender\":" + String(gwPose[i].sender) + ",\"valid\":" + String(gwPose[i].valid)
+          + ",\"x\":" + String(gwPose[i].x) + ",\"y\":" + String(gwPose[i].y)
+          + ",\"head\":" + String(gwPose[i].head, 1) + ",\"mir\":" + String(gwPose[i].mir) + "}";
+  }
   body += "]}";
 
   HTTPClient http;
@@ -120,9 +154,11 @@ void gwFlush() {
 
 // Ein vom VPS-Webinterface angefordertes Kommando auf den lokalen Bus geben. Der VPS ist
 // vom lokalen 192.168.0.x-Netz aus nicht direkt an die Geraete adressierbar -> der Manager
-// wirkt als Gateway. target 255 = Broadcast settingsRequest (alle melden ihre Einstellungen).
+// wirkt als Gateway. target 255 = Broadcast settingsRequest (alle melden ihre Einstellungen),
+// target 254 = Broadcast poseRequest (alle melden ihre Welt-Pose -> Erfassungssektoren).
 void gwInjectCommand(int target, int cmd, long info) {
   if (target == 255) { broadcastMsg(settingsRequest); return; }
+  if (target == 254) { broadcastMsg(poseRequest); return; }
   if (target < 0 || target >= 18) return;
   cmdPayload c; c.cmd = (uint8_t)cmd; c.info = (int32_t)info;
   unicastMsg(commandMsg, c, device[target].IP);   // sendet nichts, wenn IP noch 0 (nie gesehen)
@@ -159,6 +195,14 @@ void gwPollCommands() {
 }
 
 // Aus loop() aufrufen: periodisch flushen und Kommandos vom VPS abholen.
+// Zusaetzlich alle GW_POSE_REQ_MS (und einmal kurz nach dem Boot) per Broadcast
+// die Welt-Posen der Geraete erfragen — die Antworten (poseReport) sammelt der
+// Manager via gwAddPose und pusht sie an den VPS.
 void gwTick() {
   if (millis() - gwLastFlush >= GW_FLUSH_MS) { gwFlush(); gwPollCommands(); gwLastFlush = millis(); }
+  if ((gwLastPoseReq == 0 && millis() > 15000) ||
+      (gwLastPoseReq != 0 && millis() - gwLastPoseReq >= GW_POSE_REQ_MS)) {
+    broadcastMsg(poseRequest);
+    gwLastPoseReq = millis();
+  }
 }

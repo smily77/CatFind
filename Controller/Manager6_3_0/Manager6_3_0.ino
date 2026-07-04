@@ -143,6 +143,11 @@ void loop() {
       settingsPayload sp;
       if (getPayload(mcMsg, sp)) gwAddSettings(mcMsg.header.sender, sp); // Gateway: an VPS weiterreichen
     }
+    else if (mcMsg.header.msgCode == poseReport) {
+      worldPosePayload wp;                                               // Gateway: Welt-Posen an den VPS
+      if (getPayload(mcMsg, wp) && mcMsg.header.sender != ID)            // (fuer die Erfassungssektoren)
+        gwAddPose(mcMsg.header.sender, wp);
+    }
     mcDataReceived = false;
   }
   gwTick();                            // Gateway: gepufferte Ereignisse periodisch an den VPS posten
