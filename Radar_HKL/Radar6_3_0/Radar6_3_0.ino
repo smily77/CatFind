@@ -35,10 +35,19 @@ posPayload obsData;
 #define HEALTH_ASSOC_MM    1500   // groessere Distanz = anderes Ziel -> nicht bewerten
 #define HEALTH_MAX_BAD        8   // so viele schlechte Messungen in Folge -> Pose verwerfen
 
+// RasenKarte (Rasen-Umriss in Welt-mm, vom Manager per mapRasen bezogen): mit gueltiger
+// Welt-Pose werden nur Ziele INNERHALB des Rasens gemeldet (Nachbargrundstueck/Strasse
+// im 7-m-Radarkegel erzeugen sonst Dauer-Stoerungen). Ohne Karte/Pose: alles melden.
+#define RASEN_PATH        "/rasen.csv"
+#define MAP_WAIT_MS        6000   // so lange auf mapInfo/Chunks vom Manager warten
+#define MAP_RETRY_MS      60000   // Karte nicht bekommen -> so lange bis zum naechsten Versuch
+
 int32_t  lastTargetX = 0, lastTargetY = 0;   // juengste eigene Detektion (fuer Health-Check)
 unsigned long lastTargetMs = 0;              // wann zuletzt ein Radar-Target aktiv war
 unsigned long lastWorldObsMs = 0;            // wann zuletzt eine welt-valide catObserved kam
 unsigned long autoArmMs = 0;                 // seit wann Co-Observation anliegt (0 = nicht)
+bool     rasenLoaded = false;                // RasenKarte im RAM (insideNoShot nutzbar)
+unsigned long lastMapTry = 0;                // letzter Beschaffungsversuch (0 = noch keiner)
 
 #include <xComProc6_3.h>
 
@@ -66,6 +75,7 @@ void setup() {
     sendUdpTextln("Pose aus NVS uebernommen (x=" + String(myPose.worldX) +
                   " y=" + String(myPose.worldY) + ") - Health-Check prueft");
   }
+  if (!LittleFS.begin(true)) sendUdpTextln("LittleFS mount FAILED - kein Karten-Cache");
   Serial2.begin(S2_baud,SERIAL_8N1,S2_RX,S2_TX);
   sendSettingsReport();              // Einstellungen annoncieren (Display/VPS lernen sie)
   timer = millis();  //heardBeat
@@ -79,6 +89,7 @@ void loop() {
   if (Serial2.available()) readRadar();
   if (newDataReady) { processTargets(); newDataReady = false; }
   serviceCalibration();
+  serviceRasenMap();
 }
 
 // Kommando per Unicast: Kalibrierfenster per Knopf/commandMsg starten.
@@ -121,7 +132,11 @@ void handleObservation(const xMsg& m) {
     coCalibFeedWorld(calib, m.header.sender, obs.worldX, obs.worldY);
     return;
   }
-  if (myPose.validWorldPose && (millis() - lastTargetMs < CONCURRENT_MS)) {
+  // Health-Check NUR bei eingeschalteter Auto-Kalibrierung: nur dann kann sich das
+  // Radar nach einem Pose-Verwurf selbst wieder kalibrieren. Bei AutoCalib "aus" wuerde
+  // ein (ggf. falsch assoziierter) Drift-Verdacht die Pose dauerhaft ungueltig machen.
+  if (settingOn(stgAutoCalib) &&
+      myPose.validWorldPose && (millis() - lastTargetMs < CONCURRENT_MS)) {
     bool drift = coObserveCheck(health, lastTargetX, lastTargetY, obs.worldX, obs.worldY,
                                 HEALTH_GATE_MM, HEALTH_ASSOC_MM, HEALTH_MAX_BAD);
     if (drift) {
@@ -134,6 +149,9 @@ void handleObservation(const xMsg& m) {
 
 // Radar-Frame auswerten: catObserved (mit Welt-Koordinaten, falls Pose gueltig) senden,
 // im Kalibrierfenster die eigenen Bahnen sammeln, juengstes Target fuer Health-Check merken.
+// Mit gueltiger Welt-Pose UND geladener RasenKarte werden Ziele AUSSERHALB des Rasens
+// nicht gemeldet (Nachbargrundstueck/Strasse); Kalibrier-Sammlung und Health-Check
+// arbeiten weiter mit ALLEN Zielen (die Referenzperson koennte am Rand stehen).
 void processTargets() {
   boolean validTarget = false;
   for (int i = 0; i < 3; i++) {
@@ -147,12 +165,26 @@ void processTargets() {
       obsData.targetSpeed = target[i].geschw;
       obsData.res = target[i].res;
       fillWorld(obsData);                              // worldX/worldY/worldValid aus myPose
-      broadcastMsg(catObserved, obsData);
       if (calib.active) coCalibFeedLocal(calib, i, target[i].x, target[i].y);
       lastTargetX = target[i].x; lastTargetY = target[i].y; lastTargetMs = millis();
+      if (obsData.worldValid && rasenLoaded &&
+          !insideNoShot(obsData.worldX, obsData.worldY)) continue;   // ausserhalb des Rasens
+      broadcastMsg(catObserved, obsData);
     }
   }
   setPixel(maxPix, (validTarget && settingOn(stgCatLed)) ? 0x0000FF : 0x000000);  // Anzeige schaltbar
+}
+
+// RasenKarte beschaffen, sobald eine gueltige Welt-Pose da ist (vorher nuetzt sie nichts):
+// erst lokaler LittleFS-Cache + Versionsabgleich beim Manager, sonst Download (acquireMap
+// blockiert dabei bis MAP_WAIT_MS - passiert nur einmal bzw. alle MAP_RETRY_MS).
+void serviceRasenMap() {
+  if (rasenLoaded || !myPose.validWorldPose || calib.active) return;
+  if (lastMapTry != 0 && millis() - lastMapTry < MAP_RETRY_MS) return;
+  lastMapTry = millis();
+  rasenLoaded = acquireMap(mapRasen, RASEN_PATH, device[Manager].IP, MAP_WAIT_MS);
+  sendUdpTextln(rasenLoaded ? "RasenKarte geladen - melde nur Ziele auf dem Rasen"
+                            : "RasenKarte nicht verfuegbar - melde ungefiltert");
 }
 
 // Kalibrierfenster abschliessen bzw. Auto-Trigger bedienen.

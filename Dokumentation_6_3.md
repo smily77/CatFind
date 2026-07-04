@@ -562,13 +562,24 @@ beide Bahnen und liefert die Transformation (Details: GesamtKonzeptCatFinder.md,
 - **Boot-Verhalten:** vorhandene NVS-Pose wird **direkt vertraut** (`validWorldPose=true`) —
   das Radar wird im Normalfall nicht bewegt (siehe Kap. 4.1). Kein gespeicherter Wert →
   `false`, dann startet Auto/Knopf eine Kalibrierung.
-- **Health-Check:** trifft eine welt-valide `catObserved` eines anderen Sensors ein und hat
-  das Radar gerade ein eigenes Ziel, vergleicht es dessen (per `localToWorld` in die Welt
-  gerechnete) Position mit dem gemeldeten Welt-Punkt. Anhaltendes Residuum zwischen Gate
-  (~0,6 m) und Assoziationsgrenze (~1,5 m) ⇒ Pose driftet ⇒ `validWorldPose=false`. Größere
-  Abweichungen gelten als „anderes Ziel" und werden ignoriert (dann hilft der Knopf).
+- **Health-Check (nur bei Auto-Kalibrierung „an"):** trifft eine welt-valide `catObserved`
+  eines anderen Sensors ein und hat das Radar gerade ein eigenes Ziel, vergleicht es dessen
+  (per `localToWorld` in die Welt gerechnete) Position mit dem gemeldeten Welt-Punkt.
+  Anhaltendes Residuum zwischen Gate (~0,6 m) und Assoziationsgrenze (~1,5 m) ⇒ Pose
+  driftet ⇒ `validWorldPose=false`. Größere Abweichungen gelten als „anderes Ziel" und
+  werden ignoriert (dann hilft der Knopf). Der Check läuft **nur, wenn `stgAutoCalib`
+  eingeschaltet ist** — nur dann kann sich das Radar nach einem Pose-Verwurf selbst wieder
+  kalibrieren; bei Auto-Kalibrierung „aus" bliebe eine (womöglich falsch assoziierte)
+  Verwerfung dauerhaft bestehen.
 - **Nach Kalibrierung:** eigene `catObserved` tragen zusätzlich `worldX/worldY`
   (`worldValid=1`) via `localToWorld`.
+- **RasenKarte-Gating:** sobald eine gültige Welt-Pose vorliegt, bezieht das Radar die
+  **RasenKarte** vom Manager (`mapRasen`, gechunktes UDP wie die No-Shot-Karte, LittleFS-
+  Cache mit Versions-/CRC-Abgleich, Retry alle 60 s) und meldet nur noch Ziele **innerhalb
+  des Rasens** — Nachbargrundstück/Straße im 7-m-Radarkegel erzeugen sonst Dauer-
+  Störungen. Kalibrier-Sammlung und Health-Check arbeiten weiter mit allen Zielen. Ohne
+  Karte oder ohne Pose wird ungefiltert gemeldet (fail-open). Die **No-Shot-Karte** lädt
+  das Radar bewusst nicht — es schießt nicht; No-Shot prüft der Aktor.
 - **Einstellungen (Kap. 5.12):** HB-/Target-Anzeige schaltbar, Auto-Kalibrierung und
   Auto-Pose-Übernahme schaltbar (NVS); Aktionen „Kalibrieren", „Pose kopieren" und
   „Pose löschen" (`cmdClearPose`, verwirft die gespeicherte Welt-Pose, siehe 5.11).
@@ -832,18 +843,22 @@ gespeichert; **Lidar-Motor** an/aus (`lidar.stop()`/`startScan()`), Default an u
 Kleines Remote-Gerät, das die **Co-Observation-Kalibrierung** eines Radars per
 Knopfdruck steuert (siehe Kap. 4.1 und GesamtKonzeptCatFinder.md, Aufgabe
 „Welt-Pose per Co-Observation kalibrieren"). Basiert auf `Udisp6_3_0` (gleiches
-**CYD35**-LovyanGFX-Profil inkl. XPT2046-Touch), ist aber UI-reduziert auf zwei
-**Touch-Buttons**. Ordner `Displays/radarCalibrationButton/`.
+**CYD35**-LovyanGFX-Profil inkl. XPT2046-Touch), ist aber UI-reduziert auf
+**Zielauswahl + zwei Touch-Buttons**. Ordner `Displays/radarCalibrationButton/`.
 
 - **Hardware:** CYD 3.5" (ID `CYD35Z`, classic ESP32, ST7796-Panel + resistiver
   XPT2046-Touch), DHCP. Upload per **USB (COM9)**; OTA ebenfalls aktiv.
-- **Funktion:** Zwei Schaltflächen senden dem Radar `Dome` per **Unicast** eine
-  `commandMsg`:
+- **Zielauswahl:** oben eine Chip-Reihe mit **allen HLK-Radaren aus der
+  Gerätetabelle** (`device[].type == HLK`: Dome, Mini_Dome, Compact_Dome — neue
+  Radare erscheinen ohne Code-Änderung). Antippen wählt das Ziel; jeder Chip
+  zeigt, ob die IP schon per HB gelernt wurde (`.37` grün bzw. „kein HB").
+- **Funktion:** Zwei Schaltflächen senden dem **gewählten** Radar per **Unicast**
+  eine `commandMsg`:
   - **KALIBRIEREN** → `cmdCalibrate` (`info` = 45000 ms) — startet den Kalibriermodus.
   - **POSE LÖSCHEN** → `cmdClearPose` — verwirft die gespeicherte Welt-Pose
     (`validWorldPose=false`); für den Fall, dass das Radar **bewegt** wurde und der
     Health-Check die grobe Abweichung nicht selbst erkennt (Kap. 5.2).
-  Die Ziel-IP wird wie üblich aus den HBs gelernt (`device[Dome].IP`); ist Dome noch
+  Die Ziel-IPs werden wie üblich aus den HBs gelernt; ist das gewählte Radar noch
   nicht gesehen, zeigt das Display einen Hinweis statt zu senden.
 - **Rückmeldung:** Das Gerät lauscht auf den **Text-Multicast** (Port 8300) und
   zeigt die Statusmeldungen des Radars an (`calib Knopf …`, `calib OK/FAIL …`,

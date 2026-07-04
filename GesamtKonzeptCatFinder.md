@@ -592,12 +592,20 @@ Modell auf dem ESP32 implementiert.
    Wire-Datenstruktur ist in `xComDef6_3.h` definiert (`catDetected` = msgCode
    13, `catDetectedPayload`: Welt-Position, Score, Flags, Track-Dauer,
    Netto-Verschiebung).
-9. **Nicht Teil dieser Aufgabe** (Folgeaufgaben, notiert): der
+9. **Inzwischen umgesetzt (2026-07-04):** am Radar das **RasenKarten-Gating**
+   (neuer Kartentyp `mapRasen` = Rasen-Umriss in Welt-mm aus `Map/RasenKarte.csv`;
+   der Manager verteilt ihn wie die No-Shot-Karte gechunkt per UDP, generisches
+   `acquireMap` in xComProc; das Radar meldet mit gültiger Welt-Pose nur noch
+   Ziele innerhalb des Rasens, fail-open ohne Karte/Pose — die No-Shot-Karte
+   lädt es bewusst NICHT, es schießt nicht) und die **Kopplung des
+   Pose-Drift-Health-Checks an das Auto-Kalibrierungs-Setting** (Pose wird nur
+   noch automatisch verworfen, wenn `stgAutoCalib` an ist und das Radar sich
+   selbst neu kalibrieren kann); der **radarCalibrationButton** hat eine
+   **Zielauswahl** über alle HLK-Radare der Gerätetabelle.
+10. **Nicht Teil dieser Aufgabe** (Folgeaufgaben, notiert): der
    ESP32-DetectionActor, der `catDetected` tatsächlich sendet (erst wenn das
    Modell steht); Sensor-/Aktorprofile in `xComDef6_3.h` (2. Priorität —
-   Aktor-Reichweiten); am Radar: No-Shot-/RasenKarten-Gating, Mute je Sensor
-   (VPS + Display, wegen mehrerer Radars) und die Kopplung des
-   Pose-Drift-Health-Checks an das Auto-Kalibrierungs-Setting (läuft heute
-   fälschlich auch bei „aus").
+   Aktor-Reichweiten); am Radar: Mute je Sensor (VPS + Display, wegen
+   mehrerer Radars).
 
 
