@@ -832,9 +832,14 @@ gespeichert; **Lidar-Motor** an/aus (`lidar.stop()`/`startScan()`), Default an u
 > Gesamt-Abdeckung) markiert bestätigte Tracks als **CatDetected** mit
 > **rotem Punkt am Auslösezeitpunkt** (bevor die Katze den Erfassungsbereich
 > verlässt; Wire-Struct `catDetectedPayload` in xComDef definiert, msgCode 13).
-> **Manuelle Track-Bewertung**: im Tracks-Panel je Track „🐱 Katze"/„✕ keine
-> Katze" (persistent; keine Markierung = einverstanden), oben die
-> **Übereinstimmung Modell↔Mensch**. Alle Schwellwerte in `model_params.json`
+> **Manuelle Track-Bewertung**: im Tracks-Panel je Track „🐱 Katze"/„🧍
+> Person"/„🐦 Vogel"/„🤖 Mäher"/„✕ Störung" (persistent; keine Markierung =
+> einverstanden; alles außer Katze zählt als „keine Katze"), oben die
+> **Übereinstimmung Modell↔Mensch**; Modell-Flags als Chips in jeder Zeile.
+> **RoboMäher**: Label „Mäher" = Analyse-Ausschlussfenster (aufgezeichnet
+> und sichtbar bleibt alles — gut zum Ausleuchten der Erfassungsbereiche);
+> zusätzlich verwirft das Modell Tracks mit Weg > `max_path_mm` (40 m)
+> automatisch als „Mäher/Person?". Alle Schwellwerte in `model_params.json`
 > im Volume, ohne Rebuild im UI änderbar (Endpunkte `/rec /density /adata
 > /amodel /aparams /alabels /amark /devreload /acoverage`).
 

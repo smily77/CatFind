@@ -580,11 +580,23 @@ Modell auf dem ESP32 implementiert.
    der Analyse-Karte nicht dargestellt (die Sensoren sind inzwischen
    welt-posiert).
 7. **Manuelle Track-Bewertung + Übereinstimmung:** Im Tracks-Panel lässt sich
-   jeder Track von Hand als **„Katze"** oder **„keine Katze"** markieren
-   (persistent, stabiler Track-Schlüssel = Geburtszeit+Geburtsort). Die
-   Modellbewertung bleibt unberührt; **keine Markierung = einverstanden**.
-   Oben wird die **Übereinstimmung Modell↔Mensch** summiert (x/y, „Modell-
-   Katze abgelehnt" bzw. „Katze übersehen") — die Messlatte fürs Iterieren.
+   jeder Track von Hand kategorisieren: **„Katze", „Person", „Vogel",
+   „Mäher"** oder **„Störung"** (persistent, stabiler Track-Schlüssel =
+   Geburtszeit+Geburtsort; nochmal klicken = entfernen). Die Modellbewertung
+   bleibt unberührt; **keine Markierung = einverstanden**; für die
+   **Übereinstimmung Modell↔Mensch** oben zählt alles außer „Katze" als
+   „keine Katze" (x/y, „Modell-Katze abgelehnt" bzw. „Katze übersehen") —
+   die Messlatte fürs Iterieren; die Kategorien sind zugleich gelabelte
+   Ground-Truth. Die Modell-Flags (sitzt/offen/Eintritt/Austritt/2+
+   Sensoren) stehen als **Chips direkt in jeder Track-Zeile**.
+   **RoboMäher:** Zeitbereiche mit dem Label **„Mäher"** werden von der
+   Analyse ausgeschlossen (Events bleiben aufgezeichnet und sichtbar — die
+   Mäher-Läufe leuchten die Erfassungsbereiche schön aus, sollen aber keine
+   CatDetected erzeugen). Zusätzlich verwirft das Modell Tracks mit
+   **Weglänge > `max_path_mm`** (Default 40 m) automatisch als
+   „Mäher/Person?" — ein Mäher/eine Person läuft in einem Track hunderte
+   Meter zusammenhängend, eine Katze nicht; damit sind auch unmarkierte
+   Mäher-Läufe entschärft.
 8. **CatDetected-Auslösezeitpunkt:** Vom Modell bestätigte Tracks tragen auf
    Karte und Zeitleiste einen **roten Punkt** an dem Ort/Zeitpunkt, an dem
    das (künftig auf dem ESP32 laufende) Modell `catDetected` auslösen würde —
