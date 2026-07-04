@@ -37,9 +37,10 @@
 //bool requestMap(uint8_t mapType, uint8_t managerOctet)         - Karte beim Manager anfordern (Sensor)
 //bool mapBeginRx(mapRxState&, const mapInfoPayload&, const char* path)  - Empfang starten
 //int  mapFeedChunk(mapRxState&, const xMsg&)                    - Chunk verarbeiten (0=weiter,1=fertig,-1=Fehler)
-//bool loadNoShot(const char* path)                             - No-Shot-Polygon(e) aus LittleFS-CSV in RAM laden
-//bool insideNoShot(int32_t xw, int32_t yw)                     - Welt-Punkt im schiessbaren Bereich? (Point-in-Polygon)
-//bool acquireNoShot(const char* path, uint8_t mgrOctet, unsigned long waitMs)  - No-Shot-Karte vom Manager beziehen/cachen
+//bool loadNoShot(const char* path)                             - Polygon-Karte (No-Shot/Rasen) aus LittleFS-CSV in RAM laden
+//bool insideNoShot(int32_t xw, int32_t yw)                     - Welt-Punkt in der geladenen Polygon-Karte? (Point-in-Polygon)
+//bool acquireMap(uint8_t mapType, const char* path, uint8_t mgrOctet, unsigned long waitMs)  - Karte vom Manager beziehen/cachen
+//bool acquireNoShot(const char* path, uint8_t mgrOctet, unsigned long waitMs)  - Kurzform: acquireMap(mapNoShot, ...)
 //bool vpsLocalize(scan,n, x,y,head,mir,conf,inlier)            - Scan an den VPS, Pose+inlier zurueck (nur mit USE_VPS_LOCALIZE)
 //void resolvePose(vpsOk,vx,vy,vh,vmir,conf,inlier, hadNVS,minInlier)  - Quality-Gate: nur hochwertige Pose uebernehmen, sonst NVS behalten
 //void fillWorld(posPayload&)                                    - relative x/y -> worldX/worldY/worldValid ueber myPose
@@ -724,7 +725,9 @@ bool serveMap(uint8_t mapType, const char* path, uint8_t reqOctet) {
     memcpy(buf, &meta, sizeof(meta));
     unicastMsg(mapChunk, buf, (uint8_t)(sizeof(meta) + n), reqOctet);
     idx++;
-    delay(4);   // dem Empfaenger Zeit lassen (UDP, kein Flow-Control)
+    delay(10);  // dem Empfaenger Zeit lassen (UDP, kein Flow-Control/Resend:
+                // der Empfaenger hat nur EINEN Paketpuffer - jeder Latenz-Spike
+                // laenger als dieser Abstand kostet sonst den ganzen Transfer)
   }
   f.close();
   return true;
@@ -736,37 +739,77 @@ bool requestMap(uint8_t mapType, uint8_t managerOctet) {
   return unicastMsg(mapRequest, r, managerOctet);
 }
 
-// Empfangszustand fuer eine eingehende Karte (Sensor-Seite).
+// Empfangszustand fuer eine eingehende Karte (Sensor-Seite). Chunks werden in einem
+// statischen RAM-Puffer gesammelt und die Datei erst am Ende EINMAL geschrieben:
+// LittleFS-Schreiben mitten im Transfer blockiert sonst zig ms (Flash-Erase), waehrend
+// der Manager weitersendet - mit nur einem Empfangs-Paketpuffer und ohne Resend ging
+// dabei regelmaessig ein Chunk verloren und der ganze Transfer scheiterte (beim Radar
+// reproduzierbar ab Chunk 3). Karten groesser als der Puffer: direkt in die Datei
+// streamen wie frueher (Best-Effort).
+#ifndef MAP_RX_BUF_BYTES
+#define MAP_RX_BUF_BYTES 8192
+#endif
+static uint8_t mapRxBuf[MAP_RX_BUF_BYTES];   // eine Karte zurzeit (Geraete laden seriell)
+
 struct mapRxState {
   bool     active = false;
   bool     done = false;
   bool     ok = false;
+  bool     toRam = false;
   uint8_t  mapType = 0;
   uint16_t version = 0;
   uint32_t fileCrc = 0;
   uint32_t totalLen = 0;
+  uint32_t rxLen = 0;
   uint16_t chunkCount = 0;
   uint16_t nextIndex = 0;
   File     f;
   String   path;
 };
 
-// Empfang nach erhaltenem mapInfo starten (schreibt in <path>.tmp).
+// Empfang nach erhaltenem mapInfo starten (RAM-Puffer; Fallback <path>.tmp).
 bool mapBeginRx(mapRxState& s, const mapInfoPayload& info, const char* path) {
   s = mapRxState();
   s.mapType = info.mapType; s.version = info.version; s.fileCrc = info.fileCrc;
   s.totalLen = info.totalLen; s.chunkCount = info.chunkCount;
   s.path = path;
-  s.f = LittleFS.open((s.path + ".tmp").c_str(), "w");
-  if (!s.f) return false;
+  s.toRam = (s.totalLen <= MAP_RX_BUF_BYTES);
+  if (!s.toRam) {
+    s.f = LittleFS.open((s.path + ".tmp").c_str(), "w");
+    if (!s.f) return false;
+  }
   s.active = true;
   if (s.chunkCount == 0) {                 // leere Karte: sofort fertig
-    s.f.close();
+    if (!s.toRam) s.f.close();
     LittleFS.remove(s.path.c_str());
-    LittleFS.rename((s.path + ".tmp").c_str(), s.path.c_str());
+    File f = LittleFS.open(s.path.c_str(), "w");
+    if (f) f.close();
     s.active = false; s.done = true; s.ok = (s.totalLen == 0);
   }
   return true;
+}
+
+// Abschluss: CRC pruefen und (im RAM-Modus) die Datei einmal schreiben. true = OK.
+static bool mapFinishRx(mapRxState& s) {
+  if (s.toRam) {
+    if (s.rxLen != s.totalLen || crc32Bytes(mapRxBuf, s.rxLen) != s.fileCrc) return false;
+    File f = LittleFS.open(s.path.c_str(), "w");
+    if (!f) return false;
+    bool ok = (f.write(mapRxBuf, s.rxLen) == s.rxLen);
+    f.close();
+    return ok;
+  }
+  s.f.close();
+  String tmp = s.path + ".tmp";
+  uint16_t v; uint32_t crc, len;
+  bool good = mapFileInfo(tmp.c_str(), v, crc, len) && crc == s.fileCrc && len == s.totalLen;
+  if (good) {
+    LittleFS.remove(s.path.c_str());
+    LittleFS.rename(tmp.c_str(), s.path.c_str());
+    return true;
+  }
+  LittleFS.remove(tmp.c_str());
+  return false;
 }
 
 // Einen mapChunk verarbeiten. Rueckgabe: 0 = weiter, 1 = fertig+OK, -1 = Fehler.
@@ -778,22 +821,18 @@ int mapFeedChunk(mapRxState& s, const xMsg& m) {
   if (meta.chunkIndex != s.nextIndex) return 0;                          // nicht in Reihenfolge
   if ((size_t)sizeof(mapChunkMeta) + meta.dataLen > m.header.payloadLen) return -1;
 
-  s.f.write(m.payload + sizeof(mapChunkMeta), meta.dataLen);
+  if (s.toRam) {
+    if (s.rxLen + meta.dataLen > MAP_RX_BUF_BYTES) return -1;
+    memcpy(mapRxBuf + s.rxLen, m.payload + sizeof(mapChunkMeta), meta.dataLen);
+  } else {
+    s.f.write(m.payload + sizeof(mapChunkMeta), meta.dataLen);
+  }
+  s.rxLen += meta.dataLen;
   s.nextIndex++;
   if (s.nextIndex >= s.chunkCount) {
-    s.f.close();
-    String tmp = s.path + ".tmp";
-    uint16_t v; uint32_t crc, len;
-    bool good = mapFileInfo(tmp.c_str(), v, crc, len) && crc == s.fileCrc && len == s.totalLen;
-    if (good) {
-      LittleFS.remove(s.path.c_str());
-      LittleFS.rename(tmp.c_str(), s.path.c_str());
-      s.active = false; s.done = true; s.ok = true;
-      return 1;
-    }
-    LittleFS.remove(tmp.c_str());
-    s.active = false; s.done = true; s.ok = false;
-    return -1;
+    s.ok = mapFinishRx(s);
+    s.active = false; s.done = true;
+    return s.ok ? 1 : -1;
   }
   return 0;
 }
@@ -875,9 +914,11 @@ bool insideNoShot(int32_t px, int32_t py) {
 }
 
 //---------------------------------------------------------------------------------------
-// No-Shot-Karte beim Manager beschaffen (generisch fuer jedes welt-faehige Geraet):
-// lokale Kopie laden, beim Manager die aktuelle Version erfragen, bei Abweichung neu
-// herunterladen; sonst / bei Manager-Ausfall die alte Karte verwenden. true = Karte nutzbar.
+// Karte beim Manager beschaffen (generisch fuer jedes welt-faehige Geraet und jeden
+// Kartentyp: mapNoShot, mapRasen, ...): lokale Kopie laden, beim Manager die aktuelle
+// Version erfragen, bei Abweichung neu herunterladen; sonst / bei Manager-Ausfall die
+// alte Karte verwenden. true = Karte nutzbar (dann via insideNoShot testbar; es ist
+// immer die ZULETZT geladene Karte aktiv - ein Geraet nutzt genau eine Polygon-Karte).
 //---------------------------------------------------------------------------------------
 static bool waitForUc(uint8_t codeWanted, xMsg& out, unsigned long budget) {
   unsigned long t0 = millis();
@@ -892,28 +933,34 @@ static bool waitForUc(uint8_t codeWanted, xMsg& out, unsigned long budget) {
   return false;
 }
 
-bool acquireNoShot(const char* path, uint8_t managerOctet, unsigned long waitMs) {
+bool acquireMap(uint8_t mapType, const char* path, uint8_t managerOctet, unsigned long waitMs) {
   bool haveLocal = loadNoShot(path);
   uint16_t lv = 0; uint32_t lcrc = 0, llen = 0;
   bool haveLocalInfo = mapFileInfo(path, lv, lcrc, llen);
 
-  if (managerOctet == 0 || !requestMap(mapNoShot, managerOctet)) {
-    Serial << "No-Shot: Manager-Anfrage nicht moeglich -> lokale Karte." << endl;
+  // Fortschritt via Text-Multicast melden (der Manager relayed ihn an den VPS-Debug) -
+  // das laeuft selten (Boot/Versionswechsel) und macht Kartenprobleme aus der Ferne sichtbar.
+  if (managerOctet == 0 || !requestMap(mapType, managerOctet)) {
+    sendUdpTextln("Karte " + String(mapType) + ": Manager-Anfrage nicht moeglich -> lokale Karte");
     return haveLocal;
   }
   xMsg uc; mapInfoPayload info;
-  if (!waitForUc(mapInfo, uc, waitMs) || !getPayload(uc, info) || info.mapType != mapNoShot) {
-    Serial << "No-Shot: kein mapInfo -> lokale Karte." << endl;
+  if (!waitForUc(mapInfo, uc, waitMs) || !getPayload(uc, info) || info.mapType != mapType) {
+    sendUdpTextln("Karte " + String(mapType) + ": kein mapInfo von ." + String(managerOctet) +
+                  " -> lokale Karte");
     return haveLocal;
   }
   if (haveLocalInfo && info.version == lv && info.fileCrc == lcrc) {
-    Serial << "No-Shot: lokale Karte aktuell (v" << lv << ")." << endl;
+    sendUdpTextln("Karte " + String(mapType) + ": lokale Karte aktuell (v" + String(lv) + ")");
     return haveLocal;
   }
-  Serial << "No-Shot: lade Karte vom Manager (v" << info.version << ", " << info.totalLen
-         << " B, " << info.chunkCount << " Chunks) ..." << endl;
+  sendUdpTextln("Karte " + String(mapType) + ": lade vom Manager (v" + String(info.version) +
+                ", " + String(info.totalLen) + " B, " + String(info.chunkCount) + " Chunks)");
   mapRxState rx;
-  if (!mapBeginRx(rx, info, path)) return haveLocal;
+  if (!mapBeginRx(rx, info, path)) {
+    sendUdpTextln("Karte " + String(mapType) + ": LittleFS-Schreiben fehlgeschlagen");
+    return haveLocal;
+  }
   int result = 0; unsigned long t0 = millis();
   while (rx.active && millis() - t0 < waitMs) {
     ArduinoOTA.handle();
@@ -923,8 +970,14 @@ bool acquireNoShot(const char* path, uint8_t managerOctet, unsigned long waitMs)
     }
     delay(1);
   }
-  Serial << (result == 1 ? "No-Shot: Download OK." : "No-Shot: Download unvollstaendig -> alte Karte.") << endl;
+  sendUdpTextln(result == 1 ? "Karte " + String(mapType) + ": Download OK"
+                            : "Karte " + String(mapType) + ": Download unvollstaendig (Chunk " +
+                              String(rx.nextIndex) + "/" + String(rx.chunkCount) + ") -> alte Karte");
   return loadNoShot(path);
+}
+
+bool acquireNoShot(const char* path, uint8_t managerOctet, unsigned long waitMs) {
+  return acquireMap(mapNoShot, path, managerOctet, waitMs);
 }
 
 //---------------------------------------------------------------------------------------

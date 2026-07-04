@@ -132,6 +132,9 @@ stationDefinitions device[18] = {
 
 // Karten-Typen (fuer mapRequest/mapInfo/mapChunk)
 #define mapNoShot   1   // Schusszonen-/No-Shot-Karte (innerhalb = Feuern erlaubt)
+#define mapRasen    2   // RasenKarte (Rasen-Umriss, Welt-mm): Sensoren mit gueltiger Welt-Pose
+                        // melden nur Ziele INNERHALB (filtert Nachbargrundstueck/Strasse).
+                        // Quelle ist Map/RasenKarte.csv (Meter) -> Seed im Manager in mm.
 
 struct __attribute__((packed)) msgHeader {
   uint8_t version;     // XCOM_VERSION - Empfänger verwirft fremde Versionen
