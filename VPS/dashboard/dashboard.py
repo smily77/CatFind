@@ -32,6 +32,16 @@ Analyse (Aufgabe "VPS-Modellierung der Katzenerkennung", GesamtKonzeptCatFinder.
   GET  /alabels         Labels eines Zeitfensters
   POST /alabel          Label anlegen {t0,t1,sender,label,note}
   POST /alabel_del      Label löschen {id}
+  POST /amark           manuelle Track-Bewertung {key,t0,t1,mark: cat|nocat|""}
+                        (key = stabiler Track-Schlüssel aus /amodel; "" = löschen)
+  POST /devreload       Gerätetabelle (xComDef6_3.h) sofort neu aus dem Repo lesen
+                        + Manager um frische Welt-Posen bitten (poseRequest)
+
+Erfassungsbereiche: die Sensoren tragen ihren nominellen Erfassungsbereich in der
+xComDef (covLeftDeg/covRightDeg/covRangeMm); der Manager liefert die Welt-Posen
+der Geräte per /ingest ("poses", aus poseReport). Daraus baut catmodel.
+build_coverage_geo die Abdeckungs-Sektoren — nach dem Versetzen eines Sensors
+stimmt der Bereich sofort wieder. Fallback ohne Posen: empirische Abdeckung.
 """
 import os, re, time, json, sqlite3, threading, urllib.request
 from collections import deque, OrderedDict
@@ -50,25 +60,35 @@ XCOMDEF_URL  = os.environ.get(
     "XCOMDEF_URL",
     "https://raw.githubusercontent.com/smily77/CatFind/main/Controller/Manager6_3_0/xComDef6_3.h")
 
-# Fallback-Geräteverzeichnis (Namen/Typen/Gruppen), falls xComDef6_3.h nicht
-# erreichbar ist. Führend ist IMMER die live geparste xComDef6_3.h (s.u.).
+# Fallback-Geräteverzeichnis (Name/Typ/Gruppe/Erfassungsbereich), falls
+# xComDef6_3.h nicht erreichbar ist. Führend ist IMMER die live geparste
+# xComDef6_3.h (s.u.). Erfassungsbereich = (links Grad, rechts Grad, Reichweite mm).
 FALLBACK_DEVICES = {
-    0:("Manager","MananagementDevice",0), 1:("Dome","HLK",3), 2:("MiniDome","HLK",2),
-    3:("CompactDome","HLK",1), 4:("PA2i","PowerActor",1), 5:("Disp7","Screen",0),
-    6:("CYD","Controller",0), 7:("LD06","Lidar",1), 8:("Schalter","onOffSchalter",0),
-    9:("Disp5","Screen",0), 10:("Core2","Screen",0), 11:("Tab5","Screen",0),
-    12:("CYD35Z","Screen",0), 13:("Wave7z","Screen",0), 14:("Sim","MananagementDevice",0),
-    15:("LaserMarker","Marker",0), 16:("PA1_1","PowerActor",2), 17:("LidarC1","Lidar",0),
+    0:("Manager","MananagementDevice",0,0,0,0), 1:("Dome","HLK",3,-60,60,7000),
+    2:("MiniDome","HLK",2,-60,60,7000), 3:("CompactDome","HLK",1,-60,60,7000),
+    4:("PA2i","PowerActor",1,0,0,0), 5:("Disp7","Screen",0,0,0,0),
+    6:("CYD","Controller",0,0,0,0), 7:("LD06","Lidar",1,-180,180,12000),
+    8:("Schalter","onOffSchalter",0,0,0,0), 9:("Disp5","Screen",0,0,0,0),
+    10:("Core2","Screen",0,0,0,0), 11:("Tab5","Screen",0,0,0,0),
+    12:("CYD35Z","Screen",0,0,0,0), 13:("Wave7z","Screen",0,0,0,0),
+    14:("Sim","MananagementDevice",0,0,0,0), 15:("LaserMarker","Marker",0,0,0,0),
+    16:("PA1_1","PowerActor",2,0,0,0), 17:("LidarC1","Lidar",0,-180,180,12000),
 }
 
 # ------------------------------------------------- Gerätetabelle aus xComDef6_3.h
-# xComDef6_3.h ist die Quelle der Wahrheit (Gerät -> Typ/Gruppe/Name); der VPS
-# liest sie dynamisch aus dem GitHub-Repo — neue Sensoren brauchen keinen
-# VPS-Eingriff. Der TYP steuert im Modell die Sensor-Gewichte (HLK vs. Lidar).
+# xComDef6_3.h ist die Quelle der Wahrheit (Gerät -> Typ/Gruppe/Name/Erfassungs-
+# bereich); der VPS liest sie dynamisch aus dem GitHub-Repo — neue Sensoren
+# brauchen keinen VPS-Eingriff. Der TYP steuert im Modell die Sensor-Gewichte
+# (HLK vs. Lidar); covL/covR/covRange definieren zusammen mit der Welt-Pose
+# den Erfassungssektor. Das ändert sich selten -> langer Zyklus + Reload-Knopf
+# im Analyse-Tab (POST /devreload).
+
+DEV_TTL_S = 6 * 3600
 
 _dev_lock = threading.Lock()
-_devtab = {i: {"name": n, "type": t, "group": g}
-           for i, (n, t, g) in FALLBACK_DEVICES.items()}
+_devtab = {i: {"name": n, "type": t, "group": g,
+               "covL": cl, "covR": cr, "covRange": rng}
+           for i, (n, t, g, cl, cr, rng) in FALLBACK_DEVICES.items()}
 _dev_ts = 0.0
 
 
@@ -79,19 +99,23 @@ def parse_xcomdef(text):
         return {}
     defines = dict(re.findall(r"#define\s+(\w+)\s+(\d+)", text))
     tab = {}
-    pat = re.compile(r"\{\s*(\w+)\s*,\s*\w+\s*,\s*\w+\s*,\s*(\w+)\s*,\s*\"([^\"]*)\"")
+    pat = re.compile(r"\{\s*(\w+)\s*,\s*\w+\s*,\s*\w+\s*,\s*(\w+)\s*,\s*\"([^\"]*)\""
+                     r"(?:\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(\d+))?")
     for i, em in enumerate(pat.finditer(m.group(1))):
-        typ, grp, name = em.groups()
+        typ, grp, name, cl, cr, rng = em.groups()
         tab[i] = {"name": name, "type": typ,
-                  "group": int(defines.get(grp, grp if grp.isdigit() else "0"))}
+                  "group": int(defines.get(grp, grp if grp.isdigit() else "0")),
+                  "covL": int(cl or 0), "covR": int(cr or 0),
+                  "covRange": int(rng or 0)}
     return tab
 
 
-def load_devices():
-    """Gerätetabelle liefern; alle 10 min frisch aus dem Repo geparst."""
+def load_devices(force=False):
+    """Gerätetabelle liefern; periodisch (bzw. per /devreload sofort) frisch
+    aus dem Repo geparst."""
     global _devtab, _dev_ts
     with _dev_lock:
-        if _devtab and time.time() - _dev_ts < 600:
+        if not force and _devtab and time.time() - _dev_ts < DEV_TTL_S:
             return _devtab
         try:
             with urllib.request.urlopen(XCOMDEF_URL, timeout=10) as r:
@@ -120,6 +144,10 @@ _devices = {}                    # sender -> {t, ip}
 _events = []                     # {t, sender, sensor, wx, wy, wv, x, y, group}
 _reset_seq = 0
 _settings = {}                   # sender -> {sup, val, act, t}  (aus settingsReport)
+_poses = {}                      # sender -> {x, y, head, mir, valid, t}  (aus poseReport;
+                                 # nur GÜLTIGE Posen, in SQLite persistiert — ein Sensor,
+                                 # der nach Reboot noch nicht re-validiert ist, steht
+                                 # physisch ja weiterhin am selben Ort)
 
 _cmd_lock = threading.Lock()
 _cmd_queue = []                  # [(target, cmd, info)]  Webinterface -> Manager -> Bus
@@ -151,6 +179,13 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         t0 REAL, t1 REAL, sender INT, label TEXT, note TEXT, created REAL)""")
     _db.execute("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)")
+    # letzte GÜLTIGE Welt-Pose je Sender (für die Erfassungssektoren)
+    _db.execute("""CREATE TABLE IF NOT EXISTS poses(
+        sender INT PRIMARY KEY, x INT, y INT, head REAL, mir INT, t REAL)""")
+    # manuelle Track-Bewertung (Katze/keine Katze) — key = stabiler Track-
+    # Schlüssel aus catmodel (Geburtszeit ms + Geburtsort), mark = cat|nocat
+    _db.execute("""CREATE TABLE IF NOT EXISTS track_marks(
+        key TEXT PRIMARY KEY, t0 REAL, t1 REAL, mark TEXT, created REAL)""")
     # Aufnahme-Abschnitte: wo wurde tatsächlich aufgezeichnet? (für die
     # Zeitleiste — Lücken = Pause/Container-Downtime sichtbar machen)
     _db.execute("""CREATE TABLE IF NOT EXISTS recspans(
@@ -165,7 +200,12 @@ def init_db():
         if row and row[0] is not None:
             _db.execute("INSERT INTO recspans(t0,t1) VALUES(?,?)", (row[0], row[1]))
             _db.commit()
-    print("db ready: %s (rec=%s)" % (DB_PATH, _rec_on), flush=True)
+    for sid, x, y, head, mir, t in _db.execute(
+            "SELECT sender,x,y,head,mir,t FROM poses").fetchall():
+        _poses[int(sid)] = {"x": x, "y": y, "head": head, "mir": mir,
+                            "valid": 1, "t": t}
+    print("db ready: %s (rec=%s, %d Posen)" % (DB_PATH, _rec_on, len(_poses)),
+          flush=True)
 
 
 _span_id = None                  # offener Aufnahme-Abschnitt (None = noch keiner)
@@ -281,6 +321,20 @@ def ingest():
             sid = int(s.get("sender", -1))
             _settings[sid] = {"sup": int(s.get("sup", 0)), "val": int(s.get("val", 0)),
                               "act": int(s.get("act", 0)), "t": now}
+        pose_rows = []
+        for p in data.get("poses", []):
+            sid = int(p.get("sender", -1))
+            if sid < 0 or int(p.get("valid", 0)) != 1:
+                continue                       # ungültige Posen nicht übernehmen
+            pose = {"x": int(p.get("x", 0)), "y": int(p.get("y", 0)),
+                    "head": float(p.get("head", 0)), "mir": int(p.get("mir", 1)),
+                    "valid": 1, "t": now}
+            old = _poses.get(sid)
+            _poses[sid] = pose
+            if (not old or old["x"] != pose["x"] or old["y"] != pose["y"] or
+                    old["head"] != pose["head"] or old["mir"] != pose["mir"]):
+                pose_rows.append((sid, pose["x"], pose["y"], pose["head"],
+                                  pose["mir"], now))
         for e in data.get("events", []):
             sid = int(e.get("sender", -1))
             _devices.setdefault(sid, {"t": now, "ip": 0})["t"] = now
@@ -299,6 +353,11 @@ def ingest():
         if len(_events) > MAX_EVENTS:
             del _events[0:len(_events) - MAX_EVENTS]
     dropped = int(data.get("dropped", 0) or 0)
+    if pose_rows:
+        with _db_lock:
+            _db.executemany("INSERT OR REPLACE INTO poses(sender,x,y,head,mir,t) "
+                            "VALUES(?,?,?,?,?,?)", pose_rows)
+            _db.commit()
     if _rec_on:
         with _db_lock:
             # Abschnitt auch OHNE Events fortschreiben: solange der Manager
@@ -490,11 +549,13 @@ def adata():
     return jsonify(t0=t0, t1=t1, total=total, stride=stride, events=evs)
 
 
-# ------------------------------------------------- empirische Sensor-Abdeckung
-# Die LANGZEIT-Daten selbst definieren, wo jeder Sensor überhaupt sieht
-# (Belegungsraster). Das Modell bewertet Track-Geburt/-Tod am Rand der
-# GESAMT-Abdeckung (Katze läuft hinein/hinaus); Bewuchs-Verdeckung steckt
-# automatisch in der Empirie. Teuer -> gecacht (10 min TTL).
+# ------------------------------------------------- Sensor-Abdeckung
+# Primär GEOMETRISCH: nomineller Erfassungsbereich aus der xComDef
+# (covL/covR/covRange je Gerät) + Welt-Pose (poseReport über den Manager)
+# -> Sektor in Weltkoordinaten. Nach dem Versetzen eines Sensors stimmt der
+# Bereich sofort wieder (neue Pose genügt), nichts muss neu erfasst werden.
+# FALLBACK (keine Posen bekannt): empirische Abdeckung aus den Langzeitdaten
+# (Belegungsraster; teuer -> gecacht, 10 min TTL).
 
 _cov_lock = threading.Lock()
 _cov = None
@@ -502,7 +563,7 @@ _cov_ts = 0.0
 _cov_key = None
 
 
-def get_coverage(p):
+def _empirical_coverage(p):
     global _cov, _cov_ts, _cov_key
     key = (p["cov_cell_mm"], p["cov_min_events"])
     with _cov_lock:
@@ -523,17 +584,43 @@ def get_coverage(p):
         return _cov
 
 
+def get_coverage(p):
+    devices = load_devices()
+    with _lock:
+        poses = dict(_poses)
+    cov = catmodel.build_coverage_geo(devices, poses, p["cov_cell_mm"])
+    if cov["senders"]:
+        return cov
+    return _empirical_coverage(p)
+
+
 @app.get("/acoverage")
 def acoverage():
-    # Abdeckungs-Zellen je Sensor fürs Karten-Overlay (Zellmittelpunkte, mm).
+    # Abdeckung fürs Karten-Overlay: Sektoren (geometrisch) + Zellmittelpunkte.
     p = catmodel.merged_params(load_params())
     cov = get_coverage(p)
     cell = cov["cell_mm"]
     out = {str(sid): [[(ix + 0.5) * cell, (iy + 0.5) * cell] for ix, iy in cells]
            for sid, cells in cov["senders"].items()}
     return jsonify(cell_mm=cell, senders=out,
+                   source=cov.get("source", ""),
+                   sectors={str(k): v for k, v in cov.get("sectors", {}).items()},
                    union_cells=len(cov["union"]),
                    edge_active=len(cov["union"]) >= p["cov_min_cells"])
+
+
+@app.post("/devreload")
+def devreload():
+    # Analyse-Tab-Knopf: Gerätetabelle (xComDef6_3.h) sofort neu aus dem Repo
+    # lesen und den Manager um frische Welt-Posen bitten (target 254 =
+    # poseRequest-Broadcast; die Antworten kommen mit dem nächsten Ingest).
+    tab = load_devices(force=True)
+    with _cmd_lock:
+        _cmd_queue.append((254, 0, 0))
+    with _lock:
+        n_poses = len(_poses)
+    return jsonify(ok=True, devices={str(k): v for k, v in tab.items()},
+                   poses=n_poses)
 
 
 @app.get("/amodel")
@@ -558,9 +645,39 @@ def amodel():
     res = catmodel.analyze(evs, params, devices=devices,
                            coverage=get_coverage(params))
     res["t0"], res["t1"] = t0, t1
-    res["devices"] = {str(k): {"name": v["name"], "type": v["type"]}
+    res["devices"] = {str(k): {"name": v["name"], "type": v["type"],
+                               "covL": v.get("covL", 0), "covR": v.get("covR", 0),
+                               "covRange": v.get("covRange", 0)}
                       for k, v in devices.items()}
+    # manuelle Track-Bewertungen (Katze/keine Katze) der Fenster-Tracks
+    with _db_lock:
+        rows = _db.execute("SELECT key,mark FROM track_marks "
+                           "WHERE t1>=? AND t0<=?", (t0, t1)).fetchall()
+    res["marks"] = {k: m for k, m in rows}
     return jsonify(res)
+
+
+@app.post("/amark")
+def amark():
+    # manuelle Bewertung eines Tracks setzen/löschen. mark: "cat" (ist Katze),
+    # "nocat" (ist keine Katze), "" = Markierung entfernen (= einverstanden
+    # mit der Modellbewertung). Die Modellbewertung selbst bleibt unberührt —
+    # der Vergleich Modell vs. Mensch läuft im UI (Übereinstimmungs-Statistik).
+    d = request.get_json(force=True, silent=True) or {}
+    key = str(d.get("key", ""))[:80]
+    if not key:
+        return jsonify(error="key fehlt"), 400
+    mark = str(d.get("mark", ""))
+    with _db_lock:
+        if mark in ("cat", "nocat"):
+            _db.execute("INSERT OR REPLACE INTO track_marks(key,t0,t1,mark,created) "
+                        "VALUES(?,?,?,?,?)",
+                        (key, float(d.get("t0", 0)), float(d.get("t1", 0)),
+                         mark, time.time()))
+        else:
+            _db.execute("DELETE FROM track_marks WHERE key=?", (key,))
+        _db.commit()
+    return jsonify(ok=True)
 
 
 @app.get("/aparams")

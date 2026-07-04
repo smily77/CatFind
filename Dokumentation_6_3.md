@@ -804,15 +804,28 @@ gespeichert; **Lidar-Motor** an/aus (`lidar.stop()`/`startScan()`), Default an u
 > GesamtKonzeptCatFinder.md): zeichnet alle `catObserved` **persistent** in
 > eine SQLite-DB im Docker-Volume `/opt/catfinder/data/` auf (REC-Schalter =
 > Pause/Append, Zustand persistent; überlebt Container-Neubauten, nichts in
-> GitHub). UI: Zeitleiste mit Ereignisdichte über die ganze Aufnahme (Fenster
-> verschieben per Ziehen, strecken/stauchen per Mausrad, Shift+Ziehen =
-> Bereich für Label), Welt-Karte mit Pan/Zoom, Sensoren einzeln ausblendbar,
-> Labels (Katze/Störungsarten) persistent. Das **Modell** (`catmodel.py`:
-> Track-Bildung, Sturm-Erkennung je Sensor, Ebene-2-Bestätigung,
-> Sensor-Gewichte — Lidar allein bestätigt nie —, Fusion) markiert bestätigte
-> Tracks als **CatDetected**; alle Schwellwerte in `model_params.json` im
-> Volume, ohne Rebuild im UI änderbar (Endpunkte `/rec /density /adata /amodel
-> /aparams /alabels`).
+> GitHub). UI: Die **Zeitleiste zeigt genau das gewählte Zeitfenster**
+> (Ereignisdichte je Sender, Zeit-Gitter, Aufnahme-Band, Labels, rote
+> CatDetected-Punkte); Ziehen = verschieben, Mausrad = strecken/stauchen,
+> „Alles" = ganze Aufnahme, Shift+Ziehen = Bereich für Label. Welt-Karte mit
+> Pan/Zoom, Sensoren einzeln ausblendbar, Labels (Katze/Störungsarten)
+> persistent. **Erfassungsbereiche**: die Sensoren tragen ihren nominellen
+> Bereich in `xComDef6_3.h` (`covLeftDeg/covRightDeg/covRangeMm`; HLK-Radar
+> −60…+60° 7 m, Lidar 360° 12 m); der Manager reicht die `poseReport` der
+> Geräte per Gateway-Push weiter (`poses`, alle 5 min per
+> `poseRequest`-Broadcast angefragt), der VPS legt daraus die Sektoren in die
+> Karte („Erfassung"-Checkbox; „Geräte ⟳" liest xComDef sofort neu + fragt
+> Posen an; Fallback ohne Posen: empirische Abdeckung). Das **Modell**
+> (`catmodel.py`: Track-Bildung, Sturm-Erkennung je Sensor, Score-System,
+> Sensor-Gewichte — Lidar allein bestätigt nie —, Fusion, Randlogik an der
+> Gesamt-Abdeckung) markiert bestätigte Tracks als **CatDetected** mit
+> **rotem Punkt am Auslösezeitpunkt** (bevor die Katze den Erfassungsbereich
+> verlässt; Wire-Struct `catDetectedPayload` in xComDef definiert, msgCode 13).
+> **Manuelle Track-Bewertung**: im Tracks-Panel je Track „🐱 Katze"/„✕ keine
+> Katze" (persistent; keine Markierung = einverstanden), oben die
+> **Übereinstimmung Modell↔Mensch**. Alle Schwellwerte in `model_params.json`
+> im Volume, ohne Rebuild im UI änderbar (Endpunkte `/rec /density /adata
+> /amodel /aparams /alabels /amark /devreload /acoverage`).
 
 ### 5.11 radarCalibrationButton — Touch-Fernbedienung für die Radar-Kalibrierung
 

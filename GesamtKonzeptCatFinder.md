@@ -516,11 +516,16 @@ Modell auf dem ESP32 implementiert.
    bei Lidar-Sonnen-Bursts ist gerade die Menge das Erkennungsmerkmal). Der
    VPS rechnet daraus ms-genaue Serverzeiten. Abwärtskompatibel: Events ohne
    `ms` bekommen die Push-Zeit.
-4. **Analyse-Tab:** Zeitleiste mit Ereignisdichte über die **gesamte**
-   Aufnahme; das betrachtete Zeitfenster lässt sich verschieben, strecken und
-   stauchen. Darunter eine **Welt-Karte mit Pan/Zoom** (RasenKarte als
-   Hintergrund), auf der die Events des Fensters erscheinen (Farbe je
-   Sensor/Ziel). Einzelne Sensoren sind ein-/ausblendbar. **Labeln:** ein
+4. **Analyse-Tab:** Die Zeitleiste zeigt **genau das gewählte Zeitfenster**
+   (Ereignisdichte je Sender, Zeit-Gitter, Aufnahme-Band, Labels, rote
+   CatDetected-Punkte): Ziehen = verschieben, Mausrad = strecken/stauchen,
+   „Alles" passt die ganze Aufnahme ein. (Der frühere Übersichts-Balken über
+   die gesamte Aufnahme mit blauem Fenster-Rahmen wurde nach mehreren Tagen
+   Aufnahme unübersichtlich und ist ersetzt.) Darunter eine **Welt-Karte mit
+   Pan/Zoom** (RasenKarte als Hintergrund), auf der die Events des Fensters
+   erscheinen (Farbe je Sensor/Ziel). Einzelne Sensoren sind
+   ein-/ausblendbar; die Erfassungssektoren sind einblendbar („Erfassung");
+   „Geräte ⟳" liest die xComDef sofort neu und fragt frische Posen an. **Labeln:** ein
    Zeitbereich (optional auf einen Sensor beschränkt) bekommt ein Label
    (Katze, Einzelereignis, Insekt, Vegetation, Sonne/Lidar, Regen/Sturm,
    Vogel, unbekannt); Labels sind persistent und in der Zeitleiste sichtbar.
@@ -537,14 +542,25 @@ Modell auf dem ESP32 implementiert.
      RasenKarte): neue Sensoren brauchen keinen VPS-Eingriff, und die
      Gerätedatenbank bleibt die Quelle der Wahrheit. HLK-Radar wiegt hoch,
      Lidar niedrig — Lidar allein bestätigt nie.
-   - **Erfassungsgrenzen empirisch:** die Langzeitdaten selbst definieren die
-     Abdeckung jedes Sensors (Belegungsraster, im UI einblendbar — inkl.
-     Bewuchs-Verdeckung, die eine statische FOV-Angabe nicht kennt). Eine
-     Katze läuft in den Erfassungsbereich **hinein und hinaus**:
-     Track-Geburt/-Tod nahe dem Rand der **Gesamt-Abdeckung** (Vereinigung
-     aller Sensoren — Übergaben zwischen überlappenden Sensoren zählen so
-     nicht als Austritt) gibt **Bonus**; Auftauchen/Verschwinden mitten im
-     Feld nur einen **weichen Malus** („kann sein, muss nicht").
+   - **Erfassungsgrenzen aus der Gerätedatenbank (geometrisch):** jedes
+     Sensor-Gerät trägt in `xComDef6_3.h` seinen **nominellen
+     Erfassungsbereich** (`covLeftDeg`/`covRightDeg`/`covRangeMm`; HLK-Radar
+     −60°…+60°, 7 m; 360°-Lidar −180°…+180°, 12 m). Der VPS legt diese
+     Sektoren über die **Welt-Posen der Sensoren** (die Geräte melden
+     `poseReport`, der Manager reicht sie per Gateway-Push an den VPS
+     weiter) in die Karte — nach dem **Versetzen eines Sensors stimmt der
+     Bereich sofort wieder**, nichts muss empirisch neu „eingelaufen"
+     werden. Der Bereich ist bewusst nominell (Winkel eher hart, Reichweite
+     weich/objektgrössenabhängig) und pro Gerät in der xComDef anpassbar,
+     z.B. wenn ein Radarsektor über die Rasenkarte hinausragt. Eine Katze
+     läuft in den Erfassungsbereich **hinein und hinaus**: Track-Geburt/-Tod
+     nahe dem Rand der **Gesamt-Abdeckung** (Vereinigung aller Sektoren —
+     Übergaben zwischen überlappenden Sensoren zählen so nicht als
+     Austritt) gibt **Bonus**; Auftauchen/Verschwinden mitten im Feld nur
+     einen **weichen Malus** („kann sein, muss nicht"). Das trennt
+     insbesondere **Vogel** (erscheint/verschwindet mitten im Feld) von
+     **Katze**. Fallback, solange keine Posen bekannt sind: empirische
+     Abdeckung aus den Langzeitdaten (Belegungsraster).
    - **Eine Katze darf stehenbleiben (koten!):** „sitzt am Ende stabil"
      gibt Bonus + Flag **STATIONAER**; ein am Fensterende noch offener
      Track bekommt keinen Austritts-Malus (Flag OFFEN).
@@ -563,12 +579,25 @@ Modell auf dem ESP32 implementiert.
    Welt-Koordinaten (`worldValid=1`); Events ohne Welt-Koordinaten werden auf
    der Analyse-Karte nicht dargestellt (die Sensoren sind inzwischen
    welt-posiert).
-7. **Nicht Teil dieser Aufgabe** (Folgeaufgaben, notiert): das
-   `CatDetected`-Wire-Event und der ESP32-DetectionActor (erst wenn das Modell
-   steht); Sensor-/Aktorprofile in `xComDef6_3.h` (2. Priorität — auch für
-   Karten-Overlays der Detektionsbereiche und Aktor-Reichweiten); am Radar:
-   No-Shot-/RasenKarten-Gating, Mute je Sensor (VPS + Display, wegen mehrerer
-   Radars) und die Kopplung des Pose-Drift-Health-Checks an das
-   Auto-Kalibrierungs-Setting (läuft heute fälschlich auch bei „aus").
+7. **Manuelle Track-Bewertung + Übereinstimmung:** Im Tracks-Panel lässt sich
+   jeder Track von Hand als **„Katze"** oder **„keine Katze"** markieren
+   (persistent, stabiler Track-Schlüssel = Geburtszeit+Geburtsort). Die
+   Modellbewertung bleibt unberührt; **keine Markierung = einverstanden**.
+   Oben wird die **Übereinstimmung Modell↔Mensch** summiert (x/y, „Modell-
+   Katze abgelehnt" bzw. „Katze übersehen") — die Messlatte fürs Iterieren.
+8. **CatDetected-Auslösezeitpunkt:** Vom Modell bestätigte Tracks tragen auf
+   Karte und Zeitleiste einen **roten Punkt** an dem Ort/Zeitpunkt, an dem
+   das (künftig auf dem ESP32 laufende) Modell `catDetected` auslösen würde —
+   also **bevor** die Katze den Erfassungsbereich verlässt. Die
+   Wire-Datenstruktur ist in `xComDef6_3.h` definiert (`catDetected` = msgCode
+   13, `catDetectedPayload`: Welt-Position, Score, Flags, Track-Dauer,
+   Netto-Verschiebung).
+9. **Nicht Teil dieser Aufgabe** (Folgeaufgaben, notiert): der
+   ESP32-DetectionActor, der `catDetected` tatsächlich sendet (erst wenn das
+   Modell steht); Sensor-/Aktorprofile in `xComDef6_3.h` (2. Priorität —
+   Aktor-Reichweiten); am Radar: No-Shot-/RasenKarten-Gating, Mute je Sensor
+   (VPS + Display, wegen mehrerer Radars) und die Kopplung des
+   Pose-Drift-Health-Checks an das Auto-Kalibrierungs-Setting (läuft heute
+   fälschlich auch bei „aus").
 
 
