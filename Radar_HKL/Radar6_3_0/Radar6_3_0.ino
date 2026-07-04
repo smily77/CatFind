@@ -3,7 +3,8 @@
 //      HB geht als radarHbPayload (inkl. Totzone) raus, Beobachtungen als posPayload
 //#define  CompactDomeDevice
 //#define  MiniDomeDevice
-#define  DomeDevice
+//#define  DomeDevice
+#define MiniDomeDevice
 
 #include <xComDef6_3.h>
 
