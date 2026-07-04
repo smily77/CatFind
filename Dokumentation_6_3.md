@@ -1,6 +1,6 @@
 # CatFind 6.3 — Systembeschreibung
 
-Stand: 2026-07-01 · gilt für die 6_3-Programmversionen (Protokoll 0x63)
+Stand: 2026-07-04 · gilt für die 6_3-Programmversionen (Protokoll 0x63)
 
 CatFind ist ein verteiltes System aus ESP32-Geräten, das eine Katze auf dem
 Rasen erkennt, ihre Position bestimmt und sie mit einem gezielten Wasserstrahl
@@ -440,9 +440,8 @@ Persistenz der eigenen Pose (NVS, Preferences-Namespace `"pose"`):
 
 ### 4.2 Karten-Verteilung (Manager → Geräte)
 
-Karten (zunächst die **No-Shot-/Schusszonen-Karte**) liegen zentral im **LittleFS
-des Managers** und werden über das UDP-xCom-Protokoll an anfragende Geräte
-verteilt. Ablauf (alles Unicast):
+Karten liegen zentral im **LittleFS des Managers** und werden über das
+UDP-xCom-Protokoll an anfragende Geräte verteilt. Ablauf (alles Unicast):
 
 ```
 Sensor ──mapRequest(mapType)──►  Manager
@@ -450,7 +449,10 @@ Sensor ◄──mapInfo(version,crc,len,chunkSize,chunkCount)── Manager
 Sensor ◄──mapChunk(idx,data)──   Manager   (chunkCount Stück, in Reihenfolge)
 ```
 
-- **mapType-Enum:** `mapNoShot (1)` (weitere Typen später möglich).
+- **mapType-Enum:** `mapNoShot (1)` = Schusszonen-Karte (`/noshot.csv`, lädt der
+  Aktor/Lidar); `mapRasen (2)` = **RasenKarte**/Rasen-Umriss (`/rasen.csv`,
+  laden die Radare — sie melden mit gültiger Welt-Pose nur Ziele innerhalb,
+  Kap. 5.2). Beide Polygon-CSV in Welt-mm.
 - **`mapReqPayload`** (1 B): `mapType`.
 - **`mapInfoPayload`** (15 B): `mapType`, `version` (aus dem CSV-Header `vN`),
   `fileCrc` (CRC32 über die ganze Datei), `totalLen`, `chunkSize` (`mapChunkBytes`
@@ -458,11 +460,17 @@ Sensor ◄──mapChunk(idx,data)──   Manager   (chunkCount Stück, in Reih
 - **`mapChunk`**: `mapChunkMeta` (`mapType`, `version`, `chunkIndex`, `dataLen`)
   **+** `dataLen` Datenbytes — variable Payloadlänge `sizeof(mapChunkMeta)+dataLen`.
 
-Der Empfänger sammelt die Chunks der Reihe nach in `<pfad>.tmp`, prüft am Ende
-`fileCrc`/`totalLen` und benennt erst dann auf den Zielpfad um (atomar). Stimmt
-die `version`/`fileCrc` bereits mit der lokalen Kopie überein, kann ein Gerät den
-Download überspringen. Die zeitkritische In/Out-Entscheidung läuft danach lokal
-gegen die gecachte Karte (Point-in-Polygon — eigene, spätere Aufgabe).
+Der Empfänger sammelt die Chunks der Reihe nach in einem **statischen
+RAM-Puffer** (`MAP_RX_BUF_BYTES`, 8 KB; größere Karten streamen in `<pfad>.tmp`),
+prüft am Ende `fileCrc`/`totalLen` und schreibt erst dann die Zieldatei.
+**Warum RAM statt Datei:** LittleFS-Schreiben mitten im Transfer blockiert zig ms
+(Flash-Erase); mit dem Single-Paketpuffer des Empfängers und ohne Resend ging
+dabei reproduzierbar ein Chunk verloren und der ganze Transfer scheiterte. Der
+Manager lässt zusätzlich 10 ms zwischen den Chunks. Stimmt `version`/`fileCrc`
+bereits mit der lokalen Kopie überein, wird der Download übersprungen. Schlägt
+ein Transfer trotzdem fehl (kein Resend — z. B. direkt nach dem Boot), wiederholt
+das Gerät periodisch; der Fortschritt ist als Text-Multicast im VPS-Debug
+sichtbar („Karte 2: lade vom Manager … / Download OK / unvollständig").
 
 Gemeinsame Prozeduren in `xComProc6_3.h`:
 
@@ -474,11 +482,18 @@ Gemeinsame Prozeduren in `xComProc6_3.h`:
 | `requestMap(mapType, mgrOctet)` | Sensor | `mapRequest` senden |
 | `mapBeginRx(state, info, path)` | Sensor | Empfang starten (nach `mapInfo`) |
 | `mapFeedChunk(state, msg)` | Sensor | Chunk verarbeiten (0=weiter,1=fertig,-1=Fehler) |
+| `acquireMap(mapType, path, mgrOctet, waitMs)` | Sensor | Komplettablauf: Cache laden, Version prüfen, ggf. Download |
+| `acquireNoShot(path, mgrOctet, waitMs)` | Sensor | Kurzform `acquireMap(mapNoShot, …)` |
+| `loadNoShot(path)` / `insideNoShot(x,y)` | Sensor | Polygon-Karte in RAM laden / Welt-Punkt-Test (generisch für No-Shot UND Rasen) |
 
-Auf dem **Manager** liegt die Karte als `data/noshot.csv` (LittleFS-Image) bzw.
-wird beim ersten Boot aus einer im Sketch eingebetteten Default-Karte ins
-LittleFS geschrieben, falls dort noch keine vorhanden ist. Erzeugt wird die Karte
-mit dem Zeichen-Tool `Lidar_C1_Prog/Position_estimate/map_draw/`.
+Auf dem **Manager** werden beide Karten beim ersten Boot aus im Sketch
+eingebetteten Defaults ins LittleFS geschrieben (`ensureMaps()`), falls dort noch
+keine liegen. Die No-Shot-Karte entsteht mit dem Zeichen-Tool
+`Lidar_C1_Prog/Position_estimate/map_draw/`; das RasenKarten-Seed ist aus
+`Map/RasenKarte.csv` generiert (Meter → mm, ×1000 gerundet) — **bei
+Kartenänderung** Seed im Manager-Sketch neu erzeugen, Version im Header
+hochzählen und `/rasen.csv` im Manager-FS löschen (die Geräte laden bei
+Versions-/CRC-Abweichung automatisch neu).
 
 ---
 
@@ -860,6 +875,10 @@ Knopfdruck steuert (siehe Kap. 4.1 und GesamtKonzeptCatFinder.md, Aufgabe
 - **Funktion:** Zwei Schaltflächen senden dem **gewählten** Radar per **Unicast**
   eine `commandMsg`:
   - **KALIBRIEREN** → `cmdCalibrate` (`info` = 45000 ms) — startet den Kalibriermodus.
+    Nach dem Senden **zählt der Button das 45-s-Fenster sichtbar herunter**
+    („laeuft … 37s", ocker statt grün); sekündlich wird nur der Button neu
+    gezeichnet (kein Flackern), das Ergebnis meldet das Radar danach per
+    Text-Multicast in die Statuszeile.
   - **POSE LÖSCHEN** → `cmdClearPose` — verwirft die gespeicherte Welt-Pose
     (`validWorldPose=false`); für den Fall, dass das Radar **bewegt** wurde und der
     Health-Check die grobe Abweichung nicht selbst erkennt (Kap. 5.2).
@@ -910,7 +929,10 @@ aller aktiven Geräte per Touch bedienen lassen (siehe GesamtKonzeptCatFinder.md
 > erreicht, wirkt der **Manager als Steuer-Gateway**: er meldet die `settingsReport` an den
 > VPS (`/ingest`) und **pollt** `GET /commands` (CSV „target,cmd,info"), um vom Webinterface
 > (`POST /command`) angeforderte Kommandos auf den lokalen Bus zu geben. `target 255` =
-> Broadcast `settingsRequest`.
+> Broadcast `settingsRequest`, `target 254` = Broadcast `poseRequest` (Welt-Posen für die
+> Erfassungssektoren). Kommandos mit **target = Manager** führt der Manager **lokal** aus
+> (`handleCommonMsg`) — ein UDP-Unicast an die eigene IP loopt nicht in den eigenen Socket
+> zurück, darum reagierten seine eigenen Schalter früher nicht.
 
 ---
 
