@@ -6,13 +6,12 @@
 #define periodeForHB 10000
 
 // Onboard-LED: kurzer Blitz beim HB-Senden (stgHbLed), laenger an bei CatDetected
-// (stgCatLed). ESP32-S3-DevKit hat eine RGB-LED (RGB_BUILTIN, digitalWrite = weiss),
-// klassisches DevKit eine einfache LED auf GPIO2. Kein FastLED noetig.
-#ifdef RGB_BUILTIN
-#define CATID_LED RGB_BUILTIN
-#else
-#define CATID_LED 2
-#endif
+// (stgCatLed). Hardware ist ein Seeed XIAO ESP32-S3: User-LED auf GPIO21,
+// ACTIVE-LOW (LOW = leuchtet); WLAN NUR ueber die IPEX-Antenne (ohne angesteckte
+// Antenne ist das Board praktisch taub!). Kein FastLED noetig.
+#define CATID_LED     21
+#define CATID_LED_ON  LOW
+#define CATID_LED_OFF HIGH
 #define HB_FLASH_MS 60
 #define DET_FLASH_MS 1500
 

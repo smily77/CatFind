@@ -8,12 +8,12 @@ void heardBeat() {
     hb.HBperiode = periodeForHB;
     broadcastMsg(HB, hb);
     statusLightOn = true;
-    if (settingOn(stgHbLed)) digitalWrite(CATID_LED, HIGH);   // HB-Blitz schaltbar
+    if (settingOn(stgHbLed)) digitalWrite(CATID_LED, CATID_LED_ON);   // HB-Blitz schaltbar
     timer = millis();
   }
   if (statusLightOn && ((timer + HB_FLASH_MS) < millis())) {
     statusLightOn = false;
-    if (!detLedOffMs) digitalWrite(CATID_LED, LOW);           // Det-Blitz nicht abwuergen
+    if (!detLedOffMs) digitalWrite(CATID_LED, CATID_LED_OFF);           // Det-Blitz nicht abwuergen
     timer = millis();
   }
 }
