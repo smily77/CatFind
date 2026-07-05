@@ -27,15 +27,26 @@ Analyse (Aufgabe "VPS-Modellierung der Katzenerkennung", GesamtKonzeptCatFinder.
   GET/POST /rec         Aufnahme-Status / Aufnahme ein-aus (Pause/Append)
   GET  /density         Ereignisdichte je Sender für die Zeitleiste (?t0&t1&bins)
   GET  /adata           Events eines Zeitfensters (?t0&t1, ausgedünnt auf max_pts)
-  GET  /amodel          Modell (catmodel.py) über ein Zeitfenster laufen lassen
-  GET/POST /aparams     Modell-Parameter (JSON im Volume, ohne Rebuild änderbar)
+  GET  /amodel          Tracks eines Zeitfensters aus der Analysierer-DB lesen
+                        (die ERKENNUNG läuft kontinuierlich im Hintergrund-Thread,
+                        völlig unabhängig von der Betrachtung — s.u.)
+  GET/POST /aparams     Modell-Parameter (JSON im Volume; Änderung -> Neuaufbau)
   GET  /alabels         Labels eines Zeitfensters
   POST /alabel          Label anlegen {t0,t1,sender,label,note}
   POST /alabel_del      Label löschen {id}
-  POST /amark           manuelle Track-Bewertung {key,t0,t1,mark: cat|nocat|""}
-                        (key = stabiler Track-Schlüssel aus /amodel; "" = löschen)
+  POST /amark           manuelle Track-Bewertung {key,t0,t1,mark} (cat|person|bird|
+                        mower|insect|storm|nocat|surenocat; "" = löschen)
+  POST /amerge          Tracks zusammenkleben {ids:[...]}; /aunmerge {merge_id} löst
+  GET  /atracks(.csv)   komplette Trackliste inkl. Bewertungen/Klebungen (JSON/CSV)
+  GET  /avalidate       Modell gegen alle von Hand bewerteten Tracks prüfen
   POST /devreload       Gerätetabelle (xComDef6_3.h) sofort neu aus dem Repo lesen
                         + Manager um frische Welt-Posen bitten (poseRequest)
+
+Kontinuierlicher Analysierer: Hintergrund-Thread arbeitet die Aufnahme in
+Häppchen ab (catmodel.analyze_stream — dasselbe Modell, das später auf dem
+ESP32 laufen soll), vergibt fortlaufende Track-Nummern und persistiert fertige
+Tracks in SQLite (Tabelle tracks). Parameter-/Mäher-Label-Änderungen lösen
+automatisch einen kompletten Neuaufbau aus (Signaturvergleich).
 
 Erfassungsbereiche: die Sensoren tragen ihren nominellen Erfassungsbereich in der
 xComDef (covLeftDeg/covRightDeg/covRangeMm); der Manager liefert die Welt-Posen
@@ -43,9 +54,10 @@ der Geräte per /ingest ("poses", aus poseReport). Daraus baut catmodel.
 build_coverage_geo die Abdeckungs-Sektoren — nach dem Versetzen eines Sensors
 stimmt der Bereich sofort wieder. Fallback ohne Posen: empirische Abdeckung.
 """
-import os, re, time, json, sqlite3, threading, urllib.request
+import os, re, time, json, sqlite3, threading, hashlib, traceback, urllib.request
+from datetime import datetime
 from collections import deque, OrderedDict
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
 import catmodel
 
 MAP_URL      = os.environ.get(
@@ -186,6 +198,19 @@ def init_db():
     # Schlüssel aus catmodel (Geburtszeit ms + Geburtsort), mark = cat|nocat
     _db.execute("""CREATE TABLE IF NOT EXISTS track_marks(
         key TEXT PRIMARY KEY, t0 REAL, t1 REAL, mark TEXT, created REAL)""")
+    # fertige Tracks des kontinuierlichen Analysierers: id = fortlaufende
+    # Track-Nummer, key = stabiler Schlüssel, data = volle Features als JSON
+    _db.execute("""CREATE TABLE IF NOT EXISTS tracks(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key TEXT UNIQUE, t0 REAL, t1 REAL, confirmed INT, score INT,
+        data TEXT, updated REAL)""")
+    _db.execute("CREATE INDEX IF NOT EXISTS idx_tracks_t ON tracks(t0,t1)")
+    # Klebungen: vom Menschen zusammengefügte Tracks (JSON-Liste der keys)
+    _db.execute("""CREATE TABLE IF NOT EXISTS merges(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, keys TEXT, created REAL)""")
+    # erkannte Sturm-/Burst-Fenster (vom Analysierer, je Chunk fortgeschrieben)
+    _db.execute("""CREATE TABLE IF NOT EXISTS storm_iv(
+        sender INT, t0 REAL, t1 REAL)""")
     # Aufnahme-Abschnitte: wo wurde tatsächlich aufgezeichnet? (für die
     # Zeitleiste — Lücken = Pause/Container-Downtime sichtbar machen)
     _db.execute("""CREATE TABLE IF NOT EXISTS recspans(
@@ -623,55 +648,399 @@ def devreload():
                    poses=n_poses)
 
 
+# ------------------------------------------------- Kontinuierlicher Analysierer
+# Die Trackerkennung läuft UNABHÄNGIG von der Betrachtung im Browser: ein
+# Hintergrund-Thread arbeitet die Aufnahme fortlaufend in Häppchen ab (genau
+# das Modell, das später auf dem ESP32 in Echtzeit laufen soll), vergibt
+# fortlaufende Track-Nummern und legt fertige Tracks persistent in SQLite ab.
+# /amodel LIEST nur noch — egal wie gross das betrachtete Fenster ist.
+# Ändern sich Modell-Parameter oder „Mäher"-Fenster (-> Signatur), rechnet der
+# Thread automatisch alles neu; manuelle Bewertungen und Klebungen überleben
+# das über den stabilen Track-key (Geburtszeit+Geburtsort).
+
+ANA_CHUNK    = 80000     # Events je Analyse-Häppchen (Backfill)
+ANA_SAFE_GAP = 8.0       # s Ruhe > track_gap+stitch_gap -> sichere Schnittstelle
+ANA_HOLD     = 12.0      # s: jüngste Daten zurückhalten, bis Tracks fertig sein können
+ANA_STALL_S  = 21600     # Notbremse: ewig offener Track wird trotzdem festgeschrieben
+
+_ana_lock  = threading.Lock()
+_ana_prov  = []          # provisorische (noch offene) Tracks — nur RAM
+_ana_state = {"done_t": None, "backlog": False, "err": ""}
+
+
+def _meta_get(k, default=None):
+    row = _db.execute("SELECT v FROM meta WHERE k=?", (k,)).fetchone()
+    return row[0] if row else default
+
+
+def _meta_set(k, v):
+    _db.execute("INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)", (k, str(v)))
+
+
+def _model_sig():
+    """Signatur von allem, was das Modellergebnis beeinflusst: Parameter +
+    „Mäher"-Ausschlussfenster. Ändert sie sich -> kompletter Neuaufbau."""
+    p = catmodel.merged_params(load_params())
+    with _db_lock:
+        mow = _db.execute("SELECT t0,t1 FROM labels WHERE label='Mäher' "
+                          "ORDER BY t0").fetchall()
+    return hashlib.md5(json.dumps([p, mow], sort_keys=True).encode()).hexdigest()
+
+
+def _analyzer_step():
+    """Ein Analyse-Häppchen verarbeiten. True = es wartet noch Backlog."""
+    global _ana_prov
+    params = catmodel.merged_params(load_params())
+    sig = _model_sig()
+    with _db_lock:
+        if _meta_get("ana_sig") != sig:
+            # Parameter/Mäher-Fenster geändert -> Tracks neu rechnen, Nummern
+            # neu vergeben (Bewertungen + Klebungen hängen am stabilen key)
+            _db.execute("DELETE FROM tracks")
+            _db.execute("DELETE FROM storm_iv")
+            _db.execute("DELETE FROM sqlite_sequence WHERE name='tracks'")
+            _db.execute("DELETE FROM meta WHERE k='ana_done_t'")
+            _meta_set("ana_sig", sig)
+            _db.commit()
+            with _ana_lock:
+                _ana_prov = []
+            print("Analysierer: Signatur geändert — rechne alles neu", flush=True)
+        done_t = _meta_get("ana_done_t")
+        if done_t is None:
+            row = _db.execute("SELECT MIN(t) FROM events WHERE wv=1").fetchone()
+            if not row or row[0] is None:
+                _ana_state.update(done_t=None, backlog=False)
+                return False
+            done_t = row[0] - 1.0
+        else:
+            done_t = float(done_t)
+        hi = time.time() - ANA_HOLD
+        rows = _db.execute(
+            "SELECT t,sender,sensor,wx,wy,speed FROM events "
+            "WHERE wv=1 AND t>? AND t<=? ORDER BY t LIMIT ?",
+            (done_t, hi, ANA_CHUNK + 1)).fetchall()
+    if not rows:
+        with _ana_lock:
+            _ana_prov = []
+        _ana_state.update(done_t=done_t, backlog=False)
+        return False
+
+    backlog = len(rows) > ANA_CHUNK
+    if backlog:
+        rows = rows[:ANA_CHUNK]
+        # am letzten ruhigen Loch abschneiden, damit kein Track zerteilt wird
+        cut = len(rows) - 1
+        for i in range(len(rows) - 1, 0, -1):
+            if rows[i][0] - rows[i - 1][0] >= ANA_SAFE_GAP:
+                cut = i - 1
+                break
+        rows = rows[:cut + 1]
+        final_before = rows[-1][0] + 1e-3
+    else:
+        # aufgeholt: Tracks, deren Ende jünger als hi-SAFE_GAP ist, könnten
+        # durch noch zurückgehaltene Events weiterwachsen -> provisorisch
+        final_before = hi - ANA_SAFE_GAP
+
+    evs = [{"t": r[0], "sender": r[1], "sensor": r[2], "wx": r[3], "wy": r[4],
+            "speed": r[5]} for r in rows]
+    with _db_lock:
+        mow = _db.execute("SELECT t0,t1 FROM labels WHERE label='Mäher' "
+                          "AND t1>=? AND t0<=?", (rows[0][0], rows[-1][0])).fetchall()
+    res = catmodel.analyze_stream(evs, params, devices=load_devices(),
+                                  coverage=get_coverage(params),
+                                  exclude=[(a, b) for a, b in mow],
+                                  final_before=final_before)
+    prov = res["prov"]
+    # bis wohin ist ENDGÜLTIG gerechnet? Offene Tracks müssen im nächsten
+    # Häppchen ab ihrer Geburt nochmals rein (sie wachsen evtl. noch).
+    new_done = final_before
+    if prov:
+        new_done = min(new_done, min(tr["t0"] for tr in prov) - 1e-3)
+    if final_before - new_done > ANA_STALL_S:
+        # Notbremse (z.B. stundenlang gestitchter Dauer-Track): festschreiben
+        res["final"].extend(prov)
+        prov = []
+        new_done = final_before
+    new_done = max(new_done, done_t)
+
+    now = time.time()
+    with _db_lock:
+        for tr in res["final"]:
+            tr.pop("id", None)                    # Nummer vergibt die DB
+            _db.execute(
+                """INSERT INTO tracks(key,t0,t1,confirmed,score,data,updated)
+                   VALUES(?,?,?,?,?,?,?)
+                   ON CONFLICT(key) DO UPDATE SET t0=excluded.t0, t1=excluded.t1,
+                     confirmed=excluded.confirmed, score=excluded.score,
+                     data=excluded.data, updated=excluded.updated""",
+                (tr["key"], tr["t0"], tr["t1"], int(tr["confirmed"]),
+                 tr["score"], json.dumps(tr, separators=(",", ":")), now))
+        # Sturm-Fenster des Häppchens (Reprocessing-Duplikate vorher räumen)
+        _db.execute("DELETE FROM storm_iv WHERE t1>=? AND t0<=?",
+                    (rows[0][0], rows[-1][0]))
+        for sid, ivs in res["storms"].items():
+            _db.executemany("INSERT INTO storm_iv(sender,t0,t1) VALUES(?,?,?)",
+                            [(int(sid), a, b) for a, b in ivs])
+        _meta_set("ana_done_t", repr(new_done))
+        _db.commit()
+    for tr in prov:
+        tr["id"] = None
+        tr["provisional"] = True
+    with _ana_lock:
+        _ana_prov = prov
+    _ana_state.update(done_t=new_done, backlog=backlog, err="")
+    if backlog:
+        print("Analysierer: %d Events bis %s verarbeitet (Backlog)" %
+              (len(rows), datetime.fromtimestamp(rows[-1][0]).isoformat()), flush=True)
+    return backlog
+
+
+def _analyzer_loop():
+    time.sleep(2.0)                    # Server erst fertig hochkommen lassen
+    while True:
+        try:
+            more = _analyzer_step()
+        except Exception as e:                                   # noqa: BLE001
+            traceback.print_exc()
+            _ana_state["err"] = str(e)
+            more = False
+        time.sleep(0.3 if more else 5.0)
+
+
+# ------------------------------------------------- Tracks servieren (aus der DB)
+
+def _combine_tracks(members, params, devices, coverage):
+    """Geklebte Tracks zu EINEM zusammenfassen und als Ganzes neu bewerten
+    (so, wie das Modell den Track sähe, wäre er nie zerrissen worden)."""
+    members = sorted(members, key=lambda m: m["t0"])
+    pts = sorted([list(p) for m in members for p in m["pts"]])
+    feats = catmodel.score_track(pts, {}, coverage, devices, params, 0,
+                                 -1e18, 1e18)
+    feats["id"] = min(m["id"] for m in members)
+    feats["key"] = members[0]["key"]
+    feats["members"] = [{"id": m["id"], "key": m["key"]} for m in members]
+    feats["flags"] = feats.get("flags", []) + ["GEKLEBT"]
+    return feats
+
+
+def _served_tracks(t0, t1, params, devices, coverage):
+    """Tracks eines Fensters (oder alle bei t0=None) aus der DB, Klebungen
+    bereits zusammengefasst (Mitglieder ersetzt durch den kombinierten Track)."""
+    with _db_lock:
+        if t0 is None:
+            rows = _db.execute("SELECT id,key,data FROM tracks ORDER BY t0").fetchall()
+        else:
+            rows = _db.execute("SELECT id,key,data FROM tracks "
+                               "WHERE t1>=? AND t0<=? ORDER BY t0",
+                               (t0, t1)).fetchall()
+        groups = _db.execute("SELECT id,keys FROM merges").fetchall()
+    tracks = {}
+    for rid, key, data in rows:
+        tr = json.loads(data)
+        tr["id"] = rid
+        tracks[key] = tr
+    for gid, keys_json in groups:
+        keys = json.loads(keys_json)
+        present = [k for k in keys if k in tracks]
+        if not present:
+            continue                    # Klebung liegt ganz ausserhalb des Fensters
+        missing = [k for k in keys if k not in tracks]
+        if missing:
+            with _db_lock:
+                more = _db.execute(
+                    "SELECT id,key,data FROM tracks WHERE key IN (%s)" %
+                    ",".join("?" * len(missing)), missing).fetchall()
+            for rid, key, data in more:
+                tr = json.loads(data)
+                tr["id"] = rid
+                tracks[key] = tr
+        members = [tracks[k] for k in keys if k in tracks]
+        if len(members) < 2:
+            continue
+        comb = _combine_tracks(members, params, devices, coverage)
+        comb["merge_id"] = gid
+        for m in members:
+            tracks.pop(m["key"], None)
+        tracks[comb["key"]] = comb
+    return list(tracks.values())
+
+
 @app.get("/amodel")
 def amodel():
-    # Modell über ein Zeitfenster: Tracks + Stürme + CatDetected-Markierung.
+    # Tracks eines Zeitfensters aus der DB des kontinuierlichen Analysierers
+    # (plus noch offene provisorische) — hier wird NICHTS mehr gerechnet, die
+    # Erkennung läuft unabhängig von der Betrachtung im Hintergrund.
     t0, t1 = _win_args()
     if t0 is None or t1 is None:
         return jsonify(error="t0/t1 fehlen"), 400
-    with _db_lock:
-        total = _db.execute(
-            "SELECT COUNT(*) FROM events WHERE t>=? AND t<=? AND wv=1",
-            (t0, t1)).fetchone()[0]
-        if total > 200000:
-            return jsonify(error="Fenster zu gross (%d Events) — bitte stauchen" % total), 400
-        rows = _db.execute(
-            "SELECT t,sender,sensor,wx,wy,speed FROM events "
-            "WHERE t>=? AND t<=? AND wv=1 ORDER BY t", (t0, t1)).fetchall()
-    evs = [{"t": r[0], "sender": r[1], "sensor": r[2], "wx": r[3], "wy": r[4],
-            "speed": r[5]} for r in rows]
     params = catmodel.merged_params(load_params())
     devices = load_devices()
-    # „Mäher"-Labels = Analyse-Ausschlussfenster: der RoboMäher erzeugt stundenlange
-    # kohärente Bahnen (perfekt zum Ausleuchten der Erfassungsbereiche, darum wird
-    # WEITER aufgezeichnet und dargestellt) — aber Tracking/Bestätigung überspringen
-    # diese Fenster. Zusätzlich fängt max_path_mm unmarkierte Mäher-Läufe ab.
+    cov = get_coverage(params)
+    tracks = _served_tracks(t0, t1, params, devices, cov)
+    have = {t["key"] for t in tracks}
+    with _ana_lock:
+        tracks += [dict(tr) for tr in _ana_prov
+                   if tr["t1"] >= t0 and tr["t0"] <= t1 and tr["key"] not in have]
+    n_confirmed = sum(1 for t in tracks if t["confirmed"])
+    truncated = 0
+    if len(tracks) > 600:               # Riesenfenster: wichtigste zuerst behalten
+        tracks.sort(key=lambda t: (t["confirmed"], t["score"], t["n"]), reverse=True)
+        truncated = len(tracks) - 600
+        tracks = tracks[:600]
+    tracks.sort(key=lambda t: t["t0"])
     with _db_lock:
+        n_events = _db.execute(
+            "SELECT COUNT(*) FROM events WHERE t>=? AND t<=? AND wv=1",
+            (t0, t1)).fetchone()[0]
         mow = _db.execute("SELECT t0,t1 FROM labels WHERE label='Mäher' "
                           "AND t1>=? AND t0<=?", (t0, t1)).fetchall()
-    res = catmodel.analyze(evs, params, devices=devices,
-                           coverage=get_coverage(params),
-                           exclude=[(a, b) for a, b in mow])
-    res["t0"], res["t1"] = t0, t1
-    res["devices"] = {str(k): {"name": v["name"], "type": v["type"],
-                               "covL": v.get("covL", 0), "covR": v.get("covR", 0),
-                               "covRange": v.get("covRange", 0)}
-                      for k, v in devices.items()}
-    # manuelle Track-Bewertungen (Katze/keine Katze) der Fenster-Tracks
+        n_excl = 0
+        for a, b in mow:
+            n_excl += _db.execute(
+                "SELECT COUNT(*) FROM events WHERE t>=? AND t<=? AND wv=1",
+                (max(a, t0), min(b, t1))).fetchone()[0]
+        srows = _db.execute("SELECT sender,t0,t1 FROM storm_iv "
+                            "WHERE t1>=? AND t0<=?", (t0, t1)).fetchall()
+        marks = _db.execute("SELECT key,mark FROM track_marks").fetchall()
+    storms = {}
+    for sid, a, b in srows:
+        storms.setdefault(str(sid), []).append([a, b])
+    done_t = _ana_state.get("done_t")
+    return jsonify(
+        t0=t0, t1=t1, tracks=tracks, storms=storms,
+        n_events=n_events, n_excluded=n_excl, n_confirmed=n_confirmed,
+        edge_active=len(cov.get("union", ())) >= params["cov_min_cells"],
+        cov_source=cov.get("source", ""),
+        params=params,
+        devices={str(k): {"name": v["name"], "type": v["type"],
+                          "covL": v.get("covL", 0), "covR": v.get("covR", 0),
+                          "covRange": v.get("covRange", 0)}
+                 for k, v in devices.items()},
+        marks={k: m for k, m in marks},
+        ana={"done_t": done_t, "backlog": _ana_state["backlog"],
+             "err": _ana_state["err"], "truncated": truncated})
+
+
+@app.post("/amerge")
+def amerge():
+    # zwei oder mehr Tracks zusammenkleben (gehören zum selben Tier). Berührt
+    # eine Auswahl eine bestehende Klebung, wird sie mit ihr vereinigt.
+    d = request.get_json(force=True, silent=True) or {}
+    ids = [int(i) for i in d.get("ids", [])]
+    if len(ids) < 2:
+        return jsonify(error="mindestens 2 Track-Nummern nötig"), 400
     with _db_lock:
-        rows = _db.execute("SELECT key,mark FROM track_marks "
-                           "WHERE t1>=? AND t0<=?", (t0, t1)).fetchall()
-    res["marks"] = {k: m for k, m in rows}
-    return jsonify(res)
+        rows = _db.execute("SELECT key FROM tracks WHERE id IN (%s)" %
+                           ",".join("?" * len(ids)), ids).fetchall()
+        if len(rows) < 2:
+            return jsonify(error="Tracks nicht (mehr) gefunden — Modell neu geladen?"), 404
+        keys = {r[0] for r in rows}
+        for gid, kj in _db.execute("SELECT id,keys FROM merges").fetchall():
+            ks = set(json.loads(kj))
+            if ks & keys:
+                keys |= ks
+                _db.execute("DELETE FROM merges WHERE id=?", (gid,))
+        cur = _db.execute("INSERT INTO merges(keys,created) VALUES(?,?)",
+                          (json.dumps(sorted(keys)), time.time()))
+        _db.commit()
+    return jsonify(ok=True, merge_id=cur.lastrowid, n=len(keys))
 
 
-AMARKS = ("cat", "person", "bird", "mower", "nocat")   # erlaubte Track-Bewertungen
+@app.post("/aunmerge")
+def aunmerge():
+    d = request.get_json(force=True, silent=True) or {}
+    with _db_lock:
+        _db.execute("DELETE FROM merges WHERE id=?", (int(d.get("merge_id", -1)),))
+        _db.commit()
+    return jsonify(ok=True)
+
+
+def _all_tracks_with_marks():
+    params = catmodel.merged_params(load_params())
+    devices = load_devices()
+    cov = get_coverage(params)
+    tracks = _served_tracks(None, None, params, devices, cov)
+    with _db_lock:
+        marks = dict(_db.execute("SELECT key,mark FROM track_marks").fetchall())
+    for tr in tracks:
+        tr["mark"] = marks.get(tr["key"], "")
+    tracks.sort(key=lambda t: t["t0"])
+    return tracks
+
+
+@app.get("/atracks")
+def atracks():
+    # komplette Trackliste (inkl. Bewertungen/Klebungen) als JSON — separat
+    # verwendbar, z.B. um das Modell gegen die markierten Tracks zu prüfen.
+    # ?pts=1 liefert auch die Punktfolgen (gross!).
+    tracks = _all_tracks_with_marks()
+    if request.args.get("pts") != "1":
+        for tr in tracks:
+            tr.pop("pts", None)
+    return jsonify(n=len(tracks), tracks=tracks)
+
+
+@app.get("/atracks.csv")
+def atracks_csv():
+    def iso(t):
+        return datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M:%S")
+    lines = ["Nr;key;start;ende;dauer_s;punkte;netto_mm;weg_mm;v_mittel;v_max;"
+             "sender;flags;score;modell_katze;ablehnung;bewertung;klebung"]
+    for tr in _all_tracks_with_marks():
+        lines.append(";".join(str(x) for x in (
+            tr["id"], tr["key"], iso(tr["t0"]), iso(tr["t1"]),
+            round(tr["t1"] - tr["t0"], 1), tr["n"], tr["net_mm"], tr["path_mm"],
+            tr["v_mean"], tr["v_max"],
+            "+".join(str(s) for s in tr["senders"]),
+            "+".join(tr.get("flags", [])), tr["score"],
+            1 if tr["confirmed"] else 0,
+            (tr.get("reject") or "").replace(";", ","), tr.get("mark", ""),
+            "+".join(str(m["id"]) for m in tr.get("members", [])))))
+    return Response("\n".join(lines) + "\n", mimetype="text/csv",
+                    headers={"Content-Disposition":
+                             "attachment; filename=catfinder_tracks.csv"})
+
+
+@app.get("/avalidate")
+def avalidate():
+    # Modell gegen ALLE von Hand bewerteten Tracks prüfen: Übereinstimmung,
+    # fälschliche Katzen (Modell ja / Mensch nein) und verpasste Katzen.
+    tracks = _all_tracks_with_marks()
+    marked = [t for t in tracks if t["mark"]]
+    per_mark, mismatches = {}, []
+    agree = false_cat = missed_cat = 0
+    for t in marked:
+        pm = per_mark.setdefault(t["mark"], {"n": 0, "model_cat": 0})
+        pm["n"] += 1
+        if t["confirmed"]:
+            pm["model_cat"] += 1
+        human_cat = t["mark"] == "cat"
+        if human_cat == bool(t["confirmed"]):
+            agree += 1
+        else:
+            if t["confirmed"]:
+                false_cat += 1
+            else:
+                missed_cat += 1
+            mismatches.append({"id": t["id"], "key": t["key"], "t0": t["t0"],
+                               "t1": t["t1"], "mark": t["mark"],
+                               "score": t["score"], "confirmed": t["confirmed"],
+                               "reject": t.get("reject")})
+    return jsonify(n_tracks=len(tracks), n_marked=len(marked), agree=agree,
+                   false_cat=false_cat, missed_cat=missed_cat,
+                   per_mark=per_mark, mismatches=mismatches)
+
+
+# erlaubte Track-Bewertungen (Ground-Truth-Kategorien)
+AMARKS = ("cat", "person", "bird", "mower", "insect", "storm",
+          "nocat", "surenocat")
 
 
 @app.post("/amark")
 def amark():
     # manuelle Bewertung eines Tracks setzen/löschen. mark: "cat" (ist Katze),
-    # "person"/"bird"/"mower" (was es stattdessen war), "nocat" (Störung/sonstiges),
+    # "person"/"bird"/"mower"/"insect"/"storm" (was es stattdessen war), "nocat"
+    # (Störung/sonstiges), "surenocat" (sicher keine Katze, Ursache egal),
     # "" = Markierung entfernen (= einverstanden mit der Modellbewertung). Die
     # Modellbewertung selbst bleibt unberührt — der Vergleich Modell vs. Mensch
     # läuft im UI (Übereinstimmungs-Statistik; alles ausser "cat" zählt als
@@ -748,6 +1117,9 @@ def alabel_del():
 init_db()
 load_map()
 load_devices()
+# kontinuierlicher Analysierer: Trackerkennung läuft ab jetzt im Hintergrund
+# über die ganze Aufnahme — unabhängig davon, was im Browser betrachtet wird
+threading.Thread(target=_analyzer_loop, daemon=True).start()
 
 if __name__ == "__main__":
     from waitress import serve

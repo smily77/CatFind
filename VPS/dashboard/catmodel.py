@@ -295,20 +295,23 @@ def build_tracks(events, p):
 
 def stitch_tracks(tracks, p):
     """Nähte: eine sitzende Katze verschwindet kurz aus dem Radar (kaum
-    Mikrobewegung) und taucht am selben Ort wieder auf -> zusammenfügen."""
+    Mikrobewegung) und taucht am selben Ort wieder auf -> zusammenfügen.
+    Kandidaten werden über ihre Endzeit ausgedünnt (sonst O(n²) — wichtig,
+    seit der Hintergrund-Analysierer grosse Häppchen am Stück verarbeitet)."""
     gap = p["stitch_gap_ms"] / 1000.0
     dist = p["stitch_dist_mm"]
-    out = []
+    out, cand = [], []               # cand = Tracks, deren Ende noch in Reichweite
     for tr in tracks:                            # tracks sind nach t0 sortiert
-        merged = False
-        for o in out:
-            if 0 <= tr[0][0] - o[-1][0] <= gap and \
+        t0 = tr[0][0]
+        cand = [o for o in cand if t0 - o[-1][0] <= gap]
+        for o in cand:
+            if t0 >= o[-1][0] and \
                math.hypot(tr[0][1] - o[-1][1], tr[0][2] - o[-1][2]) <= dist:
                 o.extend(tr)
-                merged = True
                 break
-        if not merged:
+        else:
             out.append(tr)
+            cand.append(tr)
     out.sort(key=lambda tr: tr[0][0])
     return out
 
@@ -522,3 +525,36 @@ def analyze(events, params=None, devices=None, coverage=None, exclude=None):
         "cov_source": (coverage or {}).get("source", ""),
         "params": p,
     }
+
+
+def analyze_stream(events, params=None, devices=None, coverage=None,
+                   exclude=None, final_before=None):
+    """Kontinuierliche Analyse für den Hintergrund-Analysierer im Dashboard:
+    wie analyze(), aber OHNE Betrachtungsfenster-Logik — die Trackerkennung
+    läuft fortlaufend über die Aufnahme, völlig unabhängig davon, was im
+    Browser gerade angeschaut wird (dasselbe Modell, das später auf dem ESP32
+    in Echtzeit laufen soll).
+
+    final_before: Tracks, deren letzter Punkt davor liegt, sind FERTIG
+    (bekommen in der DB eine fortlaufende Nummer); jüngere Tracks laufen
+    möglicherweise noch und bleiben provisorisch (Flag OFFEN, kein
+    Austritts-Urteil). Rückgabe {"final": [...], "prov": [...], "storms": {}}."""
+    p = merged_params(params)
+    if exclude:
+        events = [e for e in events
+                  if not any(a <= e["t"] <= b for a, b in exclude)]
+    evs = sorted(events, key=lambda e: e["t"])
+    storms = detect_storms(evs, p)
+    tracks = stitch_tracks(build_tracks(evs, p), p)
+    fb = float("inf") if final_before is None else float(final_before)
+    final, prov = [], []
+    for tr in tracks:
+        if tr[-1][0] < fb:
+            # fertig: Geburt/Tod sind echt beobachtet -> volle Randlogik
+            final.append(score_track(tr, storms, coverage, devices, p, 0,
+                                     -1e18, 1e18))
+        else:
+            # läuft evtl. noch: w_t1 = fb setzt das Flag OFFEN (kein Austritts-Malus)
+            prov.append(score_track(tr, storms, coverage, devices, p, 0,
+                                    -1e18, fb))
+    return {"final": final, "prov": prov, "storms": storms, "params": p}

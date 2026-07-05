@@ -32,10 +32,13 @@ const ANA = {
   coverage: null,       // /acoverage (Sektoren + Zellen)
   sensorOff: new Set(), // "sender.sensor" ausgeblendet
   view: null,           // Karten-Transform {cx,cy,s} (Welt-mm -> px)
-  selTrack: null,
+  selKey: null,         // angeklickter Track (stabiler key) — gelb in Karte+Zeitleiste
+  mergeSel: new Set(),  // Track-Nummern, die zum Zusammenkleben gewählt sind
   sel: null,            // Zeit-Selektion auf der Zeitleiste {t0,t1}
   fetchTimer: null,
+  behindTimer: null,    // Auto-Refresh, solange der Analysierer noch nachrechnet
 };
+const SEL_COLOR = "#ffd23b";   // Hervorhebung des angeklickten Tracks
 
 function devInfo(sid){
   const d = (ANA.model && ANA.model.devices) ? ANA.model.devices[String(sid)] : null;
@@ -120,8 +123,11 @@ async function anaFetchWindow(){
     catch(e){ ANA.model = null; anaEl("anaModelErr").textContent = "Modell: " + e.message; }
   } else ANA.model = null;
   try{ ANA.labels = (await anaJson(`/alabels?${q}`)).labels; }catch(e){ ANA.labels = []; }
-  ANA.selTrack = null;
   renderSensors(); renderTracks(); renderLabels(); drawAnaMap(); drawTimeline(); renderWinInfo();
+  // Analysierer noch am Nachrechnen (Backlog)? -> in 5 s automatisch nachladen
+  clearTimeout(ANA.behindTimer);
+  if(ANA.model?.ana?.backlog && view === "ana")
+    ANA.behindTimer = setTimeout(anaFetchWindow, 5000);
 }
 
 // ------------------------------------------------------------- Fenster-Navigation
@@ -247,6 +253,15 @@ function drawTimeline(){
     const x0 = tlX(ANA.sel.t0,W), x1 = tlX(ANA.sel.t1,W);
     ctx.fillRect(Math.min(x0,x1), 0, Math.abs(x1-x0), H);
     ctx.strokeStyle = "#e6c522"; ctx.strokeRect(Math.min(x0,x1)+.5, .5, Math.abs(x1-x0), H-1);
+  }
+  // GELBES Band: Zeitspanne des angeklickten Tracks (damit man weiss, wo man ist)
+  const selTr = ANA.model?.tracks?.find(t=>t.key===ANA.selKey);
+  if(selTr){
+    const x0 = tlX(selTr.t0, W), x1 = tlX(selTr.t1, W);
+    ctx.fillStyle = SEL_COLOR + "2e";
+    ctx.fillRect(x0, 12, Math.max(x1-x0, 3), densH-12);
+    ctx.strokeStyle = SEL_COLOR; ctx.lineWidth = 1.5;
+    ctx.strokeRect(x0+.5, 12.5, Math.max(x1-x0, 3), densH-13);
   }
   // ROTE Punkte: Zeitpunkte, zu denen das Modell CatDetected auslösen würde
   if(ANA.model) for(const tr of ANA.model.tracks) if(tr.confirmed){
@@ -387,7 +402,7 @@ function drawAnaMap(){
   const marks = ANA.model?.marks || {};
   if(ANA.model) for(const tr of ANA.model.tracks){
     if(tr.pts.length < 2 && !tr.confirmed) continue;
-    const hot = ANA.selTrack === tr.id;
+    const hot = ANA.selKey === tr.key;
     const mk = marks[tr.key];
     const col = tr.confirmed ? ((mk && mk!=="cat") ? "#e67e22" : "#2ecc71")
                              : (mk==="cat" ? "#2ecc71" : "#888a");
@@ -410,6 +425,23 @@ function drawAnaMap(){
       const tag = (tr.flags||[]).includes("STATIONAER") ? " · sitzt!" : "";
       ctx.fillText("CatDetected " + tr.score + tag, X(cp[1]) + 12, Y(cp[2]) - 6);
     }
+  }
+  // angeklickter Track nochmals OBENDRAUF in Gelb (Karte + Zeitleiste zeigen so,
+  // wo man gerade ist) — mit Start (○) und Ende (●)
+  const selTr = ANA.model?.tracks?.find(t=>t.key===ANA.selKey);
+  if(selTr && selTr.pts.length){
+    ctx.strokeStyle = SEL_COLOR; ctx.lineWidth = 4; ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    selTr.pts.forEach((p,i)=> i ? ctx.lineTo(X(p[1]),Y(p[2])) : ctx.moveTo(X(p[1]),Y(p[2])));
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    const p0 = selTr.pts[0], p1 = selTr.pts[selTr.pts.length-1];
+    ctx.strokeStyle = SEL_COLOR; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(X(p0[1]), Y(p0[2]), 6, 0, 7); ctx.stroke();
+    ctx.fillStyle = SEL_COLOR;
+    ctx.beginPath(); ctx.arc(X(p1[1]), Y(p1[2]), 6, 0, 7); ctx.fill();
+    ctx.font = "bold 11px system-ui";
+    ctx.fillText("Nr " + (selTr.id ?? "neu"), X(p0[1]) + 9, Y(p0[2]) - 8);
   }
   // Massstab
   ctx.fillStyle = "#778"; ctx.font = "11px system-ui";
@@ -507,8 +539,10 @@ const FLAG_CHIP = {STATIONAER:"⏺ sitzt", OFFEN:"… offen", EINTRITT:"→ rein
                    AUSTRITT:"raus →", FUSION:"⧉ 2+ Sensoren"};
 // manuelle Track-Bewertung: was war es wirklich? (alles ausser "cat" = keine Katze)
 const MARKS = {cat:"🐱 Katze", person:"🧍 Person", bird:"🐦 Vogel",
-               mower:"🤖 Mäher", nocat:"✕ Störung"};
-const MARK_ICON = {cat:"🐱", person:"🧍", bird:"🐦", mower:"🤖", nocat:"✕"};
+               mower:"🤖 Mäher", insect:"🦗 Insekt", storm:"⛈ Sturm",
+               nocat:"✕ Störung", surenocat:"🚫 sicher keine Katze"};
+const MARK_ICON = {cat:"🐱", person:"🧍", bird:"🐦", mower:"🤖",
+                   insect:"🦗", storm:"⛈", nocat:"✕", surenocat:"🚫"};
 
 // manuelle Bewertung eines Tracks setzen/entfernen (Klick auf gesetzten Haken = entfernen)
 async function anaSetMark(tr, mark){
@@ -522,6 +556,23 @@ async function anaSetMark(tr, mark){
   }catch(e){ alert("Bewertung speichern fehlgeschlagen: " + e.message); }
 }
 
+// zwei oder mehr Tracks zusammenkleben (gehören zum selben Tier)
+async function anaMerge(){
+  try{
+    await anaJson("/amerge",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ids:[...ANA.mergeSel]})});
+    ANA.mergeSel.clear();
+    anaFetchWindow();
+  }catch(e){ alert("Kleben fehlgeschlagen: " + e.message); }
+}
+async function anaUnmerge(mergeId){
+  try{
+    await anaJson("/aunmerge",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({merge_id:mergeId})});
+    anaFetchWindow();
+  }catch(e){ alert("Lösen fehlgeschlagen: " + e.message); }
+}
+
 function renderTracks(){
   const el = anaEl("anaTracks"); if(!el) return;
   if(!ANA.model){ el.innerHTML = "<div class='hint'>— Modell aus / kein Ergebnis —</div>"; return; }
@@ -530,7 +581,7 @@ function renderTracks(){
   const trs = all.slice()
               .sort((a,b)=>(b.confirmed-a.confirmed) || (b.score-a.score) || (b.n-a.n)).slice(0,80);
   // Übereinstimmung Modell vs. Mensch: ohne Markierung gilt "einverstanden";
-  // jede Markierung ausser "cat" (Person/Vogel/Mäher/Störung) = "keine Katze".
+  // jede Markierung ausser "cat" (Person/Vogel/…/Sturm/Insekt) = "keine Katze".
   let diffNoCat = 0, diffCat = 0;
   for(const t of all){
     const mk = marks[t.key];
@@ -550,19 +601,35 @@ function renderTracks(){
     ? (ANA.model.cov_source==="empirisch"
         ? `<div class="hint" style="color:#c93">Abdeckung noch empirisch — keine Sensor-Posen bekannt (Knopf „Geräte ⟳")</div>` : "")
     : `<div class="hint" style="color:#c93">Randlogik inaktiv — keine Abdeckungsdaten</div>`;
+  const ana = ANA.model.ana || {};
+  const behind = ana.backlog
+    ? `<div class="hint" style="color:#e6c522">⏳ Analysierer rechnet nach — fertig bis ${ana.done_t?fmtDT(ana.done_t):"…"}</div>` : "";
+  const trunc = ana.truncated
+    ? `<div class="hint">${ana.truncated} unwichtige Tracks im Riesenfenster ausgeblendet</div>` : "";
+  const mergeBar = ANA.mergeSel.size
+    ? `<div class="mergeBar">🔗 ${ANA.mergeSel.size} gewählt
+        <button id="anaMergeGo"${ANA.mergeSel.size<2?" disabled":""}>zusammenkleben</button>
+        <button id="anaMergeClr" title="Auswahl aufheben">✕</button></div>` : "";
   el.innerHTML = `<div class="hint">${ANA.model.n_confirmed}× CatDetected / ${ANA.model.tracks.length} Tracks</div>`
-    + agreeTxt + excl + edge +
+    + behind + trunc + agreeTxt + excl + edge + mergeBar +
     trs.map(t=>{
       const mk = marks[t.key];
+      const sel = ANA.selKey===t.key;
       const chips = (t.flags||[]).map(f=>
         `<span class="flg" title="${escapeHtml(FLAG_TXT[f]||f)}">${escapeHtml(FLAG_CHIP[f]||f)}</span>`).join("");
       const dis = (t.confirmed && mk && mk!=="cat") || (!t.confirmed && mk==="cat");
       const badge = mk ? `<span class="mkBadge" title="meine Bewertung: ${escapeHtml(MARKS[mk]||mk)}">✋${MARK_ICON[mk]||"?"}</span>` : "";
+      const num = t.id!=null ? "Nr "+t.id : "läuft…";
+      const glue = t.members
+        ? `<span class="flg" title="Klebung aus ${t.members.map(m=>"Nr "+m.id).join(", ")}">🔗×${t.members.length}</span>` : "";
+      const chk = t.id!=null
+        ? `<input type="checkbox" class="mrgChk" title="zum Zusammenkleben auswählen"${ANA.mergeSel.has(t.id)?" checked":""}>` : "";
       let det;
-      if(ANA.selTrack===t.id){
+      if(sel){
         const sd = (t.score_detail||[]).map(d=>`${d[1]>0?'+':''}${d[1]} ${escapeHtml(d[0])}`).join("<br>");
         det = `<small>Aufnahme: ${fmtDT(t.t0)} → ${fmtDT(t.t1)}</small>` +
               (sd ? `<small>${sd}</small>` : "") +
+              (t.members ? `<div class="mkRow"><button class="mk" data-unmerge="${t.merge_id}">🔗 Klebung lösen</button></div>` : "") +
               `<div class="mkRow">` +
                 Object.entries(MARKS).map(([k,txt])=>
                   `<button class="mk${mk===k?' on':''}" data-mk="${k}" title="meine Einschätzung: das war ${escapeHtml(txt)} (nochmal klicken = entfernen)">${txt}</button>`).join("") +
@@ -570,23 +637,36 @@ function renderTracks(){
       } else {
         det = t.confirmed ? "" : `<small>${escapeHtml(t.reject||"")}</small>`;
       }
-      return `<div class="anaTrack${t.confirmed?' cat':''}${ANA.selTrack===t.id?' sel':''}${dis?' dis':''}" data-id="${t.id}">
-      ${t.confirmed?'🐱':'·'} <b>${t.score}</b> #${t.id}${badge} n=${t.n} · ${fmtDur(t.t1-t.t0)} · ${(t.net_mm/1000).toFixed(1)}m
+      return `<div class="anaTrack${t.confirmed?' cat':''}${sel?' sel':''}${dis?' dis':''}" data-key="${t.key}">
+      ${chk}${t.confirmed?'🐱':'·'} <b>${num}</b> · ${t.score}P${badge}${glue} n=${t.n} · ${fmtDur(t.t1-t.t0)} · ${(t.net_mm/1000).toFixed(1)}m
       ${t.v_mean? '· '+(t.v_mean/1000).toFixed(1)+'m/s':''} ${chips}
       ${det}</div>`;
     }).join("");
+  const go = el.querySelector("#anaMergeGo"); if(go) go.onclick = anaMerge;
+  const clr = el.querySelector("#anaMergeClr");
+  if(clr) clr.onclick = ()=>{ ANA.mergeSel.clear(); renderTracks(); };
   el.querySelectorAll(".anaTrack").forEach(d=>{
+    const key = d.dataset.key;
+    const tr = ANA.model.tracks.find(t=>t.key===key);
+    const chk = d.querySelector(".mrgChk");
+    if(chk) chk.onclick = (ev)=>{
+      ev.stopPropagation();
+      chk.checked ? ANA.mergeSel.add(tr.id) : ANA.mergeSel.delete(tr.id);
+      renderTracks();
+    };
     d.onclick = (ev)=>{
       const mkBtn = ev.target.closest(".mk");
-      const id = +d.dataset.id;
-      const tr = ANA.model.tracks.find(t=>t.id===id);
-      if(mkBtn && tr){ ev.stopPropagation(); anaSetMark(tr, mkBtn.dataset.mk); return; }
-      ANA.selTrack = (ANA.selTrack===id) ? null : id;
-      if(tr && ANA.selTrack!==null){
+      if(mkBtn && tr){
+        ev.stopPropagation();
+        if(mkBtn.dataset.unmerge !== undefined){ anaUnmerge(+mkBtn.dataset.unmerge); return; }
+        anaSetMark(tr, mkBtn.dataset.mk); return;
+      }
+      ANA.selKey = (ANA.selKey===key) ? null : key;
+      if(tr && ANA.selKey){
         ANA.view.cx = tr.pts.reduce((s,p)=>s+p[1],0)/tr.pts.length;
         ANA.view.cy = tr.pts.reduce((s,p)=>s+p[2],0)/tr.pts.length;
       }
-      renderTracks(); drawAnaMap();
+      renderTracks(); drawAnaMap(); drawTimeline();
     };
   });
 }
@@ -658,6 +738,46 @@ async function anaParams(){
   anaEl("anaParamsClose").onclick = ()=> ov.style.display = "none";
 }
 
+// ------------------------------------------------------------- Modell-Check
+// Modell gegen ALLE von Hand bewerteten Tracks der ganzen Aufnahme prüfen —
+// die Trackliste (inkl. Bewertungen) ist so separat nutzbar (auch /atracks.csv).
+
+async function anaValidate(){
+  const ov = anaEl("anaValidOv"), txt = anaEl("anaValidTxt");
+  ov.style.display = "flex"; txt.innerHTML = "rechnet…";
+  anaEl("anaValidClose").onclick = ()=> ov.style.display = "none";
+  try{
+    const r = await anaJson("/avalidate");
+    const pm = Object.entries(r.per_mark).map(([k,v])=>
+      `<tr><td>${MARKS[k]||k}</td><td>${v.n}</td><td>${v.model_cat}</td></tr>`).join("");
+    const mm = r.mismatches.map(m=>
+      `<tr class="vmm" data-t0="${m.t0}" data-t1="${m.t1}" data-key="${m.key}">
+        <td>Nr ${m.id}</td><td>${fmtDT(m.t0)}</td><td>${MARKS[m.mark]||m.mark}</td>
+        <td>${m.confirmed ? "🐱 Katze ("+m.score+"P)" : escapeHtml(m.reject||"keine Katze")}</td></tr>`).join("");
+    const quote = r.n_marked ? (100*r.agree/r.n_marked).toFixed(0) : "—";
+    txt.innerHTML =
+      `<p>${r.n_tracks} Tracks insgesamt, <b>${r.n_marked}</b> von Hand bewertet.</p>
+       <p>Modell vs. Mensch auf den bewerteten: <b>✔ ${r.agree}</b> übereinstimmend
+          (${quote} %) · <span style="color:#e67e22">${r.false_cat}× fälschlich Katze</span>
+          · <span style="color:#3ad0d0">${r.missed_cat}× Katze verpasst</span></p>
+       <table><tr><th>Bewertung</th><th>Anzahl</th><th>davon Modell „Katze"</th></tr>${pm}</table>` +
+      (mm ? `<h4>Abweichungen (klicken = hinspringen)</h4>
+             <table><tr><th>Track</th><th>Zeit</th><th>Mensch</th><th>Modell</th></tr>${mm}</table>`
+          : `<p>keine Abweichungen 🎉</p>`);
+    txt.querySelectorAll(".vmm").forEach(row=>{
+      row.onclick = ()=>{
+        const t0 = +row.dataset.t0, t1 = +row.dataset.t1;
+        const pad = Math.max((t1 - t0) * 0.5, 20);
+        ANA.win = {t0: t0 - pad, t1: t1 + pad};
+        ANA.selKey = row.dataset.key;
+        ANA.follow = false;
+        ov.style.display = "none";
+        anaScheduleFetch();
+      };
+    });
+  }catch(e){ txt.innerHTML = `<span style="color:#c66">${escapeHtml(e.message)}</span>`; }
+}
+
 // ------------------------------------------------------------- Einstieg
 
 let anaInit = false;
@@ -683,6 +803,7 @@ async function anaShow(){
     };
     anaEl("anaFollowChk").onchange = e=>{ ANA.follow = e.target.checked; if(ANA.follow) anaNow(); };
     anaEl("anaBParams").onclick = anaParams;
+    anaEl("anaBValid").onclick = anaValidate;
     anaEl("anaBDev").onclick = anaDevReload;
     anaEl("anaBLabel").onclick = anaAddLabel;
     anaEl("anaLblSel").innerHTML = Object.keys(LBL_COLORS).map(l=>`<option>${l}</option>`).join("");
