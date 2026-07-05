@@ -33,6 +33,18 @@
   #legend div { display:flex; align-items:center; gap:6px; }
   #legend i { width:10px; height:10px; border-radius:2px; display:inline-block; }
   .hint { color:#666; font-size:11px; padding:4px 12px; }
+  /* ---- Bilder-Tab (Cat Cam) ---- */
+  #pics { height:100%; overflow:auto; position:relative; }
+  #picsGrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; padding:10px; }
+  .picCard { background:#16161b; border:1px solid #333; border-radius:8px; overflow:hidden; cursor:pointer; }
+  .picCard img { width:100%; aspect-ratio:1; object-fit:cover; display:block; background:#000; }
+  .picCard .cap { font-size:11px; color:#aab; padding:5px 8px; }
+  .picCard .cap b { color:#ddd; }
+  .picCard .trk { color:#7fe0a4; }
+  #picsOv { position:fixed; inset:0; background:#000c; display:flex; align-items:center; justify-content:center; z-index:9; }
+  #picsBox { background:#1a1a22; border:1px solid #444; border-radius:8px; padding:10px; max-width:92vw; max-height:92vh; display:flex; flex-direction:column; gap:8px; }
+  #picsBox img { max-width:88vw; max-height:75vh; object-fit:contain; }
+  #picsMeta { font-size:13px; color:#aab; }
   #ctrl { height:100%; overflow:auto; padding:10px 14px; }
   .card { border:1px solid #333; border-radius:8px; padding:8px 10px; margin-bottom:10px; background:#16161b; }
   .card h3 { margin:0 0 6px; font-size:14px; }
@@ -100,6 +112,7 @@
   <button class="tab" data-v="g2">Gruppe 2</button>
   <button class="tab" data-v="g3">Gruppe 3</button>
   <button class="tab" data-v="ana">Analyse</button>
+  <button class="tab" data-v="pics">Bilder</button>
   <button class="tab" data-v="ctrl">Steuerung</button>
   <button id="reset">Karten zurücksetzen</button>
 </header>
@@ -117,6 +130,15 @@
   <div class="main">
     <div id="list"></div>
     <div id="ctrl" style="display:none"></div>
+    <div id="pics" style="display:none">
+      <div class="hint" id="picsInfo">— lädt —</div>
+      <div id="picsGrid"></div>
+      <div id="picsOv" style="display:none"><div id="picsBox">
+        <img id="picsBig" alt="">
+        <div id="picsMeta"></div>
+        <button class="tab" id="picsClose">Schliessen</button>
+      </div></div>
+    </div>
     <canvas id="cv" style="display:none"></canvas>
     <div id="legend" style="display:none"></div>
     <div class="hint" id="hint" style="display:none"></div>
@@ -184,24 +206,59 @@ function colorFor(sender, sensor){ const h=(sender*53 + sensor*97)%360; return `
 function fmtTime(t){ return new Date(t*1000).toLocaleTimeString(); }
 
 // Einstellungen/Aktionen (Bit-Index = stg*/act* aus xComDef6_3.h)
-const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor","CatDetected-Anzeige"];
-const ACT=[{l:"Pose kopieren",cmd:21,info:0},{l:"Kalibrieren",cmd:18,info:45000},{l:"Pose löschen",cmd:19,info:0},{l:"Parameter laden",cmd:22,info:0}];
+const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor","CatDetected-Anzeige","Kamera-KI"];
+const ACT=[{l:"Pose kopieren",cmd:21,info:0},{l:"Kalibrieren",cmd:18,info:45000},{l:"Pose löschen",cmd:19,info:0},{l:"Parameter laden",cmd:22,info:0},{l:"Foto jetzt",cmd:23,info:0}];
 const CMD_SET_SETTING=20;
 
 function setView(v,b){
   view=v;
   document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active", x===b));
-  const isList=v==="list", isCtrl=v==="ctrl", isAna=v==="ana", isMap=!isList&&!isCtrl&&!isAna;
+  const isList=v==="list", isCtrl=v==="ctrl", isAna=v==="ana", isPics=v==="pics",
+        isMap=!isList&&!isCtrl&&!isAna&&!isPics;
   document.getElementById("list").style.display   = isList?"block":"none";
   document.getElementById("ctrl").style.display   = isCtrl?"block":"none";
   document.getElementById("ana").style.display    = isAna?"flex":"none";
+  document.getElementById("pics").style.display   = isPics?"block":"none";
   document.getElementById("cv").style.display     = isMap?"block":"none";
   document.getElementById("legend").style.display = isMap?"block":"none";
   document.getElementById("hint").style.display   = isMap?"block":"none";
   if(isMap) drawCurrent();
   if(isCtrl){ renderCtrl(lastSettings); reqAll(); }
   if(isAna) anaShow();
+  if(isPics) loadPics();
 }
+
+// ---- Bilder-Tab: Fotos der Cat Cam (Ausloeser: catDetected / eigene KI / manuell)
+const PIC_TRIG = {catDetected:"🚨 CatDetected", ki:"🐱 Kamera-KI", manuell:"📷 manuell"};
+async function loadPics(){
+  try{
+    const r = await (await fetch("/photos?limit=200")).json();
+    document.getElementById("picsInfo").textContent =
+      r.photos.length ? `${r.photos.length} Fotos (neueste zuerst) — Klick = gross` : "— noch keine Fotos —";
+    document.getElementById("picsGrid").innerHTML = r.photos.map(p=>{
+      const dt = new Date(p.t*1000).toLocaleString("de-CH");
+      const trk = p.track!=null ? ` · <span class="trk">Track Nr ${p.track}${p.track_cat?" 🐱":""}</span>` : "";
+      return `<div class="picCard" data-id="${p.id}" data-meta="${dt} · ${PIC_TRIG[p.trigger]||p.trigger}${p.score?` · Score ${p.score}`:""}${p.track!=null?` · Track Nr ${p.track}`:""}">
+        <img loading="lazy" src="/photo/${p.id}" alt="">
+        <div class="cap"><b>${dt}</b><br>${PIC_TRIG[p.trigger]||p.trigger}${p.score?` · Score ${p.score}`:""}${trk}</div></div>`;
+    }).join("");
+    document.querySelectorAll(".picCard").forEach(c=>{
+      c.onclick = ()=>{
+        document.getElementById("picsBig").src = "/photo/"+c.dataset.id;
+        document.getElementById("picsMeta").textContent = c.dataset.meta;
+        document.getElementById("picsOv").style.display = "flex";
+      };
+    });
+    document.getElementById("picsClose").onclick =
+      ()=> document.getElementById("picsOv").style.display = "none";
+    document.getElementById("picsOv").onclick = (e)=>{
+      if(e.target.id==="picsOv") document.getElementById("picsOv").style.display = "none";
+    };
+  }catch(e){
+    document.getElementById("picsInfo").textContent = "Fehler: " + e.message;
+  }
+}
+setInterval(()=>{ if(view==="pics") loadPics(); }, 15000);
 document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>setView(b.dataset.v,b));
 
 async function postCmd(target,cmd,info){

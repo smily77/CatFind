@@ -42,10 +42,10 @@ DevState devSt[deviceCount];
 
 // Beschriftungen (Index = stg*/act* aus xComDef6_3.h)
 const char* stgLabel[STG_COUNT] = {
-  "HB-Anzeige", "Cat-Anzeige", "Auto Pose kop.", "Auto-Kalib.", "Lidar-Motor", "CatDet-Anzeige"
+  "HB-Anzeige", "Cat-Anzeige", "Auto Pose kop.", "Auto-Kalib.", "Lidar-Motor", "CatDet-Anzeige", "Kamera-KI"
 };
-const char* actLabel[ACT_COUNT] = { "Pose kopieren", "Kalibrieren", "Pose loeschen", "Param. laden" };
-const uint8_t actCmd[ACT_COUNT] = { cmdCopyPose,     cmdCalibrate, cmdClearPose, cmdReloadParams };
+const char* actLabel[ACT_COUNT] = { "Pose kopieren", "Kalibrieren", "Pose loeschen", "Param. laden", "Foto jetzt" };
+const uint8_t actCmd[ACT_COUNT] = { cmdCopyPose,     cmdCalibrate, cmdClearPose, cmdReloadParams, cmdTakePhoto };
 
 // --- UI-Zustand -----------------------------------------------------------------------
 enum { PAGE_LIST, PAGE_DETAIL };
