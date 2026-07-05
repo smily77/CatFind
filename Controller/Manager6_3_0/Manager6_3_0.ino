@@ -228,6 +228,31 @@ void loop() {
         timer = millis()+ Alarm_blinkPeriode;
       }
     }
+    else if (mcMsg.header.msgCode == catDetected) {
+      // Cat Identifier hat eine Katze bestaetigt: ROT blinken (schaltbar) + VPS-Debug.
+      // Der Identifier sendet jede Detektion DOPPELT (UDP-Verlustschutz) -> identische
+      // Payload innerhalb kurzer Zeit ist ein Duplikat und wird ignoriert.
+      catDetectedPayload cd;
+      if (getPayload(mcMsg, cd)) {
+        static catDetectedPayload lastCd; static unsigned long lastCdMs = 0;
+        bool dup = (millis() - lastCdMs < 1500) &&
+                   memcmp(&lastCd, &cd, sizeof(cd)) == 0;
+        lastCd = cd; lastCdMs = millis();
+        if (!dup) {
+          gwAddDebug("CatDetected #" + String(mcMsg.header.sender) +
+                     " score=" + String(cd.score) + " x=" + String(cd.worldX) +
+                     " y=" + String(cd.worldY) + " net=" + String(cd.netMm) + "mm" +
+                     ((cd.flags & catDetFlagStationary) ? " sitzt!" : "") +
+                     ((cd.flags & catDetFlagFusion) ? " fusion" : ""));
+          if (settingOn(stgCatDetLed)) {                 // catDetected-Anzeige schaltbar
+            allPixel(0xFF0000);
+            targetAlarm = true;
+            blinkOn = false;
+            timer = millis() + Alarm_blinkPeriode;
+          }
+        }
+      }
+    }
     else if (mcMsg.header.msgCode == settingsReport) {
       settingsPayload sp;
       if (getPayload(mcMsg, sp)) gwAddSettings(mcMsg.header.sender, sp); // Gateway: an VPS weiterreichen

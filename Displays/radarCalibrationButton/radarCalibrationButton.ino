@@ -139,7 +139,7 @@ void sendCmd(uint8_t code, const String& okMsg, int pressed) {
 void setup() {
   Serial.begin(115200);
   // Radar-Liste aus der Geraetetabelle (alle HLK-Typen)
-  for (int i = 0; i < 18 && nRadars < MAX_RADARS; i++)
+  for (int i = 0; i < deviceCount && nRadars < MAX_RADARS; i++)
     if (device[i].type == HLK) radarIdx[nRadars++] = (uint8_t)i;
   gfx.init();
   gfx.setRotation(3);
