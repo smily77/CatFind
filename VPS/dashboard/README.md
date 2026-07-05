@@ -31,9 +31,23 @@ Erreichbar unter **`http://<VPS-IP>/`** (Port 80).
 | `POST` | `/reset` | akkumulierte Ereignisse löschen |
 | `GET`  | `/map` | RasenKarte-Punkte (aus dem GitHub-Repo) |
 | `GET/POST` | `/rec` | Aufnahme-Status / Pause-Append |
-| `GET`  | `/density /adata /amodel /alabels /acoverage` | Analyse-Tab (Fenster-Daten, Modell, Abdeckungs-Sektoren) |
-| `POST` | `/alabel /alabel_del /amark` | Labels + manuelle Track-Bewertung (Katze/keine Katze) |
+| `GET`  | `/density /adata /amodel /alabels /acoverage` | Analyse-Tab (Fenster-Daten, Tracks aus der Analysierer-DB, Abdeckungs-Sektoren) |
+| `POST` | `/alabel /alabel_del /amark` | Labels + manuelle Track-Bewertung (Katze/Person/Vogel/Mäher/Insekt/Sturm/Störung/sicher keine Katze) |
+| `POST` | `/amerge /aunmerge` | Tracks zusammenkleben (gehören zum selben Tier) / Klebung lösen |
+| `GET`  | `/atracks` `/atracks.csv` | komplette Trackliste inkl. Bewertungen+Klebungen (JSON/CSV, separat verwendbar) |
+| `GET`  | `/avalidate` | Modell gegen alle von Hand bewerteten Tracks prüfen (Übereinstimmung, Abweichungsliste) |
 | `POST` | `/devreload` | xComDef (Typen+Erfassungsbereiche) sofort neu lesen + poseRequest |
+
+## Kontinuierliche Trackerkennung
+
+Die Trackerkennung läuft **unabhängig von der Betrachtung** in einem
+Hintergrund-Thread: er arbeitet die Aufnahme fortlaufend in Häppchen ab
+(`catmodel.analyze_stream` — dasselbe Modell, das später auf dem ESP32 laufen
+soll), vergibt **fortlaufende Track-Nummern** und persistiert fertige Tracks in
+SQLite. `/amodel` liest nur noch — Zoom/Fenstergrösse haben keinerlei Einfluss
+mehr auf das Erkennungsergebnis. Parameter- oder „Mäher"-Label-Änderungen lösen
+automatisch einen kompletten Neuaufbau aus (Nummern werden neu vergeben;
+manuelle Bewertungen und Klebungen überleben über den stabilen Track-key).
 
 State liegt im RAM (Ereignisse kumulieren bis Reset; gehen bei Container-Neustart
 verloren). `RasenKarte.csv` wird aus dem Repo geladen (Fallback: ins Image
