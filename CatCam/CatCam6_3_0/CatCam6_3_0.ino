@@ -32,7 +32,9 @@ boolean statusLightOn = false;       // (keine LED am XIAO C3 - nur fuers Muster
 SSCMA AI;
 
 // --- Erkennung / Foto-Verhalten ---------------------------------------------------------
-#define CAM_TARGET_CAT        15     // Klassen-ID "Katze" im deployten Modell (COCO: 15)
+#define CAM_TARGET_CAT        15     // Fallback-Klassen-ID "Katze" (COCO: 15) - wird beim
+                                     // Start automatisch aus der Klassenliste des deployten
+                                     // Modells bestimmt (Eintrag, der "cat" enthaelt)
 #define CAM_MIN_SCORE         60     // KI-Score-Schwelle (0..100)
 #define CAM_INVOKE_PERIOD_MS  250    // Erkennungstakt (~4 Hz)
 #define CAM_OBS_PERIOD_MS     1000   // catObserved hoechstens 1x pro Sekunde
@@ -43,8 +45,87 @@ SSCMA AI;
 #define CAM_RX_BUF            57344  // SSCMA-Empfangspuffer: Bild kommt als Base64 (>16k noetig)
 
 bool aiOk = false;                   // Vision-Modul erreichbar?
+int  camTargetCat = CAM_TARGET_CAT;  // aktive Katzen-Klassen-ID (auto aus Modell-Info)
 unsigned long lastInvokeMs = 0, lastObsMs = 0, lastSightMs = 0;
 unsigned long lastDetPhotoMs = 0, lastClassInfoMs = 0;
+unsigned long lastAiInitMs = 0;      // letzter (Re-)Initialisierungsversuch
+
+// Die Modell-Info kommt Base64-codiert (JSON mit name/classes). Fuer die
+// automatische Katzen-Klassen-Erkennung hier dekodieren.
+static String b64decode(const String& in) {
+  auto val = [](char c) -> int {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+  };
+  String out; out.reserve(in.length() * 3 / 4 + 2);
+  int acc = 0, bits = 0;
+  for (size_t i = 0; i < in.length(); i++) {
+    int v = val(in[i]);
+    if (v < 0) continue;
+    acc = (acc << 6) | v; bits += 6;
+    if (bits >= 8) { bits -= 8; out += (char)((acc >> bits) & 0xFF); }
+  }
+  return out;
+}
+
+// Katzen-Klasse aus der Modell-Info bestimmen: Index des "classes"-Eintrags,
+// der "cat" enthaelt (deckt "cat", "Cat Detection"-Einzelklasse, Pet cat/dog
+// und COCO ab). Nicht gefunden -> Fallback CAM_TARGET_CAT.
+static void aiResolveCatClass(const String& infoJson) {
+  camTargetCat = CAM_TARGET_CAT;
+  int cp = infoJson.indexOf("\"classes\"");
+  if (cp < 0) return;
+  int a = infoJson.indexOf('[', cp);
+  int b = infoJson.indexOf(']', a);
+  if (a < 0 || b < 0) return;
+  int idx = 0, pos = a;
+  while (pos < b) {
+    int q1 = infoJson.indexOf('"', pos);
+    if (q1 < 0 || q1 > b) break;
+    int q2 = infoJson.indexOf('"', q1 + 1);
+    if (q2 < 0 || q2 > b) break;
+    String cls = infoJson.substring(q1 + 1, q2);
+    cls.toLowerCase();
+    if (cls.indexOf("cat") >= 0 && cls.indexOf("catch") < 0) { camTargetCat = idx; break; }
+    idx++;
+    pos = q2 + 1;
+  }
+}
+
+// Vision-Modul (re-)initialisieren. Schlaegt der Boot-Versuch fehl (Modul
+// braucht nach dem Einstecken laenger o.ae.), wird periodisch neu probiert -
+// vorher blieb "Vision-Modul fehlt" bis zum naechsten Reboot bestehen.
+static bool aiInit() {
+  aiOk = AI.begin(&Wire);
+  if (aiOk) {
+    AI.set_rx_buffer(CAM_RX_BUF);
+    String info = b64decode(AI.info(false));
+    aiResolveCatClass(info);
+    // Modellname fuers Debug herausziehen
+    String name = "?";
+    int np = info.indexOf("\"name\"");
+    if (np >= 0) {
+      int q1 = info.indexOf('"', info.indexOf(':', np));
+      int q2 = info.indexOf('"', q1 + 1);
+      if (q1 >= 0 && q2 > q1) name = info.substring(q1 + 1, q2);
+    }
+    sendUdpTextln("CatCam Vision-Modul OK, Modell: " + name +
+                  ", Katzen-Klasse=" + String(camTargetCat) +
+                  (info.indexOf("\"classes\"") < 0 ? " (Fallback - keine Klassenliste)" : ""));
+  }
+  lastAiInitMs = millis();
+  return aiOk;
+}
+
+static bool aiEnsure() {             // vor jeder Nutzung: notfalls neu verbinden
+  if (aiOk) return true;
+  if (millis() - lastAiInitMs < 5000) return false;
+  return aiInit();
+}
 
 // WiFi-Anmeldung wie beim Cat Identifier: feste IP MIT DNS (sonst haengt NTP),
 // abgesenkte TX-Leistung (XIAO-Boards) und Neuanlauf statt Endlosschleife.
@@ -86,18 +167,12 @@ void setup() {
   }
   Serial.println("Zeit ok, starte Vision-Modul (I2C)...");
   initSettings();
-  // Vision AI V2 per I2C; grosser Empfangspuffer, damit invoke(...,show=1) das
-  // Bild (Base64-JPEG) liefern kann
-  aiOk = AI.begin(&Wire);
-  if (aiOk) AI.set_rx_buffer(CAM_RX_BUF);
-  Serial.println(String("Vision-Modul: ") + (aiOk ? "OK" : "FEHLT"));
-  sendUdpTextln(String("CatCam bereit, Vision-Modul ") + (aiOk ? "OK" : "NICHT ERREICHBAR"));
-  if (aiOk) {
-    // deploytes Modell melden (SenseCraft): hilft beim Einrichten von CAM_TARGET_CAT
-    String inf = AI.info(false);
-    inf.replace("\r", " "); inf.replace("\n", " ");
-    sendUdpTextln("CatCam Modell-Info: " + (inf.length() ? inf.substring(0, 160) : String("(leer - Modell per SenseCraft deployen?)")));
-  }
+  // Vision AI V2 per I2C; grosser Empfangspuffer, damit das Bild (Base64-JPEG)
+  // durchpasst. Bei Misserfolg probiert aiEnsure() spaeter automatisch weiter.
+  aiInit();
+  Serial.println(String("Vision-Modul: ") + (aiOk ? "OK" : "FEHLT (Retry laeuft)"));
+  sendUdpTextln(String("CatCam bereit, Vision-Modul ") +
+                (aiOk ? "OK" : "noch nicht erreichbar - probiere weiter"));
   sendSettingsReport();
   timer = millis();
 }
@@ -134,7 +209,7 @@ void handleBusMsg(const xMsg& m) {
 
 // KI-Takt: Vision-Modul befragen; Katze im Bild -> catObserved (+ Foto bei neuer Sichtung)
 void aiTick() {
-  if (!aiOk || !settingOn(stgCamAi)) return;
+  if (!settingOn(stgCamAi) || !aiEnsure()) return;
   if (millis() - lastInvokeMs < CAM_INVOKE_PERIOD_MS) return;
   lastInvokeMs = millis();
   // filter=true -> AT+INVOKE=1,0,1 (DIFFERED=0, RESULT_ONLY=1): schnell, nur Boxen.
@@ -145,7 +220,7 @@ void aiTick() {
   int bestScore = -1;
   uint32_t others = 0;                       // fremde Klassen (Bitmaske, IDs 0..31)
   for (auto& b : AI.boxes()) {
-    if (b.target == CAM_TARGET_CAT) {
+    if (b.target == camTargetCat) {
       if (b.score >= CAM_MIN_SCORE && (int)b.score > bestScore) bestScore = b.score;
     } else if (b.target < 32 && b.score >= CAM_MIN_SCORE) {
       others |= (1u << b.target);
@@ -156,7 +231,7 @@ void aiTick() {
     lastClassInfoMs = millis();
     String s = "CatCam sieht Klassen:";
     for (int i = 0; i < 32; i++) if (others & (1u << i)) s += " " + String(i);
-    sendUdpTextln(s + " (Katze erwartet als " + String(CAM_TARGET_CAT) + ")");
+    sendUdpTextln(s + " (Katze erwartet als " + String(camTargetCat) + ")");
   }
   if (bestScore < 0) return;
 
@@ -212,7 +287,7 @@ static bool camInvokeImage(String& imgOut, uint32_t timeoutMs) {
 
 // Foto machen (invoke mit Bild) und als Base64 zum VPS hochladen (POST /photo).
 void takePhoto(const char* trig, int score, int32_t wx, int32_t wy) {
-  if (!aiOk) { sendUdpTextln("CatCam Foto: Vision-Modul fehlt"); return; }
+  if (!aiEnsure()) { sendUdpTextln("CatCam Foto: Vision-Modul nicht erreichbar"); return; }
   String img;
   if (!camInvokeImage(img, 12000) || img.length() < 100) {
     sendUdpTextln("CatCam Foto: kein Bild vom Modul (" + String(img.length()) + " B)");
