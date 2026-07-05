@@ -85,6 +85,7 @@ FALLBACK_DEVICES = {
     12:("CYD35Z","Screen",0,0,0,0), 13:("Wave7z","Screen",0,0,0,0),
     14:("Sim","MananagementDevice",0,0,0,0), 15:("LaserMarker","Marker",0,0,0,0),
     16:("PA1_1","PowerActor",2,0,0,0), 17:("LidarC1","Lidar",0,-180,180,12000),
+    18:("Cat_Identifier","Detector",0,0,0,0),
 }
 
 # ------------------------------------------------- Gerätetabelle aus xComDef6_3.h
@@ -1065,6 +1066,21 @@ def amark():
 @app.get("/aparams")
 def aparams_get():
     return jsonify(catmodel.merged_params(load_params()))
+
+
+@app.get("/aparams.csv")
+def aparams_csv():
+    # Modell-Parameter als flache key=value-Zeilen: der Cat Identifier (ESP32)
+    # holt sie hier (Boot + Aktion "Parameter laden") - kein JSON-Parser noetig.
+    # Verschachtelte Parameter (type_weight) werden zu "type_weight.HLK=..." usw.
+    p = catmodel.merged_params(load_params())
+    lines = ["# CatFinder Modell-Parameter (catmodel DEFAULT_PARAMS + Overrides)"]
+    for k, v in sorted(p.items()):
+        if isinstance(v, dict):
+            lines += ["%s.%s=%g" % (k, kk, vv) for kk, vv in sorted(v.items())]
+        else:
+            lines.append("%s=%g" % (k, v))
+    return Response("\n".join(lines) + "\n", mimetype="text/plain; charset=utf-8")
 
 
 @app.post("/aparams")

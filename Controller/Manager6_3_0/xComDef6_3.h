@@ -75,6 +75,7 @@ struct stationDefinitions {
 #define LaserMarker 15
 #define PA1_1 16
 #define LidarC1 17
+#define CatIdent 18   // Cat Identifier: Erkennungsmodell in Echtzeit (catmodel-Port), sendet catDetected
 //Types
 #define MananagementDevice 1
 #define HLK 2
@@ -84,8 +85,11 @@ struct stationDefinitions {
 #define Lidar 6
 #define onOffSchalter 7
 #define Marker 8
+#define Detector 9   // Erkennungsgeraet: konsumiert catObserved, produziert catDetected
+// Anzahl Eintraege in device[] - ueberall statt hartem "18"/"19" verwenden
+#define deviceCount 19
 //  {MananagementDevice,180,0x01},
-stationDefinitions device[18] = {
+stationDefinitions device[19] = {
   {MananagementDevice,180,0x01,groupNone, "Manager_Dev", 0,0,0},        //Manager
   {HLK,0,0,testGroup,  "Dome",         -60, 60, 7000},                  //Dome
   {HLK,0,0,groupPA1_1, "Mini_Dome",    -60, 60, 7000},                  //MiniDome  -> Gruppe PA1_1
@@ -103,7 +107,8 @@ stationDefinitions device[18] = {
   {MananagementDevice,0,0,groupNone, "Simulator", 0,0,0},               //Simulator (Cardputer)
   {Marker,182,0x03,groupNone, "Laser_Marker", 0,0,0},                   //LaserMarker (ESP32-C3, feste IP .182)
   {PowerActor,183,0x04,groupPA1_1, "PowerActor1_1", 0,0,0},             //PA1_1 (älterer PA mit Stepper/PCF8574/A4988, feste IP .183) -> Gruppe PA1_1
-  {Lidar,0,0,groupNone, "LidarC1",    -180, 180, 12000}                 //LidarC1 (RPLidar C1, welt-fähig via VPS-Lokalisierung, DHCP)
+  {Lidar,0,0,groupNone, "LidarC1",    -180, 180, 12000},                //LidarC1 (RPLidar C1, welt-fähig via VPS-Lokalisierung, DHCP)
+  {Detector,184,0x05,groupNone, "Cat_Identifier", 0,0,0}                //CatIdent: Echtzeit-Katzenerkennung auf dem Bus (feste IP .184), Modellparameter vom VPS
 };
 
 // call -> device[ident].type
@@ -280,13 +285,15 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
 #define stgAutoCopyPose 2   // Auto: Welt-Pose eines Gruppenmitglieds uebernehmen        [persistiert]
 #define stgAutoCalib    3   // Radar: automatische Co-Observation-Kalibrierung          [persistiert]
 #define stgLidarMotor   4   // Lidar: Motor an/aus (Default an, NICHT persistiert)
-#define STG_COUNT       5
+#define stgCatDetLed    5   // catDetected-Anzeige an/aus (Manager: rotes Blinken beim EMPFANG) [persistiert]
+#define STG_COUNT       6
 
 // Ausloesbare Aktionen (Bit-Position in settingsPayload.actions).
 #define actCopyPose     0   // Welt-Pose jetzt aus der Gruppe kopieren  -> cmdCopyPose
 #define actCalibrate    1   // Kalibrierung jetzt ausloesen             -> cmdCalibrate
 #define actClearPose    2   // gespeicherte Welt-Pose loeschen          -> cmdClearPose
-#define ACT_COUNT       3
+#define actReloadParams 3   // CatIdent: Modell-Parameter neu vom VPS laden -> cmdReloadParams
+#define ACT_COUNT       4
 
 // settingsReport-Payload: was das Geraet kann und wie es aktuell eingestellt ist.
 struct __attribute__((packed)) settingsPayload {
@@ -322,6 +329,7 @@ struct __attribute__((packed)) settingsPayload {
 // Einstellungen & Steuerung (an jedes Geraet; Display-Touch / VPS-Webinterface)
 #define cmdSetSetting             20   // info = (settingIdx<<1)|value : Setting setzen+persistieren, dann settingsReport
 #define cmdCopyPose               21   // info: ignoriert - Aktion actCopyPose: Welt-Pose aus der Gruppe kopieren
+#define cmdReloadParams           22   // info: ignoriert - CatIdent laedt die Modell-Parameter neu vom VPS (/aparams.csv)
 
 //---------------------------------------------------------------------------------------
 // Welt-Pose dieses Geraets (jedes Geraet besitzt diese Variablen, damit die

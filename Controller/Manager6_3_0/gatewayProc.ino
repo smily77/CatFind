@@ -27,7 +27,7 @@ static unsigned long gwLastFlush = 0;
 // Einstellungen der Geraete (settingsReport vom Bus). Anders als Events/HB werden sie
 // NICHT nach dem Flush geleert, sondern bei jedem Push mitgeschickt -> der VPS kennt den
 // aktuellen Stand auch nach einem Neustart. Pro Sender ein Eintrag (jeweils neuester).
-#define GW_MAX_SETTINGS 18
+#define GW_MAX_SETTINGS deviceCount
 struct GwSet { uint8_t sender; uint16_t sup, val, act; bool used; };
 static GwSet gwSet[GW_MAX_SETTINGS];
 static bool  gwSettingsDirty = false;   // erzwingt einen Push, sobald neue Settings kamen
@@ -37,7 +37,7 @@ static bool  gwSettingsDirty = false;   // erzwingt einen Push, sobald neue Sett
 // Welt-Karte zu legen. Wie die Settings: pro Sender der neueste Stand, wird bei
 // jedem Push mitgeschickt (nicht geleert). Periodisch fragt der Manager per
 // poseRequest-Broadcast nach (Geraete antworten generisch via handleCommonMsg).
-#define GW_MAX_POSES 18
+#define GW_MAX_POSES deviceCount
 #define GW_POSE_REQ_MS 300000UL          // alle 5 min nach Posen fragen
 struct GwPose { uint8_t sender, valid; int32_t x, y; float head; int8_t mir; bool used; };
 static GwPose gwPose[GW_MAX_POSES];
@@ -159,7 +159,7 @@ void gwFlush() {
 void gwInjectCommand(int target, int cmd, long info) {
   if (target == 255) { broadcastMsg(settingsRequest); return; }
   if (target == 254) { broadcastMsg(poseRequest); return; }
-  if (target < 0 || target >= 18) return;
+  if (target < 0 || target >= deviceCount) return;
   cmdPayload c; c.cmd = (uint8_t)cmd; c.info = (int32_t)info;
   if (target == ID) {                             // Kommando an den Manager selbst: ein UDP-
     xMsg m;                                       // Unicast an die eigene IP loopt nicht in den

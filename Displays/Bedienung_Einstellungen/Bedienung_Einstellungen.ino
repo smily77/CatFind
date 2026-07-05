@@ -38,14 +38,14 @@ struct DevState {
   uint16_t      sup = 0, val = 0, act = 0;
   unsigned long seen = 0;          // letzter settingsReport (ms)
 };
-DevState devSt[18];
+DevState devSt[deviceCount];
 
 // Beschriftungen (Index = stg*/act* aus xComDef6_3.h)
 const char* stgLabel[STG_COUNT] = {
-  "HB-Anzeige", "Cat-Anzeige", "Auto Pose kop.", "Auto-Kalib.", "Lidar-Motor"
+  "HB-Anzeige", "Cat-Anzeige", "Auto Pose kop.", "Auto-Kalib.", "Lidar-Motor", "CatDet-Anzeige"
 };
-const char* actLabel[ACT_COUNT] = { "Pose kopieren", "Kalibrieren", "Pose loeschen" };
-const uint8_t actCmd[ACT_COUNT] = { cmdCopyPose,     cmdCalibrate, cmdClearPose  };
+const char* actLabel[ACT_COUNT] = { "Pose kopieren", "Kalibrieren", "Pose loeschen", "Param. laden" };
+const uint8_t actCmd[ACT_COUNT] = { cmdCopyPose,     cmdCalibrate, cmdClearPose, cmdReloadParams };
 
 // --- UI-Zustand -----------------------------------------------------------------------
 enum { PAGE_LIST, PAGE_DETAIL };
@@ -118,8 +118,8 @@ void drawList() {
   addHot(screenWidth - rbw - 2, 2, rbw, rbh, HOT_REFRESH, 0);
 
   // steuerbare Geraete sammeln (haben settingsReport gesendet)
-  int ids[18], n = 0;
-  for (int i = 0; i < 18; i++)
+  int ids[deviceCount], n = 0;
+  for (int i = 0; i < deviceCount; i++)
     if (devSt[i].known && (devSt[i].sup || devSt[i].act)) ids[n++] = i;
 
   int areaY = HEADER_H + MARGIN;
@@ -329,7 +329,7 @@ void loop() {
   if (mcDataReceived) {
     xMsg m = lastMcMsg;
     mcDataReceived = false;
-    if (m.header.msgCode == settingsReport && m.header.sender < 18) {
+    if (m.header.msgCode == settingsReport && m.header.sender < deviceCount) {
       settingsPayload sp;
       if (getPayload(m, sp)) {
         DevState& d = devSt[m.header.sender];
