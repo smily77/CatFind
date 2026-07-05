@@ -39,7 +39,9 @@ unsigned long bootPoseReqMs = 0;     // 0 = poseRequest noch nicht gesendet
 static void catIdWifi() {
   WiFi.mode(WIFI_STA);
   IPAddress localIP(192, 168, 0, device[ID].IP), gw(192, 168, 0, 1), sn(255, 255, 255, 0);
-  if (!WiFi.config(localIP, gw, sn)) Serial.println("static IP config failed");
+  // WICHTIG: DNS mitgeben! WiFi.config ohne 4. Argument laesst den DNS leer -
+  // dann haengt alles, was Hostnamen aufloest (NTP pool.ntp.org), endlos.
+  if (!WiFi.config(localIP, gw, sn, gw)) Serial.println("static IP config failed");
   WiFi.begin(ssid, password);
   WiFi.setTxPower(WIFI_POWER_8_5dBm);
   unsigned long tryStart = millis();
@@ -67,13 +69,21 @@ static void catIdWifi() {
 void setup() {
   Serial.begin(115200);
   pinMode(CATID_LED, OUTPUT);
-  digitalWrite(CATID_LED, LOW);
+  digitalWrite(CATID_LED, CATID_LED_OFF);
   catIdWifi();                       // feste IP .184 (S3-taugliche Anmeldung s.o.)
   initMcUdp();
   initUnicast();
   initText2Udp();
   setUpOTA();
-  setUpTime();
+  // Zeit mit BUDGET statt setUpTime(): dessen Endlosschleife wuerde das Geraet bei
+  // NTP-Problemen dauerhaft blockieren (ohne OTA-Ausweg). Das Modell rechnet mit
+  // millis() - die Uhrzeit dient nur den Nachrichten-Zeitstempeln.
+  configTzTime(time_zone, ntpServer1, ntpServer2);
+  {
+    unsigned long t0 = millis();
+    while (!getLocalTime(&timeinfo, 200) && millis() - t0 < 15000) delay(50);
+    if (!getLocalTime(&timeinfo, 200)) Serial.println("NTP nicht erreichbar - weiter ohne Uhrzeit");
+  }
   initSettings();
   if (!LittleFS.begin(true)) sendUdpTextln("CatIdent: LittleFS mount FAILED");
   ctSetDefaults();                   // einkompilierte Defaults (= DEFAULT_PARAMS im VPS)
@@ -99,7 +109,7 @@ void loop() {
   }
   if (detLedOffMs && millis() > detLedOffMs && !statusLightOn) {
     detLedOffMs = 0;
-    digitalWrite(CATID_LED, LOW);
+    digitalWrite(CATID_LED, CATID_LED_OFF);
   }
 }
 
@@ -145,7 +155,7 @@ void announceCat(const catDetectedPayload& cd) {
                 ((cd.flags & catDetFlagStationary) ? " sitzt!" : "") +
                 ((cd.flags & catDetFlagFusion) ? " fusion" : ""));
   if (settingOn(stgCatLed)) {
-    digitalWrite(CATID_LED, HIGH);
+    digitalWrite(CATID_LED, CATID_LED_ON);
     detLedOffMs = millis() + DET_FLASH_MS;
   }
 }
