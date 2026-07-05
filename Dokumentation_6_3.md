@@ -1,6 +1,6 @@
 # CatFind 6.3 — Systembeschreibung
 
-Stand: 2026-07-04 · gilt für die 6_3-Programmversionen (Protokoll 0x63)
+Stand: 2026-07-05 · gilt für die 6_3-Programmversionen (Protokoll 0x63)
 
 CatFind ist ein verteiltes System aus ESP32-Geräten, das eine Katze auf dem
 Rasen erkennt, ihre Position bestimmt und sie mit einem gezielten Wasserstrahl
@@ -29,19 +29,28 @@ selbstdefinierten UDP-Protokoll (fixer Header + variabler Payload).
   │ LaserMarker  │  │  Steuerung         │  └────────────────────────┘
   └──────────────┘  └────────────────────┘
               │
+  ┌─ Erkennung (Ebene 2) ────────────────────────────────────────┐
+  │ Cat Identifier (18): Echtzeit-Modell auf catObserved         │──catDetected (2x)──► Bus
+  │ Cat Cam (19): Vision-KI (Katze im Bild) + Fotos an den VPS   │──catObserved / Foto─►
+  └──────────────────────────────────────────────────────────────┘
+              │
   ┌───────────┴─────────────┐            ┌──── VPS (Docker, außerhalb LAN) ────┐
   │ Manager                 │  HTTP      │ Localizer :8080/localize            │
   │  Statuslampe, Log,      │═══/ingest═►│   (360-Bin-Scan → Welt-Pose)        │
   │  Karten-Server,         │◄═/commands═│ Dashboard :80/                      │
-  │  VPS-Gateway            │            │   (Treffer-/Statusvisualisierung)   │
-  └─────────────────────────┘            └──────────────▲──────────────────────┘
-                                                        │ HTTP POST /localize
-              LidarC1 fragt beim Boot direkt ───────────┘ (eigene Welt-Pose)
+  │  VPS-Gateway            │            │   Treffer-/Statusvisualisierung,    │
+  └─────────────────────────┘            │   kontinuierl. Track-Analysierer,   │
+                                         │   Bilder-Tab, Modell-Parameter      │
+                                         └──────────────▲──────────────────────┘
+              LidarC1  (Boot: /localize) ───────────────┤ HTTP
+              CatIdent (Parameter: /aparams.csv) ───────┤
+              CatCam   (Fotos: POST /photo) ────────────┘
 ```
 
-Nur der **Manager** (und der **LidarC1** für seine Boot-Lokalisierung) verlässt
-per HTTP das LAN Richtung **VPS**; alle CatFind-Geräte untereinander reden
-ausschließlich über den UDP-Bus.
+Der **Manager** (Gateway), der **LidarC1** (Boot-Lokalisierung), der
+**Cat Identifier** (Modell-Parameter) und die **Cat Cam** (Foto-Upload)
+verlassen per HTTP das LAN Richtung **VPS**; alle CatFind-Geräte untereinander
+reden ausschließlich über den UDP-Bus.
 
 **Die Kette im Normalbetrieb:**
 
@@ -69,7 +78,16 @@ ausschließlich über den UDP-Bus.
    (Scan → Pose), das Radar bekommt seine Pose per **Co-Observation** mit einem
    welt-posierten Sensor (Kap. 4.1, 5.2). So arbeiten mehrere Aktoren in einem
    gemeinsamen Welt-System zusammen.
-6. Alle Geräte senden periodisch einen **Heartbeat (HB)** — daraus lernen alle
+6. **Erkennungs-Ebene 2:** der **Cat Identifier** (Kap. 5.13) hört alle
+   welt-validen `catObserved` mit und lässt das Katzen-Erkennungsmodell
+   **in Echtzeit** laufen (Streaming-Port des VPS-Referenzmodells
+   `catmodel.py`). Bestätigt es einen Track als Katze, broadcastet er
+   `catDetected` (doppelt, UDP-Verlustschutz) — der Manager blinkt **rot**,
+   die **Cat Cam** (Kap. 5.14) macht ein Foto und lädt es zum VPS hoch
+   (Tab „Bilder", mit zugeordneter Track-Nummer). Die Cat Cam erkennt mit
+   ihrem eigenen Vision-KI-Modul zusätzlich Katzen **im Bild** und liefert
+   dafür `catObserved` + Foto.
+7. Alle Geräte senden periodisch einen **Heartbeat (HB)** — daraus lernen alle
    anderen automatisch die IP-Adressen (für Unicast) und sehen, wer lebt.
 
 ---
@@ -98,10 +116,18 @@ In `xComDef6_3.h` ist jedes Gerät mit einer festen ID (Array-Index) eingetragen
 | 15 | LaserMarker | Marker | 182 | ESP32-C3, Laser-Marker (siehe LaserMarker/API_LaserMarker6_3.md) |
 | 16 | PA1_1 | PowerActor | 183 | älterer PowerActor mit Schrittmotor (PCF8574/A4988), Drehturm (siehe PowerActor1_1/PA1_1_6_3_0) |
 | 17 | LidarC1 | Lidar | DHCP | ESP32-S3 + RPLidar C1, welt-fähig via VPS-Lokalisierung (siehe CF_LidarC1/C1Lidar6_3_0) |
+| 18 | CatIdent | Detector | 184 | Seeed XIAO ESP32-S3 (IPEX-Antenne!), Echtzeit-Erkennungsmodell → `catDetected` (siehe CatIdentifier/CatId6_3_0, Kap. 5.13) |
+| 19 | CatCam | Kamera | 185 | Seeed XIAO Vision AI Camera (XIAO ESP32-C3 + Grove Vision AI V2 + OV5647), Fotos → VPS (siehe CatCam/CatCam6_3_0, Kap. 5.14) |
 
+- Die Anzahl der Einträge steht als **`deviceCount`** (derzeit 20) zur
+  Verfügung — Schleifen über die Tabelle verwenden dieses define statt einer
+  harten Zahl.
 - Das Feld `IP` enthält das **letzte Oktett** der Adresse (Netz ist fest
   192.168.0.x). Bei Geräten mit Eintrag 150–195 konfiguriert `setUpWifi()`
-  eine statische IP, alle anderen nutzen DHCP.
+  eine statische IP, alle anderen nutzen DHCP. **Achtung bei statischer IP:**
+  `WiFi.config()` braucht das **4. Argument (DNS)** — ohne DNS hängt alles,
+  was Hostnamen auflöst (z.B. NTP), endlos. CatIdent/CatCam machen es vor
+  (eigene WiFi-Anmeldung mit DNS = Gateway und NTP mit Zeitbudget).
 - Empfängt ein Gerät einen HB, trägt es das im HB gemeldete Oktett automatisch
   in seine lokale Kopie der device dB ein (`device[sender].IP`). So kennt z.B.
   der Button die Adresse des PA2i, ohne dass sie irgendwo konfiguriert wäre.
@@ -176,6 +202,7 @@ posPayload = 34, cmdPayload = 5, worldPosePayload = 13, settingsPayload = 6 Byte
 | `mapChunk` | 10 | `mapChunkMeta` + Daten | Unicast | ein Datenstück der Karte (variabel, siehe Kap. 4.2) |
 | `settingsRequest` | 11 | — (kein Payload) | Broadcast/Unicast | "melde deine Einstellungen" (siehe Kap. 5.12) |
 | `settingsReport` | 12 | `settingsPayload` | Broadcast | Welche Anzeige-/Automatik-Settings/Aktionen ein Gerät hat und wie sie stehen |
+| `catDetected` | 13 | `catDetectedPayload` | Broadcast | Erkennungsmodell hat einen Track als **Katze bestätigt** (Ebene 2, Cat Identifier, Kap. 5.13) |
 
 **posPayload** (34 Bytes) — Positionsmeldung. `x/y/radius/angle` sind **relativ**
 (sensor-/aktorlokal); `worldX/worldY` sind **Welt-Koordinaten** und nur gültig,
@@ -192,6 +219,19 @@ wenn `worldValid==1`:
 | `worldValid` | uint8 | 1 = `worldX/worldY` gültig (Sender hatte beim Senden eine `validWorldPose`) |
 | `sensor` | uint8 | Target-/Sensorindex (Radar liefert bis zu 3 Targets: 0..2) |
 
+**catDetectedPayload** (14 Bytes) — vom Cat Identifier bei bestätigter Katze
+(msgCode 13). Wird ausgelöst, **sobald** der Modell-Score die Schwelle erreicht
+(während die Katze noch im Erfassungsbereich ist), und **doppelt** gesendet
+(UDP hat kein Resend; Empfänger dedupen über identische Payload ≤1,5 s):
+
+| Feld | Typ | Bedeutung |
+|---|---|---|
+| `worldX`, `worldY` | int32 | Welt-Position der Katze bei Auslösung (mm) |
+| `score` | uint8 | Modell-Score 0..100 (≥ Bestätigungsschwelle) |
+| `flags` | uint8 | `catDetFlagStationary(0x01)` = sitzt gerade (koten?), `catDetFlagFusion(0x02)` = mehrere Sensoren |
+| `trackMs` | uint32 | bisherige Track-Dauer bei Auslösung (ms) |
+| `netMm` | int32 | bisherige Netto-Verschiebung des Tracks (mm) |
+
 **worldPosePayload** (13 Bytes) — Welt-Pose eines Geräts (Antwort auf `poseRequest`):
 
 | Feld | Typ | Bedeutung |
@@ -202,7 +242,10 @@ wenn `worldValid==1`:
 
 **settingsPayload** (6 Bytes) — Einstellungen & Aktionen eines Geräts (Antwort auf
 `settingsRequest`). Bit-Indizes: `stgHbLed(0)`, `stgCatLed(1)`, `stgAutoCopyPose(2)`,
-`stgAutoCalib(3)`, `stgLidarMotor(4)`; Aktionen `actCopyPose(0)`, `actCalibrate(1)`, `actClearPose(2)`:
+`stgAutoCalib(3)`, `stgLidarMotor(4)`, `stgCatDetLed(5)` (Manager: rotes Blinken beim
+catDetected-Empfang), `stgCamAi(6)` (Cat Cam: Vision-KI-Erkennung an/aus); Aktionen
+`actCopyPose(0)`, `actCalibrate(1)`, `actClearPose(2)`, `actReloadParams(3)` (CatIdent:
+Modell-Parameter neu vom VPS), `actPhoto(4)` (CatCam: Foto jetzt):
 
 | Feld | Typ | Bedeutung |
 |---|---|---|
@@ -265,8 +308,12 @@ Welt-Pose (NVS) und setzt `validWorldPose=false`; nötig, wenn das Gerät **bewe
 Touch-Remote in Kap. 5.11 ausgelöst. `cmdSetSetting` (**20**) — setzt ein Anzeige-/Automatik-
 Setting (`info = (settingIndex<<1) | wert`), speichert es (falls persistiert) und annonciert
 danach ein `settingsReport`. `cmdCopyPose` (**21**) — Aktion `actCopyPose`: übernimmt die
-Welt-Pose eines Mitglieds der eigenen relativen Koordinatengruppe (siehe Kap. 5.12). Beide
-werden vom Touch-Bediendisplay (Kap. 5.12) und vom VPS-Webinterface ausgelöst.
+Welt-Pose eines Mitglieds der eigenen relativen Koordinatengruppe (siehe Kap. 5.12).
+`cmdReloadParams` (**22**) — Aktion `actReloadParams`: der Cat Identifier lädt seine
+Modell-Parameter neu vom VPS (`/aparams.csv`, Kap. 5.13) — Modell-Iteration ohne Neuflash.
+`cmdTakePhoto` (**23**) — Aktion `actPhoto`: die Cat Cam macht sofort ein Foto und lädt es
+zum VPS hoch (Kap. 5.14). Alle werden vom Touch-Bediendisplay (Kap. 5.12) und vom
+VPS-Webinterface ausgelöst.
 
 ### 3.3 Warum HB-Varianten unterschiedlicher Länge?
 
@@ -518,8 +565,13 @@ Jedes Programm folgt demselben Grundgerüst:
 - Hört den Multicast mit und loggt jede Nachricht lesbar auf Serial
   (`printSensorData()`: Zeitstempel, Sender, alle Payload-Felder).
 - LED-Ring: **grün** blitzt bei jedem empfangenen HB, **blau** (500 ms) bei
-  `catObserved` — man sieht dem Gerät von weitem an, ob das System lebt und
-  ob gerade etwas detektiert wird.
+  `catObserved`, **rot** (500 ms) bei `catDetected` (bestätigte Katze vom
+  Cat Identifier) — man sieht dem Gerät von weitem an, ob das System lebt,
+  ob gerade etwas detektiert wird und ob das Modell eine Katze bestätigt hat.
+  Die drei Empfangs-Anzeigen sind je einzeln schaltbar (`stgHbLed`,
+  `stgCatLed`, `stgCatDetLed`). `catDetected` wird doppelt gesendet — der
+  Manager dedupt über identische Payload, damit nur einmal geblinkt und einmal
+  ins VPS-Debug geloggt wird.
 - Feste IP .180, OTA aktiv.
 - **Karten-Server:** hält die No-Shot-Karte im LittleFS (`/noshot.csv`) und
   beantwortet `mapRequest` per `serveMap()` (siehe Kap. 4.2). Beim Boot wird die
@@ -544,8 +596,8 @@ Jedes Programm folgt demselben Grundgerüst:
   (`gwInjectCommand`: Unicast `commandMsg`, bzw. `target 255` = Broadcast `settingsRequest`).
   So kann das Webinterface Geräte steuern, obwohl der VPS die 192.168.0.x-Geräte nicht
   direkt erreicht (siehe Kap. 5.12).
-- **Eigene Anzeige-Settings:** der Manager hat selbst zwei schaltbare Anzeige-Settings
-  (HB-Empfang grün, catObserved-Empfang blau), im NVS gespeichert.
+- **Eigene Anzeige-Settings:** der Manager hat selbst drei schaltbare Anzeige-Settings
+  (HB-Empfang grün, catObserved-Empfang blau, catDetected-Empfang rot), im NVS gespeichert.
 
 ### 5.2 Radar6_3_0 — Bewegungssensor (HLK-Radar, "Dome"-Familie)
 
@@ -846,17 +898,36 @@ gespeichert; **Lidar-Motor** an/aus (`lidar.stop()`/`startScan()`), Default an u
 > Sensor-Gewichte — Lidar allein bestätigt nie —, Fusion, Randlogik an der
 > Gesamt-Abdeckung) markiert bestätigte Tracks als **CatDetected** mit
 > **rotem Punkt am Auslösezeitpunkt** (bevor die Katze den Erfassungsbereich
-> verlässt; Wire-Struct `catDetectedPayload` in xComDef definiert, msgCode 13).
-> **Manuelle Track-Bewertung**: im Tracks-Panel je Track „🐱 Katze"/„🧍
-> Person"/„🐦 Vogel"/„🤖 Mäher"/„✕ Störung" (persistent; keine Markierung =
+> verlässt). Dieses Modell ist die Referenz für den Cat Identifier (Kap. 5.13),
+> der es in Echtzeit auf dem ESP32 fährt und `catDetected` sendet.
+> **Kontinuierliche Erkennung, unabhängig von der Betrachtung:** ein
+> Hintergrund-Thread arbeitet die Aufnahme fortlaufend in Häppchen ab
+> (`analyze_stream`), vergibt **fortlaufende Track-Nummern** und legt fertige
+> Tracks persistent in SQLite ab — `/amodel` liest nur noch, Zoom/Fenster
+> haben keinen Einfluss mehr auf das Ergebnis. Parameter- oder Mäher-Label-
+> Änderungen lösen automatisch einen Neuaufbau aus (Bewertungen/Klebungen
+> überleben über den stabilen Track-Schlüssel). **Manuelle Track-Bewertung**:
+> je Track „🐱 Katze"/„🧍 Person"/„🐦 Vogel"/„🤖 Mäher"/„🦗 Insekt"/„⛈ Sturm"/
+> „✕ Störung"/„🚫 sicher keine Katze" (persistent; keine Markierung =
 > einverstanden; alles außer Katze zählt als „keine Katze"), oben die
-> **Übereinstimmung Modell↔Mensch**; Modell-Flags als Chips in jeder Zeile.
+> **Übereinstimmung Modell↔Mensch**; Modell-Flags als Chips. Der angeklickte
+> Track wird **gelb** in Karte und Zeitleiste hervorgehoben; mehrere Tracks
+> lassen sich **zusammenkleben** (gehören zum selben Tier). Knopf
+> **„Modell-Check"** (`/avalidate`) prüft das Modell gegen alle bewerteten
+> Tracks; die Trackliste ist als **CSV** exportierbar (`/atracks.csv`).
 > **RoboMäher**: Label „Mäher" = Analyse-Ausschlussfenster (aufgezeichnet
 > und sichtbar bleibt alles — gut zum Ausleuchten der Erfassungsbereiche);
 > zusätzlich verwirft das Modell Tracks mit Weg > `max_path_mm` (40 m)
 > automatisch als „Mäher/Person?". Alle Schwellwerte in `model_params.json`
 > im Volume, ohne Rebuild im UI änderbar (Endpunkte `/rec /density /adata
-> /amodel /aparams /alabels /amark /devreload /acoverage`).
+> /amodel /aparams(.csv) /alabels /amark /amerge /atracks(.csv) /avalidate
+> /devreload /acoverage`).
+>
+> **Tab „Bilder"** (Cat Cam, Kap. 5.14): Foto-Kacheln der Kamera (neueste
+> zuerst) mit Auslöser (CatDetected / Kamera-KI / manuell), KI-Score und der
+> **zugeordneten Track-Nummer**; Klick öffnet die Großansicht. Endpunkte
+> `POST /photo`, `GET /photos`, `GET /photo/<id>`; Fotos im Volume
+> `/data/photos`, Metadaten in SQLite.
 
 ### 5.11 radarCalibrationButton — Touch-Fernbedienung für die Radar-Kalibrierung
 
@@ -908,7 +979,8 @@ aller aktiven Geräte per Touch bedienen lassen (siehe GesamtKonzeptCatFinder.md
   `STG_SUPPORTED`/`STG_DEFAULT`/`STG_PERSIST`/`STG_ACTIONS` fest. `initSettings()` lädt die
   persistierten Bits aus dem NVS-Namespace `"devcfg"`; nicht persistierte Bits (Lidar-Motor)
   starten auf Default. Setting-Indizes `stgHbLed/stgCatLed/stgAutoCopyPose/stgAutoCalib/
-  stgLidarMotor`, Aktionen `actCopyPose/actCalibrate/actClearPose`.
+  stgLidarMotor/stgCatDetLed/stgCamAi`, Aktionen `actCopyPose/actCalibrate/actClearPose/
+  actReloadParams/actPhoto`.
 - **Seite 1 (Geräteauswahl):** listet die Geräte, die per `settingsReport` ihre
   Fähigkeiten gemeldet haben (Broadcast `settingsRequest` beim Start und periodisch). Touch
   wählt ein Gerät → Seite 2.
@@ -933,6 +1005,85 @@ aller aktiven Geräte per Touch bedienen lassen (siehe GesamtKonzeptCatFinder.md
 > Erfassungssektoren). Kommandos mit **target = Manager** führt der Manager **lokal** aus
 > (`handleCommonMsg`) — ein UDP-Unicast an die eigene IP loopt nicht in den eigenen Socket
 > zurück, darum reagierten seine eigenen Schalter früher nicht.
+
+### 5.13 CatId6_3_0 — Cat Identifier (Echtzeit-Katzenerkennung, ID 18)
+
+Eigenständiges Gerät, das das Katzen-Erkennungsmodell **in Echtzeit auf dem Bus**
+laufen lässt — der Streaming-Port des VPS-Referenzmodells `catmodel.py`. Ziel:
+die Erkennung, die bisher offline im Analyse-Tab lief, live auf einem ESP32.
+Ordner `CatIdentifier/CatId6_3_0/`. Hardware: **Seeed XIAO ESP32-S3**, feste IP
+.184.
+
+- **Eingang:** hört alle `catObserved` mit `worldValid=1` vom Bus und füttert sie
+  ins Modell (`catTrack.ino`): Track-Bildung (Gate + Stitching), kohärente
+  Bewegungsphase als Pflicht, Score 0..100, Sturm-/Burst-Unterdrückung je Sensor,
+  Mäher-K.o. über die Weglänge (`max_path_mm`). Der Erfassungsrand wird
+  **geometrisch** aus den Sektoren der device dB (`covLeft/covRight/covRange`) und
+  den per `poseReport` mitgehörten Welt-Posen berechnet (wie `build_coverage_geo`
+  auf dem VPS) — beim Boot fragt CatIdent einmal per `poseRequest` nach.
+- **Kausaler Unterschied zum VPS:** dort wird ein *fertiger* Track als Ganzes
+  bewertet; hier muss entschieden werden, **während** die Katze noch im Feld ist.
+  Darum fließen nur die zum Zeitpunkt bekannten Merkmale ein (kein Austritts-Term),
+  und die Bestätigung feuert, sobald der Score die Schwelle erreicht.
+- **Ausgang:** bei Bestätigung wird `catDetected` **doppelt** gebroadcastet
+  (UDP-Verlustschutz) — der Manager blinkt rot, die Cat Cam fotografiert.
+- **Modell-Parameter** kommen vom VPS (`GET /aparams.csv`, flache `key=value`-Liste
+  — dieselben Werte wie im Analyse-Tab „Parameter…") und werden im LittleFS
+  gecacht (`/catparams.csv`), überleben also VPS-Ausfälle/Reboots. Die Aktion
+  **„Parameter laden"** (`cmdReloadParams`, VPS-Steuerung/Display) holt sie neu —
+  so lässt sich das Modell iterieren, **ohne den ESP32 neu zu flashen**.
+- **Onboard-LED** (GPIO21, active-low): HB-Blitz (`stgHbLed`) und CatDetected-Blitz
+  (`stgCatLed`).
+
+> **Antenne:** der XIAO ESP32-S3 hat **keine** PCB-Antenne, nur eine IPEX-Buchse —
+> ohne angesteckte Antenne ist er praktisch funkblind. Statische IP erfordert
+> `WiFi.config()` **mit DNS** (Kap. 2), sonst hängt die NTP-Synchronisation.
+
+### 5.14 CatCam6_3_0 — Cat Cam (Vision-KI-Kamera + Fotos, ID 19)
+
+**Seeed XIAO Vision AI Camera**: ein XIAO ESP32-C3 (führt dieses Programm) +
+Grove Vision AI V2 (Himax WiseEye2 — das KI-Modell läuft **dort**, deployt per
+SenseCraft-Web) + OV5647 (5 MP, 62° FOV). Der C3 spricht das Vision-Modul per
+**I2C** über die SSCMA-Bibliothek an. Ordner `CatCam/CatCam6_3_0/`, feste IP .185.
+Zwei Aufgaben:
+
+1. **Foto bei `catDetected`:** hört die Bestätigungen des Cat Identifiers mit
+   (Doppelsendung wird dedupliziert), macht ein Foto und lädt es zum VPS hoch
+   (`POST /photo`, Base64-JPEG + Metadaten). Foto-Mindestabstand, damit ein
+   Detektions-Schauer nicht die Kamera flutet.
+2. **Eigene KI-Erkennung** (schaltbar über `stgCamAi`): fragt das Vision-Modul im
+   Takt (~4 Hz, `AT+INVOKE`). Sieht es eine **Katze im Bild**, broadcastet die
+   Kamera `catObserved` (mit `worldValid=0` — sie kennt keine Welt-Position; das
+   Ereignis ist Zusatz-Evidenz + Zeitmarke, KI-Score im `res`-Feld) und lädt beim
+   ersten Auftauchen einer Sichtung ein Foto hoch.
+
+- **Katzen-Klasse automatisch:** welche Klassen-ID „Katze" ist, hängt vom
+  deployten Modell ab. CatCam liest beim Start die Modell-Info aus (Base64-JSON),
+  sucht in der Klassenliste den Eintrag mit „cat" und stellt sich darauf ein —
+  funktioniert damit für „Cat Detection", „Pet Detection" (cat/dog) und
+  COCO-Modelle ohne Neuflash (Fallback: Klasse 15 = COCO-Katze). Das aktive
+  Modell und die gefundene Klasse meldet sie ins VPS-Debug.
+- **Aktion „Foto jetzt"** (`cmdTakePhoto`) für Test/Ausrichtung.
+- **Auto-Reconnect:** ist das Vision-Modul beim Boot noch nicht bereit, versucht
+  CatCam alle 5 s neu, sich zu verbinden (statt bis zum nächsten Reboot „Modul
+  fehlt" zu melden).
+- Zwei Eigenheiten der SSCMA-Bibliothek 1.0.3 werden umgangen: ihr `invoke()`
+  kann „Bild ohne DIFFERED" nicht ausdrücken und ihr internes Timeout (1 s) ist
+  für ~30 kB Base64 über I2C zu knapp — der Foto-Abruf sendet das AT-Kommando
+  daher selbst und sammelt die Antwort über die öffentliche Lese-API ein.
+- Der XIAO ESP32-C3 hat **keine** User-LED; WLAN nur über die IPEX-Antenne
+  (wie CatIdent), statische IP mit DNS (Kap. 2).
+
+> **Modell aufspielen:** Ab Werk trägt das Vision-Modul „Face Detection" (erkennt
+> keine Katzen). Ein Katzen-/Pet-Modell wird über die **SenseCraft-AI-Weboberfläche**
+> (Chrome, Web-Serial) auf den **USB-Port des Vision-Moduls** deployt — *nicht* auf
+> den des ESP32-C3. Danach erkennt CatCam die Katzen-Klasse automatisch.
+
+> **VPS-Bilder-Tab:** Das Dashboard hat einen Tab **„Bilder"** (`GET /photos`,
+> `GET /photo/<id>`): Foto-Kacheln (neueste zuerst) mit Auslöser (CatDetected /
+> Kamera-KI / manuell), KI-Score und der **zugeordneten Track-Nummer** des
+> kontinuierlichen Analysierers (über Zeitüberlappung). Klick öffnet die
+> Großansicht. Fotos liegen im Docker-Volume (`/data/photos`), Metadaten in SQLite.
 
 ---
 
@@ -991,8 +1142,10 @@ CatFind/                          (Repo 1 — die Programme)
 │   ├── LaserMarker6_3/           ← Zielmarkierer (ID 15, siehe 5.9)
 │   └── API_LaserMarker6_3.md     ← byte-genaue Netzwerk-API
 ├── CF_LidarC1/C1Lidar6_3_0/      ← welt-fähiger Lidar (ID 17, ESP32-S3, siehe 5.10)
+├── CatIdentifier/CatId6_3_0/     ← Echtzeit-Katzenerkennung (ID 18, XIAO ESP32-S3, siehe 5.13)
+├── CatCam/CatCam6_3_0/           ← Vision-KI-Kamera + Fotos (ID 19, XIAO Vision AI, siehe 5.14)
 ├── VPS/localizer/                ← Docker-Lokalisierungsdienst (HTTP, Pose aus Scan+Karte)
-├── VPS/dashboard/                ← Docker-Treffervisualisierung (Web, Port 80; Master als Gateway)
+├── VPS/dashboard/                ← Docker-Treffervisualisierung + Analysierer + Bilder (Web, Port 80)
 └── Tests/                        ← vom Versionsschema ausgenommen
 
 (Die 6_2-Ordner — PA2i6_2_0, Radar6_2_0, … — existieren weiterhin parallel.)
@@ -1033,10 +1186,17 @@ CommonFiles/                      (Repo 2 — wird als Arduino-Library eingebund
    das Target aktiv ist); parallel ggf. der Lidar für seinen Sektor.
 2. Manager blinkt blau, Display setzt rote Punkte auf die Karte (die
    Punktspur zeigt den Laufweg), Simulator zeichnet auf (falls Record an).
-3. PA2 (Ziel-Logik, in Arbeit): Servo auf `angle` drehen, Laserdistanz
+3. Der **Cat Identifier** verfolgt die `catObserved` als Track. Erreicht der
+   Modell-Score die Schwelle (kohärente Bewegung, Erfassungsrand, Fusion …),
+   broadcastet er `catDetected` (doppelt) → **Manager blinkt rot**, die
+   **Cat Cam** macht ein Foto und lädt es zum VPS hoch (Bilder-Tab, mit
+   Track-Nummer). Erkennt das Vision-Modul der Cat Cam eine Katze im Bild,
+   liefert sie zusätzlich `catObserved` + Foto.
+4. PA2 (Ziel-Logik, in Arbeit): Servo auf `angle` drehen, Laserdistanz
    gegen `radius` prüfen, bei Bestätigung und `readyToFire && limitsActive`-
    Freigabe: Ventil auf → `catHit`-Broadcast → Display könnte den Treffer
-   auf dem hitLayer markieren.
+   auf dem hitLayer markieren. (Perspektivisch schießt der Aktor auf
+   `catDetected` statt auf rohe `catObserved` — validiertes Ziel.)
 
 ### "Schussfeld einrichten" (vom Sofa aus)
 1. Am Display Menü öffnen → "left limit" → Encoder drehen, der Strahl
