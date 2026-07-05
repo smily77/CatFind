@@ -76,6 +76,7 @@ struct stationDefinitions {
 #define PA1_1 16
 #define LidarC1 17
 #define CatIdent 18   // Cat Identifier: Erkennungsmodell in Echtzeit (catmodel-Port), sendet catDetected
+#define CatCam 19     // XIAO Vision AI Camera: Foto bei catDetected + eigene KI-Katzenerkennung
 //Types
 #define MananagementDevice 1
 #define HLK 2
@@ -86,10 +87,11 @@ struct stationDefinitions {
 #define onOffSchalter 7
 #define Marker 8
 #define Detector 9   // Erkennungsgeraet: konsumiert catObserved, produziert catDetected
+#define Kamera 10    // Vision-KI-Kamera: Fotos an den VPS, catObserved bei KI-Katzenerkennung
 // Anzahl Eintraege in device[] - ueberall statt hartem "18"/"19" verwenden
-#define deviceCount 19
+#define deviceCount 20
 //  {MananagementDevice,180,0x01},
-stationDefinitions device[19] = {
+stationDefinitions device[20] = {
   {MananagementDevice,180,0x01,groupNone, "Manager_Dev", 0,0,0},        //Manager
   {HLK,0,0,testGroup,  "Dome",         -60, 60, 7000},                  //Dome
   {HLK,0,0,groupPA1_1, "Mini_Dome",    -60, 60, 7000},                  //MiniDome  -> Gruppe PA1_1
@@ -108,7 +110,8 @@ stationDefinitions device[19] = {
   {Marker,182,0x03,groupNone, "Laser_Marker", 0,0,0},                   //LaserMarker (ESP32-C3, feste IP .182)
   {PowerActor,183,0x04,groupPA1_1, "PowerActor1_1", 0,0,0},             //PA1_1 (älterer PA mit Stepper/PCF8574/A4988, feste IP .183) -> Gruppe PA1_1
   {Lidar,0,0,groupNone, "LidarC1",    -180, 180, 12000},                //LidarC1 (RPLidar C1, welt-fähig via VPS-Lokalisierung, DHCP)
-  {Detector,184,0x05,groupNone, "Cat_Identifier", 0,0,0}                //CatIdent: Echtzeit-Katzenerkennung auf dem Bus (feste IP .184), Modellparameter vom VPS
+  {Detector,184,0x05,groupNone, "Cat_Identifier", 0,0,0},               //CatIdent: Echtzeit-Katzenerkennung auf dem Bus (feste IP .184), Modellparameter vom VPS
+  {Kamera,185,0x06,groupNone, "Cat_Cam",    -31, 31, 8000}              //CatCam: XIAO Vision AI Camera (OV5647 62 Grad; feste IP .185), Fotos -> VPS
 };
 
 // call -> device[ident].type
@@ -286,14 +289,16 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
 #define stgAutoCalib    3   // Radar: automatische Co-Observation-Kalibrierung          [persistiert]
 #define stgLidarMotor   4   // Lidar: Motor an/aus (Default an, NICHT persistiert)
 #define stgCatDetLed    5   // catDetected-Anzeige an/aus (Manager: rotes Blinken beim EMPFANG) [persistiert]
-#define STG_COUNT       6
+#define stgCamAi        6   // CatCam: KI-Erkennung (Katze -> catObserved+Foto) an/aus       [persistiert]
+#define STG_COUNT       7
 
 // Ausloesbare Aktionen (Bit-Position in settingsPayload.actions).
 #define actCopyPose     0   // Welt-Pose jetzt aus der Gruppe kopieren  -> cmdCopyPose
 #define actCalibrate    1   // Kalibrierung jetzt ausloesen             -> cmdCalibrate
 #define actClearPose    2   // gespeicherte Welt-Pose loeschen          -> cmdClearPose
 #define actReloadParams 3   // CatIdent: Modell-Parameter neu vom VPS laden -> cmdReloadParams
-#define ACT_COUNT       4
+#define actPhoto        4   // CatCam: jetzt ein Foto machen + hochladen -> cmdTakePhoto
+#define ACT_COUNT       5
 
 // settingsReport-Payload: was das Geraet kann und wie es aktuell eingestellt ist.
 struct __attribute__((packed)) settingsPayload {
@@ -330,6 +335,7 @@ struct __attribute__((packed)) settingsPayload {
 #define cmdSetSetting             20   // info = (settingIdx<<1)|value : Setting setzen+persistieren, dann settingsReport
 #define cmdCopyPose               21   // info: ignoriert - Aktion actCopyPose: Welt-Pose aus der Gruppe kopieren
 #define cmdReloadParams           22   // info: ignoriert - CatIdent laedt die Modell-Parameter neu vom VPS (/aparams.csv)
+#define cmdTakePhoto              23   // info: ignoriert - CatCam macht sofort ein Foto und laedt es zum VPS hoch
 
 //---------------------------------------------------------------------------------------
 // Welt-Pose dieses Geraets (jedes Geraet besitzt diese Variablen, damit die

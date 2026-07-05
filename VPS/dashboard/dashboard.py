@@ -54,7 +54,7 @@ der Geräte per /ingest ("poses", aus poseReport). Daraus baut catmodel.
 build_coverage_geo die Abdeckungs-Sektoren — nach dem Versetzen eines Sensors
 stimmt der Bereich sofort wieder. Fallback ohne Posen: empirische Abdeckung.
 """
-import os, re, time, json, sqlite3, threading, hashlib, traceback, urllib.request
+import os, re, time, json, base64, sqlite3, threading, hashlib, traceback, urllib.request
 from datetime import datetime
 from collections import deque, OrderedDict
 from flask import Flask, request, jsonify, send_from_directory, Response
@@ -68,6 +68,7 @@ MAX_EVENTS   = int(os.environ.get("MAX_EVENTS", "20000"))
 HB_WINDOW_S  = int(os.environ.get("HB_WINDOW_S", "180"))    # "aktiv" = HB in den letzten 3 min
 DB_PATH      = os.environ.get("DB_PATH", "/data/catfinder.db")
 PARAMS_PATH  = os.environ.get("PARAMS_PATH", "/data/model_params.json")
+PHOTOS_DIR   = os.environ.get("PHOTOS_DIR", "/data/photos")
 XCOMDEF_URL  = os.environ.get(
     "XCOMDEF_URL",
     "https://raw.githubusercontent.com/smily77/CatFind/main/Controller/Manager6_3_0/xComDef6_3.h")
@@ -85,7 +86,7 @@ FALLBACK_DEVICES = {
     12:("CYD35Z","Screen",0,0,0,0), 13:("Wave7z","Screen",0,0,0,0),
     14:("Sim","MananagementDevice",0,0,0,0), 15:("LaserMarker","Marker",0,0,0,0),
     16:("PA1_1","PowerActor",2,0,0,0), 17:("LidarC1","Lidar",0,-180,180,12000),
-    18:("Cat_Identifier","Detector",0,0,0,0),
+    18:("Cat_Identifier","Detector",0,0,0,0), 19:("Cat_Cam","Kamera",0,-31,31,8000),
 }
 
 # ------------------------------------------------- Gerätetabelle aus xComDef6_3.h
@@ -212,6 +213,11 @@ def init_db():
     # erkannte Sturm-/Burst-Fenster (vom Analysierer, je Chunk fortgeschrieben)
     _db.execute("""CREATE TABLE IF NOT EXISTS storm_iv(
         sender INT, t0 REAL, t1 REAL)""")
+    # Fotos der Cat Cam (Dateien liegen unter PHOTOS_DIR, Metadaten hier)
+    _db.execute("""CREATE TABLE IF NOT EXISTS photos(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        t REAL, sender INT, trig TEXT, score INT, x INT, y INT, file TEXT)""")
+    os.makedirs(PHOTOS_DIR, exist_ok=True)
     # Aufnahme-Abschnitte: wo wurde tatsächlich aufgezeichnet? (für die
     # Zeitleiste — Lücken = Pause/Container-Downtime sichtbar machen)
     _db.execute("""CREATE TABLE IF NOT EXISTS recspans(
@@ -1030,6 +1036,75 @@ def avalidate():
     return jsonify(n_tracks=len(tracks), n_marked=len(marked), agree=agree,
                    false_cat=false_cat, missed_cat=missed_cat,
                    per_mark=per_mark, mismatches=mismatches)
+
+
+# ---------------------------------------------------------------- Fotos (Cat Cam)
+
+@app.post("/photo")
+def photo_upload():
+    # Cat Cam laedt ein Foto hoch: Query-Parameter = Metadaten, Body = Base64-JPEG
+    # (das Vision-AI-Modul liefert das Bild als Base64 - der ESP32-C3 reicht es
+    # unveraendert durch, dekodiert wird hier).
+    if request.content_length and request.content_length > 3 * 1024 * 1024:
+        return jsonify(error="zu gross"), 413
+    sender = request.args.get("sender", type=int, default=-1)
+    trig = str(request.args.get("trigger", "?"))[:20]
+    score = request.args.get("score", type=int, default=0)
+    x = request.args.get("x", type=int, default=0)
+    y = request.args.get("y", type=int, default=0)
+    try:
+        raw = base64.b64decode(request.get_data(as_text=True).strip(), validate=False)
+    except Exception:                                        # noqa: BLE001
+        return jsonify(error="Base64 ungueltig"), 400
+    if len(raw) < 100 or raw[:2] != b"\xff\xd8":
+        return jsonify(error="kein JPEG"), 400
+    now = time.time()
+    fname = "%d_%s.jpg" % (int(now * 1000), re.sub(r"[^A-Za-z0-9]", "", trig) or "x")
+    with open(os.path.join(PHOTOS_DIR, fname), "wb") as f:
+        f.write(raw)
+    with _db_lock:
+        cur = _db.execute("INSERT INTO photos(t,sender,trig,score,x,y,file) "
+                          "VALUES(?,?,?,?,?,?,?)", (now, sender, trig, score, x, y, fname))
+        _db.commit()
+    return jsonify(ok=True, id=cur.lastrowid, bytes=len(raw))
+
+
+@app.get("/photos")
+def photos_list():
+    # Fotoliste (neueste zuerst) inkl. zugeordneter Track-Nummer: der Track des
+    # kontinuierlichen Analysierers, der den Aufnahmezeitpunkt ueberlappt
+    # (bestaetigte zuerst). KI-Fotos der Kamera haben oft keinen Radar-Track.
+    limit = min(request.args.get("limit", type=int, default=120), 500)
+    t0 = request.args.get("t0", type=float)
+    t1 = request.args.get("t1", type=float)
+    with _db_lock:
+        if t0 is not None and t1 is not None:
+            rows = _db.execute("SELECT id,t,sender,trig,score,x,y FROM photos "
+                               "WHERE t>=? AND t<=? ORDER BY t DESC LIMIT ?",
+                               (t0, t1, limit)).fetchall()
+        else:
+            rows = _db.execute("SELECT id,t,sender,trig,score,x,y FROM photos "
+                               "ORDER BY t DESC LIMIT ?", (limit,)).fetchall()
+        out = []
+        for pid, t, sender, trig, score, x, y in rows:
+            tr = _db.execute("SELECT id,confirmed FROM tracks WHERE t0<=? AND t1>=? "
+                             "ORDER BY confirmed DESC, score DESC LIMIT 1",
+                             (t + 2.0, t - 2.0)).fetchone()
+            out.append({"id": pid, "t": t, "sender": sender, "trigger": trig,
+                        "score": score, "x": x, "y": y,
+                        "track": tr[0] if tr else None,
+                        "track_cat": bool(tr[1]) if tr else False})
+    return jsonify(photos=out)
+
+
+@app.get("/photo/<int:pid>")
+def photo_get(pid):
+    with _db_lock:
+        row = _db.execute("SELECT file FROM photos WHERE id=?", (pid,)).fetchone()
+    if not row:
+        return jsonify(error="unbekannt"), 404
+    return send_from_directory(PHOTOS_DIR, row[0], mimetype="image/jpeg",
+                               max_age=86400)
 
 
 # erlaubte Track-Bewertungen (Ground-Truth-Kategorien)
