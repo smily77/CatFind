@@ -105,9 +105,25 @@ function anaAll(){
   anaScheduleFetch();
 }
 
+// Gewähltes Zeitfenster über Sitzungen hinweg merken, damit beim Öffnen des
+// Analyse-Tabs nicht mehr die (mit wachsender Aufnahme immer langsamere) ganze
+// Aufnahme geladen wird, sondern genau das zuletzt betrachtete Fenster.
+const ANA_WIN_KEY = "catfind.ana.win";
+function anaSaveWin(){
+  try{ if(ANA.win) localStorage.setItem(ANA_WIN_KEY, JSON.stringify(ANA.win)); }catch(e){}
+}
+function anaLoadWin(){
+  try{
+    const w = JSON.parse(localStorage.getItem(ANA_WIN_KEY) || "null");
+    if(w && typeof w.t0==="number" && typeof w.t1==="number" && w.t1 > w.t0) return w;
+  }catch(e){}
+  return null;
+}
+
 function anaScheduleFetch(){
   clearTimeout(ANA.fetchTimer);
   ANA.fetchTimer = setTimeout(anaFetchWindow, 300);
+  anaSaveWin();        // zuletzt gewähltes Fenster für den nächsten Aufruf merken
   drawTimeline();      // sofort nachführen (Dichte ggf. kurz veraltet)
   renderWinInfo();
 }
@@ -815,6 +831,12 @@ async function anaShow(){
     }, 5000);
   }
   await anaRefreshRec();
-  if(!ANA.win) anaAll();          // Start: die ganze Aufnahme einpassen
+  if(!ANA.win){
+    // Start: zuletzt gewähltes Fenster wiederherstellen (schnell), sonst die
+    // ganze Aufnahme einpassen (langsam bei viel Daten).
+    const saved = anaLoadWin();
+    if(saved){ ANA.win = saved; ANA.follow = false; anaFetchWindow(); }
+    else anaAll();
+  }
   else anaFetchWindow();
 }
