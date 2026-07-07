@@ -10,6 +10,11 @@
 // Beide gehen per Unicast an das GEWAEHLTE Radar. Statusmeldungen der Radare
 // (Text-Multicast, "calib ...", "Pose geloescht ...") werden angezeigt.
 //
+// POSE-STATUS: Der Knopf fragt die Radare zyklisch per poseRequest ab (unicast)
+// und faerbt den Ziel-Chip GELB, sobald das Radar eine gueltige Welt-Pose meldet
+// (sonst dunkel). So sieht man nach einer Kalibrierung direkt, ob sie geklappt
+// hat. Nach dem Ausloesen wird das gewaehlte Radar ~30 s gezielt beobachtet.
+//
 // Geraet: CYD 3.5" (ID CYD35Z, classic ESP32), DHCP. Upload per USB (COM9) oder OTA.
 // Die Radar-Liste kommt aus device[] (Typ HLK) - neue Radare erscheinen ohne
 // Code-Aenderung; die IPs werden per HB gelernt.
@@ -39,8 +44,15 @@ int           lastCountSec = -1;          // zuletzt gezeichnete Restsekunden (n
 // Ziel-Radare: alle HLK-Geraete aus device[] (in setup() gefuellt)
 uint8_t radarIdx[MAX_RADARS];             // device[]-Indizes der Radare
 uint8_t radarLastIp[MAX_RADARS];          // zuletzt gezeichnete IP (fuer Redraw-Erkennung)
+int8_t  radarPoseValid[MAX_RADARS];       // Welt-Pose je Radar: -1 unbekannt, 0 keine, 1 gueltig
 int     nRadars = 0;
 int     selRadar = 0;                     // Auswahl (Index in radarIdx)
+
+// Pose-Abfrage: zyklisch poseRequest je Radar; nach Kalibrierung gezielt beobachten
+#define POSE_POLL_MS  1500                // Abstand zwischen zwei poseRequests
+unsigned long lastPosePoll = 0;
+int           posePollIdx = 0;            // Round-Robin-Zeiger ueber die Radare
+unsigned long poseWatchUntil = 0;         // bis dahin gezielt das gewaehlte Radar abfragen (nach Kalibrierung)
 
 // Layout (Bildschirm 480x320, Rotation 3): Chips oben, zwei Buttons, Statuszeilen
 const int chY = 40, chH = 56, chGap = 7;  // Ziel-Chips
@@ -87,20 +99,29 @@ void drawUI(int pressed) {
   gfx.setTextSize(2);
   gfx.drawString("Radar-Kalibrierung - Ziel antippen", screenWidth / 2, 18);
 
-  // Ziel-Chips: gewaehlt = blau gefuellt, sonst dunkel; IP gruen wenn per HB gelernt
+  // Ziel-Chips: GELB gefuellt = gueltige Welt-Pose, sonst dunkel (blau = gewaehlt ohne Pose).
+  // Auswahl = dicker cyan Rahmen. Zeilen: Name, IP (gruen wenn per HB gelernt), Pose-Status.
   for (int i = 0; i < nRadars; i++) {
     uint8_t di = radarIdx[i];
     uint8_t ip = device[di].IP;
     radarLastIp[i] = ip;
-    uint32_t fill = (i == selRadar) ? 0x1a5276U : 0x22262cU;
+    bool poseOk = (radarPoseValid[i] == 1);
+    uint32_t fill = poseOk ? 0xB8860BU : ((i == selRadar) ? 0x1a5276U : 0x22262cU);  // ocker/gelb = Pose
     gfx.fillRoundRect(chipX(i), chY, chipW(), chH, 10, fill);
-    gfx.drawRoundRect(chipX(i), chY, chipW(), chH, 10,
-                      (i == selRadar) ? TFT_CYAN : 0x555555U);
-    gfx.setTextColor(TFT_WHITE, fill);
+    uint32_t border = (i == selRadar) ? TFT_CYAN : (poseOk ? TFT_YELLOW : 0x555555U);
+    gfx.drawRoundRect(chipX(i), chY, chipW(), chH, 10, border);
+    if (i == selRadar) gfx.drawRoundRect(chipX(i) + 1, chY + 1, chipW() - 2, chH - 2, 9, border);  // doppelt = dicker
+    uint32_t txt = poseOk ? TFT_BLACK : TFT_WHITE;                 // auf Gelb schwarze Schrift
+    gfx.setTextColor(txt, fill);
     gfx.setTextSize(2);
-    gfx.drawString(device[di].Name, chipX(i) + chipW() / 2, chY + 20);
-    gfx.setTextColor(ip ? TFT_GREEN : TFT_DARKGRAY, fill);
-    gfx.drawString(ip ? ("." + String(ip)) : "kein HB", chipX(i) + chipW() / 2, chY + 42);
+    gfx.drawString(device[di].Name, chipX(i) + chipW() / 2, chY + 15);
+    gfx.setTextColor(poseOk ? TFT_BLACK : (ip ? TFT_GREEN : TFT_DARKGRAY), fill);
+    gfx.drawString(ip ? ("." + String(ip)) : "kein HB", chipX(i) + chipW() / 2, chY + 33);
+    const char* ps = (radarPoseValid[i] == 1) ? "Pose OK"
+                   : (radarPoseValid[i] == 0) ? "keine Pose" : "Pose ?";
+    gfx.setTextColor(poseOk ? TFT_BLACK : (radarPoseValid[i] == 0 ? 0xC04040U : 0x888888U), fill);
+    gfx.setTextSize(1);
+    gfx.drawString(ps, chipX(i) + chipW() / 2, chY + 48);
   }
 
   drawBtn1(pressed == 1);
@@ -113,9 +134,11 @@ void drawUI(int pressed) {
 
   uint8_t di = radarIdx[selRadar];
   uint8_t ip = device[di].IP;
+  const char* pstat = (radarPoseValid[selRadar] == 1) ? " - Pose OK"
+                    : (radarPoseValid[selRadar] == 0) ? " - keine Pose" : " - Pose ?";
   gfx.setTextSize(2);
-  gfx.setTextColor(ip ? TFT_GREEN : TFT_RED, TFT_BLACK);
-  gfx.drawString(ip ? ("Ziel: " + device[di].Name + " 192.168.0." + String(ip))
+  gfx.setTextColor(ip ? (radarPoseValid[selRadar] == 1 ? TFT_YELLOW : TFT_GREEN) : TFT_RED, TFT_BLACK);
+  gfx.drawString(ip ? ("Ziel: " + device[di].Name + " ." + String(ip) + pstat)
                     : ("warte auf " + device[di].Name + " (HB) ..."),
                  screenWidth / 2, 290);
   gfx.setTextColor(TFT_LIGHTGRAY, TFT_BLACK);
@@ -136,11 +159,20 @@ void sendCmd(uint8_t code, const String& okMsg, int pressed) {
   drawUI(pressed);
 }
 
+// poseRequest (ohne Payload) per Unicast an ein Radar schicken -> es broadcastet
+// seinen poseReport, den wir in loop() auffangen (Pose-Gueltigkeit fuer den Chip).
+void pollRadar(int idx) {
+  if (idx < 0 || idx >= nRadars) return;
+  uint8_t ip = device[radarIdx[idx]].IP;
+  if (ip) unicastMsg(poseRequest, (const void*)nullptr, (uint8_t)0, ip);
+}
+
 void setup() {
   Serial.begin(115200);
   // Radar-Liste aus der Geraetetabelle (alle HLK-Typen)
   for (int i = 0; i < deviceCount && nRadars < MAX_RADARS; i++)
     if (device[i].type == HLK) radarIdx[nRadars++] = (uint8_t)i;
+  for (int i = 0; i < MAX_RADARS; i++) radarPoseValid[i] = -1;   // Pose zunaechst unbekannt
   gfx.init();
   gfx.setRotation(3);
   gfx.setBrightness(220);
@@ -163,7 +195,7 @@ void loop() {
       btnDown = true;
       bool hit = false;
       for (int i = 0; i < nRadars && !hit; i++)
-        if (inChip(i, tx, ty)) { selRadar = i; hit = true; drawUI(0); }
+        if (inChip(i, tx, ty)) { selRadar = i; hit = true; drawUI(0); pollRadar(selRadar); }
       if (!hit) {
         if      (inBtn1(tx, ty)) sendCmd(cmdCalibrate, "Kalibrierung gestartet (45s)", 1);
         else if (inBtn2(tx, ty)) sendCmd(cmdClearPose, "Pose-Loeschung gesendet", 2);
@@ -176,20 +208,49 @@ void loop() {
   // Button-Highlight nach kurzer Zeit zuruecknehmen
   if (btnFlashUntil && millis() > btnFlashUntil) { btnFlashUntil = 0; drawUI(0); }
 
-  // Kalibrier-Countdown: sekuendlich nur den KALIBRIEREN-Button nachzeichnen;
-  // am Ende einmal zuruecksetzen (das Ergebnis meldet das Radar per Text-Multicast)
+  // Kalibrier-Countdown: sekuendlich nur den KALIBRIEREN-Button nachzeichnen; am Ende
+  // einmal zuruecksetzen und das gewaehlte Radar ~30 s gezielt nach seiner Pose fragen
+  // (Radar rechnet nach dem Fenster noch ueber den VPS -> Pose kommt etwas verzoegert).
   if (calibUntil && !btnFlashUntil) {
     long remain = (long)(calibUntil - millis());
-    if (remain <= 0) { calibUntil = 0; drawBtn1(false); }
+    if (remain <= 0) { calibUntil = 0; drawBtn1(false); poseWatchUntil = millis() + 30000; }
     else if ((int)((remain + 999) / 1000) != lastCountSec) drawBtn1(false);
   }
 
-  // HB lernt IPs automatisch (initMcUdp-Callback); neu zeichnen, wenn sich die IP
-  // eines Radars geaendert hat (Chip-Anzeige "kein HB" -> ".xx")
+  // HB lernt IPs automatisch (initMcUdp-Callback); poseReport der Radare auswerten
+  // (Pose-Gueltigkeit fuer die gelbe Chip-Faerbung). Neu zeichnen bei IP- oder Pose-Aenderung.
   if (mcDataReceived) {
+    xMsg m = lastMcMsg;
     mcDataReceived = false;
+    bool redraw = false;
     for (int i = 0; i < nRadars; i++)
-      if (device[radarIdx[i]].IP != radarLastIp[i]) { if (!btnFlashUntil) drawUI(0); break; }
+      if (device[radarIdx[i]].IP != radarLastIp[i]) { redraw = true; break; }
+    if (m.header.msgCode == poseReport) {
+      worldPosePayload wp;
+      if (getPayload(m, wp))
+        for (int i = 0; i < nRadars; i++)
+          if (radarIdx[i] == m.header.sender) {
+            int8_t v = wp.validWorldPose ? 1 : 0;
+            if (radarPoseValid[i] != v) { radarPoseValid[i] = v; redraw = true; }
+            break;
+          }
+    }
+    if (redraw && !btnFlashUntil) drawUI(0);
+  }
+
+  // Pose-Status zyklisch abfragen: nach einer Kalibrierung gezielt das gewaehlte Radar,
+  // sonst Round-Robin ueber alle Radare mit bekannter IP (unicast poseRequest).
+  if (millis() - lastPosePoll > POSE_POLL_MS) {
+    lastPosePoll = millis();
+    if (poseWatchUntil && (long)(millis() - poseWatchUntil) < 0) {
+      pollRadar(selRadar);
+    } else {
+      poseWatchUntil = 0;
+      for (int k = 0; k < nRadars; k++) {
+        posePollIdx = (posePollIdx + 1) % nRadars;
+        if (device[radarIdx[posePollIdx]].IP) { pollRadar(posePollIdx); break; }
+      }
+    }
   }
 
   // Status-Text der Radare anzeigen (Text-Multicast, Port 8300)
