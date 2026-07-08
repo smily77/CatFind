@@ -502,7 +502,7 @@ def manual_data():
             }
         evs = list(_events[-MAX_EVENTS:])
         poses = dict(_poses)
-    calibratable = [int(sid) for sid, d in devs.items() if "Radar" in d.get("type", "")]
+    calibratable = [int(sid) for sid, d in devs.items() if d.get("type", "") == "HLK"]
     return jsonify(now=now, devices=devs, poses={str(k): v for k, v in poses.items()},
                    events=evs, calibratable=calibratable)
 
