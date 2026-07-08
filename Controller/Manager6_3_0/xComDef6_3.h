@@ -336,6 +336,10 @@ struct __attribute__((packed)) settingsPayload {
 #define cmdCopyPose               21   // info: ignoriert - Aktion actCopyPose: Welt-Pose aus der Gruppe kopieren
 #define cmdReloadParams           22   // info: ignoriert - CatIdent laedt die Modell-Parameter neu vom VPS (/aparams.csv)
 #define cmdTakePhoto              23   // info: ignoriert - CatCam macht sofort ein Foto und laedt es zum VPS hoch
+#define cmdManualPoseX            24   // info: Welt-X (mm) fuer manuelle VPS-Kalibration vorbereiten
+#define cmdManualPoseY            25   // info: Welt-Y (mm) fuer manuelle VPS-Kalibration vorbereiten
+#define cmdManualPoseHeading      26   // info: Heading in PA-Einheiten (0..4095) fuer manuelle VPS-Kalibration
+#define cmdManualPoseMirrorCommit 27   // info: Mirror (+1/-1); uebernimmt+speichert vorbereitete manuelle Pose
 
 //---------------------------------------------------------------------------------------
 // Welt-Pose dieses Geraets (jedes Geraet besitzt diese Variablen, damit die
@@ -350,6 +354,7 @@ struct worldPose {
   bool    validWorldPose;  // false nach Boot
 };
 worldPose myPose = { 0, 0, 0.0f, 1, false };
+worldPose manualPoseDraft = { 0, 0, 0.0f, 1, false };
 
 //---------------------------------------------------------------------------------------
 // Einstellungen dieses Geraets. supported/actions kommen aus der hwDef (STG_*), values
