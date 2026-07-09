@@ -251,7 +251,7 @@ function setView(v,b){
   document.getElementById("legend").style.display = isMap?"block":"none";
   document.getElementById("hint").style.display   = isMap?"block":"none";
   if(isMap) drawCurrent();
-  if(isCtrl){ renderCtrl(lastSettings); reqAll(); }
+  if(isCtrl){ renderCtrl(lastSettings, true); reqAll(); }
   if(isAna) anaShow();
   if(isManual) manShow();
   if(isPics) loadPics();
@@ -294,13 +294,42 @@ async function postCmd(target,cmd,info){
   try{ await fetch("/command",{method:"POST",headers:{"Content-Type":"application/json"},
        body:JSON.stringify({target,cmd,info})}); }catch(e){}
 }
-function toggle(id,idx,val){ postCmd(id,CMD_SET_SETTING,(idx<<1)|val); }
+// Optimistische Umschaltung: der Knopf reagiert sofort, ohne auf den Geraete-
+// Report (bis ~3 s ueber Manager-Poll + Bus) zu warten. Der Wunschwert wird als
+// "pending" gemerkt und ueber die vom Server frisch geladenen Settings gelegt,
+// bis der echte settingsReport ihn bestaetigt (dann faellt das Override weg) oder
+// bis er nach 6 s verfaellt (Kommando kam nicht an -> Anzeige springt zurueck).
+const _pending={};
+function toggle(id,idx,val){
+  postCmd(id,CMD_SET_SETTING,(idx<<1)|val);
+  _pending[id+":"+idx]={val:val?1:0, until:Date.now()+6000};
+  applyPending();
+  renderCtrl(lastSettings,true);
+}
+function applyPending(){
+  const now=Date.now();
+  for(const k in _pending){
+    const p=_pending[k];
+    if(p.until<now){ delete _pending[k]; continue; }
+    const [id,idx]=k.split(":"); const s=lastSettings&&lastSettings[id];
+    if(!s){ continue; }
+    if(((s.val>>idx)&1)===p.val){ delete _pending[k]; }              // Server bestaetigt -> fertig
+    else { s.val = p.val ? (s.val|(1<<idx)) : (s.val & ~(1<<idx)); }  // noch offen -> Wunsch halten
+  }
+}
 function doAct(id,cmd,info){ postCmd(id,cmd,info); }
 function reqAll(){ postCmd(255,0,0); }   // Manager broadcastet settingsRequest an alle
 
-function renderCtrl(settings){
+let _ctrlSig=null;
+function renderCtrl(settings,force){
   const el=document.getElementById("ctrl");
   const ids=Object.keys(settings||{}).sort((a,b)=>a-b);
+  // Nur neu zeichnen, wenn sich inhaltlich etwas geaendert hat (sup/val/act/ip/name).
+  // Sonst baute der 1,5-s-Tick das ganze DOM staendig neu auf -> Flackern + Klicks
+  // gingen verloren. Age (Sekunden) bewusst NICHT in die Signatur -> kein Dauer-Rebuild.
+  const sig=JSON.stringify(ids.map(id=>{const s=settings[id];return [id,s.name,s.sup,s.val,s.act,s.ip];}));
+  if(!force && sig===_ctrlSig) return;
+  _ctrlSig=sig;
   let h=`<div style="margin-bottom:8px"><button class="tab" onclick="reqAll()">Geräte aktualisieren</button></div>`;
   if(!ids.length){ el.innerHTML=h+`<div class="hint">— keine steuerbaren Geräte gemeldet —</div>`; return; }
   for(const id of ids){
@@ -447,6 +476,7 @@ async function tick(){
     const st = await (await fetch("/state")).json();
     renderDebug(st.debug); renderDevices(st.devices, st.now);
     lastSettings = st.settings || {};
+    applyPending();                       // optimistische Umschaltungen ueber frische Server-Settings legen
     if(view==="list") renderList(st.summary);
     if(view==="ctrl") renderCtrl(lastSettings);
     if(resetSeq===null) resetSeq=st.reset_seq;
