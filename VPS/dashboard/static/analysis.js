@@ -863,6 +863,8 @@ async function anaShow(){
     anaEl("anaBParams").onclick = anaParams;
     anaEl("anaBValid").onclick = anaValidate;
     anaEl("anaBDev").onclick = anaDevReload;
+    anaEl("anaBCovLearn").onclick = anaCoverageLearn;
+    anaEl("anaBCovDel").onclick = anaCoverageDelete;
     anaEl("anaBLabel").onclick = anaAddLabel;
     anaEl("anaLblSel").innerHTML = Object.keys(LBL_COLORS).map(l=>`<option>${l}</option>`).join("");
     window.addEventListener("resize", ()=>{ if(view==="ana"){ drawTimeline(); drawAnaMap(); } });
