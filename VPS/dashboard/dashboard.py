@@ -167,6 +167,16 @@ _poses = {}                      # sender -> {x, y, head, mir, valid, t}  (aus p
                                  # der nach Reboot noch nicht re-validiert ist, steht
                                  # physisch ja weiterhin am selben Ort)
 
+def _sysmsg(msg):
+    """VPS-eigene Meldung ins scrollende Debug-Fenster stellen (wie Bus-Debug).
+    Damit sieht der Benutzer direkt, ob eine Aktion (Coverage lernen/loeschen,
+    manuelle Pose) tatsaechlich gegriffen hat."""
+    line = "VPS: " + str(msg)
+    with _lock:
+        _debug.append({"t": time.time(), "msg": line[:200]})
+    print(line, flush=True)
+
+
 _cmd_lock = threading.Lock()
 _cmd_queue = []                  # [(target, cmd, info)]  Webinterface -> Manager -> Bus
 
@@ -559,6 +569,8 @@ def manual_pose():
     with _cmd_lock:
         _cmd_queue.extend(cmds)
         n = len(_cmd_queue)
+    _sysmsg("Manuelle Pose an #%d (%s) gesendet: x=%d y=%d head=%.1f mir=%+d (gelerntes Polygon deaktiviert)"
+            % (target, dev_name(target), x, y, heading_deg, mirror))
     return jsonify(ok=True, queued=n, commands=len(cmds), target=target, x=x, y=y,
                    heading_deg=heading_deg, heading_pa=heading_pa, mirror=mirror)
 
@@ -790,9 +802,11 @@ def coverage_learn():
     except (KeyError, TypeError, ValueError):
         return jsonify(error="t0/t1 fehlen"), 400
     save = bool(d.get("save", False))
+    name = dev_name(sid)
     with _lock:
         pose = dict(_poses.get(sid) or {})
     if not pose or not pose.get("valid"):
+        _sysmsg("Coverage lernen #%d (%s) abgebrochen: keine gueltige Welt-Pose" % (sid, name))
         return jsonify(error="Sensor hat keine gueltige Pose"), 400
     with _db_lock:
         rows = _db.execute("SELECT wx,wy FROM events WHERE sender=? AND wv=1 AND t>=? AND t<=?",
@@ -804,10 +818,15 @@ def coverage_learn():
         quantile=float(d.get("quantile", 0.90)),
         min_points=int(d.get("min_points", 40)),
         target_vertices=int(d.get("target_vertices", 8)))
+    win = "%s-%s" % (time.strftime("%H:%M:%S", time.localtime(t0)),
+                     time.strftime("%H:%M:%S", time.localtime(t1)))
     if not poly:
+        _sysmsg("Coverage lernen #%d (%s) FEHLGESCHLAGEN: %s (%d Punkte, Fenster %s)"
+                % (sid, name, q.get("reason", "unbekannt"), len(pts), win))
         return jsonify(ok=False, error=q.get("reason", "Polygon konnte nicht erzeugt werden"),
                        quality=q, point_count=len(pts)), 400
     ph = catmodel.pose_hash(pose)
+    area_m2 = float(q.get("area_mm2", 0.0)) / 1e6
     if save:
         with _db_lock:
             _db.execute("""INSERT OR REPLACE INTO coverage_polygons
@@ -819,6 +838,11 @@ def coverage_learn():
                  float(q.get("area_mm2", 0.0)), time.time(), "aus Maeherperiode gelernt"))
             _db.commit()
         _coverage_dirty()
+        _sysmsg("Coverage GELERNT + aktiv: #%d (%s) - %d Ecken, %d Punkte, %.1f m2, Fenster %s"
+                % (sid, name, len(poly), len(pts), area_m2, win))
+    else:
+        _sysmsg("Coverage-Vorschau #%d (%s): %d Ecken, %d Punkte, %.1f m2 (noch nicht gespeichert)"
+                % (sid, name, len(poly), len(pts), area_m2))
     return jsonify(ok=True, saved=save, sender=sid, pose_hash=ph, polygon=poly,
                    quality=q, point_count=len(pts), t0=t0, t1=t1)
 
@@ -830,11 +854,18 @@ def coverage_delete():
     if sid < 0:
         return jsonify(error="sender fehlt"), 400
     with _db_lock:
-        _db.execute("UPDATE coverage_polygons SET active=0,note=? WHERE sender=?",
-                    ("manuell deaktiviert", sid))
+        cur = _db.execute("UPDATE coverage_polygons SET active=0,note=? WHERE sender=? AND active=1",
+                          ("manuell deaktiviert", sid))
+        n = cur.rowcount
         _db.commit()
     _coverage_dirty()
-    return jsonify(ok=True, sender=sid)
+    if n:
+        _sysmsg("Coverage GELOESCHT: #%d (%s) deaktiviert -> wieder Default-Sektor"
+                % (sid, dev_name(sid)))
+    else:
+        _sysmsg("Coverage loeschen #%d (%s): kein aktives Polygon vorhanden"
+                % (sid, dev_name(sid)))
+    return jsonify(ok=True, sender=sid, deactivated=n)
 
 
 @app.get("/coverage_export")
