@@ -46,6 +46,15 @@
   #picsBox img { max-width:88vw; max-height:75vh; object-fit:contain; }
   #picsMeta { font-size:13px; color:#aab; }
   #ctrl { height:100%; overflow:auto; padding:10px 14px; }
+  #manual { height:100%; display:flex; min-height:0; }
+  #manMapWrap { flex:1; position:relative; min-width:0; }
+  #manMap { position:absolute; inset:0; width:100%; height:100%; cursor:grab; }
+  #manSide { width:330px; min-width:330px; border-left:1px solid #333; overflow:auto; padding:10px; font-size:12px; background:#121218; }
+  #manSide select, #manSide input { width:100%; background:#0d0d12; color:#ddd; border:1px solid #333; border-radius:5px; padding:5px; margin:3px 0 8px; }
+  .manList { max-height:170px; overflow:auto; border:1px solid #2a2a30; border-radius:6px; padding:4px; background:#0d0d12; }
+  .manList label { display:block; padding:2px 4px; }
+  .manHelp { color:#9ab; line-height:1.35; margin:6px 0 10px; }
+  .manPose { font:12px ui-monospace,monospace; color:#bcd; background:#0d0d12; border:1px solid #333; border-radius:6px; padding:6px; margin:6px 0; }
   .card { border:1px solid #333; border-radius:8px; padding:8px 10px; margin-bottom:10px; background:#16161b; }
   .card h3 { margin:0 0 6px; font-size:14px; }
   .srow { display:flex; align-items:center; gap:8px; margin:5px 0; }
@@ -112,6 +121,7 @@
   <button class="tab" data-v="g2">Gruppe 2</button>
   <button class="tab" data-v="g3">Gruppe 3</button>
   <button class="tab" data-v="ana">Analyse</button>
+  <button class="tab" data-v="manual">Manuelle Pose</button>
   <button class="tab" data-v="pics">Bilder</button>
   <button class="tab" data-v="ctrl">Steuerung</button>
   <button id="reset">Karten zurücksetzen</button>
@@ -140,6 +150,21 @@
       </div></div>
     </div>
     <canvas id="cv" style="display:none"></canvas>
+    <div id="manual" style="display:none">
+      <div id="manMapWrap"><canvas id="manMap" title="Ziehen = Weltkarte verschieben · Rad = zoomen · Kalibrierpunkte mit linker Taste verschieben · Shift+Ziehen oder Rad auf Punkten = drehen"></canvas></div>
+      <div id="manSide">
+        <h3 style="margin:0 0 6px">Manuelle Sensor-Weltpose</h3>
+        <div class="manHelp">Wähle Referenzsensoren mit gültiger Weltpose und einen zu kalibrierenden Radarsensor. Dessen relative Treffer werden als bewegliche Punktwolke über die Weltkarte gelegt.</div>
+        <label>Kalibrier-Sensor</label><select id="manTarget"></select>
+        <label>Referenzen anzeigen</label><div id="manRefs" class="manList"></div>
+        <label>Mirror</label><select id="manMirror"><option value="1">+1 normal</option><option value="-1">-1 gespiegelt</option></select>
+        <div class="manPose" id="manPoseTxt">—</div>
+        <button class="act" id="manSend">✅ Pose bestätigen und an Sensor senden</button>
+        <button class="act" style="background:#7a2230" id="manClear">Bestehende Pose löschen</button>
+        <button class="tab" id="manReload">Daten neu laden</button>
+        <div class="manHelp" id="manInfo"></div>
+      </div>
+    </div>
     <div id="legend" style="display:none"></div>
     <div class="hint" id="hint" style="display:none"></div>
     <div id="ana" style="display:none">
@@ -213,11 +238,12 @@ const CMD_SET_SETTING=20;
 function setView(v,b){
   view=v;
   document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active", x===b));
-  const isList=v==="list", isCtrl=v==="ctrl", isAna=v==="ana", isPics=v==="pics",
-        isMap=!isList&&!isCtrl&&!isAna&&!isPics;
+  const isList=v==="list", isCtrl=v==="ctrl", isAna=v==="ana", isPics=v==="pics", isManual=v==="manual",
+        isMap=!isList&&!isCtrl&&!isAna&&!isPics&&!isManual;
   document.getElementById("list").style.display   = isList?"block":"none";
   document.getElementById("ctrl").style.display   = isCtrl?"block":"none";
   document.getElementById("ana").style.display    = isAna?"flex":"none";
+  document.getElementById("manual").style.display = isManual?"flex":"none";
   document.getElementById("pics").style.display   = isPics?"block":"none";
   document.getElementById("cv").style.display     = isMap?"block":"none";
   document.getElementById("legend").style.display = isMap?"block":"none";
@@ -225,6 +251,7 @@ function setView(v,b){
   if(isMap) drawCurrent();
   if(isCtrl){ renderCtrl(lastSettings); reqAll(); }
   if(isAna) anaShow();
+  if(isManual) manShow();
   if(isPics) loadPics();
 }
 
@@ -354,6 +381,64 @@ function buildLegend(items){
     items.sort().map(([k,c])=>`<div><i style="background:${c}"></i>#${k}</div>`).join("")
     || "<span style='color:#666'>—</span>";
 }
+
+
+// ---- Manuelle Pose: Weltkarte + verschiebbare/drehbare Trefferwolke
+const MAN={data:null, refs:new Set(), target:null, tx:0, ty:0, ang:0, mirror:1, view:null, drag:null};
+function manDeg(){ return ((MAN.ang*180/Math.PI)%360+360)%360; }
+function manName(id){ const d=MAN.data?.devices?.[String(id)]; return d?`${d.name} #${id}`:`#${id}`; }
+async function manLoad(){
+  MAN.data = await (await fetch('/manual_data')).json();
+  const target=document.getElementById('manTarget');
+  const ids=MAN.data.calibratable.length?MAN.data.calibratable:Object.keys(MAN.data.devices).map(Number);
+  target.innerHTML=ids.map(id=>`<option value="${id}">${escapeHtml(manName(id))}</option>`).join('');
+  if(MAN.target==null && ids.length) MAN.target=ids[0];
+  target.value=String(MAN.target);
+  const refs=Object.keys(MAN.data.poses).map(Number).filter(id=>id!==MAN.target);
+  if(!MAN.refs.size) refs.forEach(id=>MAN.refs.add(id));
+  document.getElementById('manRefs').innerHTML=refs.map(id=>`<label><input type="checkbox" value="${id}" ${MAN.refs.has(id)?'checked':''}> ${escapeHtml(manName(id))}</label>`).join('') || '<div class="hint">— keine gültigen Weltposen —</div>';
+  drawManual();
+}
+function manShow(){ if(!MAN.data) manLoad().catch(e=>document.getElementById('manInfo').textContent=e.message); else drawManual(); }
+function manPts(){
+  const evs=MAN.data?.events||[], refs=[], loc=[];
+  for(const e of evs){
+    if(e.wv===1 && MAN.refs.has(e.sender)) refs.push({x:e.wx,y:e.wy,s:e.sender,sub:e.sensor});
+    if(e.sender===MAN.target) loc.push({x:e.x,y:e.y,s:e.sender,sub:e.sensor});
+  }
+  return {refs, loc:loc.slice(-1200)};
+}
+function manWorld(p){ const c=Math.cos(MAN.ang), s=Math.sin(MAN.ang), y=MAN.mirror*p.y; return {x:MAN.tx+p.x*c-y*s, y:MAN.ty+p.x*s+y*c}; }
+function manFit(W,H){
+  const {refs,loc}=manPts(); const xs=[],ys=[]; (mapPoints||[]).forEach(p=>{xs.push(p[0]*1000);ys.push(p[1]*1000);}); refs.forEach(p=>{xs.push(p.x);ys.push(p.y)}); loc.map(manWorld).forEach(p=>{xs.push(p.x);ys.push(p.y)});
+  if(xs.length<2){ MAN.view={cx:0,cy:0,s:0.05}; return; }
+  const minx=Math.min(...xs), maxx=Math.max(...xs), miny=Math.min(...ys), maxy=Math.max(...ys); MAN.view={cx:(minx+maxx)/2, cy:(miny+maxy)/2, s:Math.min(W/(maxx-minx+1000), H/(maxy-miny+1000))};
+}
+function drawManual(){
+  const cv=document.getElementById('manMap'); if(!cv||cv.offsetParent===null) return; const dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight; cv.width=W*dpr; cv.height=H*dpr; const ctx=cv.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.fillStyle='#0c0c10'; ctx.fillRect(0,0,W,H); if(!MAN.view) manFit(W,H);
+  const X=x=>W/2+(x-MAN.view.cx)*MAN.view.s, Y=y=>H/2-(y-MAN.view.cy)*MAN.view.s;
+  ctx.strokeStyle='#222'; for(let gx=Math.floor((MAN.view.cx-W/2/MAN.view.s)/1000)*1000;gx<MAN.view.cx+W/2/MAN.view.s;gx+=1000){ctx.beginPath();ctx.moveTo(X(gx),0);ctx.lineTo(X(gx),H);ctx.stroke()} for(let gy=Math.floor((MAN.view.cy-H/2/MAN.view.s)/1000)*1000;gy<MAN.view.cy+H/2/MAN.view.s;gy+=1000){ctx.beginPath();ctx.moveTo(0,Y(gy));ctx.lineTo(W,Y(gy));ctx.stroke()}
+  ctx.fillStyle='#566'; (mapPoints||[]).forEach(p=>ctx.fillRect(X(p[0]*1000)-1,Y(p[1]*1000)-1,2,2));
+  const {refs,loc}=manPts(); refs.forEach(p=>{ctx.fillStyle=colorFor(p.s,p.sub);ctx.beginPath();ctx.arc(X(p.x),Y(p.y),3,0,7);ctx.fill();}); loc.forEach(p=>{const q=manWorld(p);ctx.fillStyle='#ffd23b';ctx.beginPath();ctx.arc(X(q.x),Y(q.y),3.5,0,7);ctx.fill();});
+  ctx.strokeStyle='#ffd23b'; ctx.beginPath(); ctx.arc(X(MAN.tx),Y(MAN.ty),8,0,7); ctx.stroke(); ctx.beginPath(); ctx.moveTo(X(MAN.tx),Y(MAN.ty)); ctx.lineTo(X(MAN.tx+700*Math.cos(MAN.ang)),Y(MAN.ty+700*Math.sin(MAN.ang))); ctx.stroke();
+  document.getElementById('manPoseTxt').textContent=`x=${Math.round(MAN.tx)} mm\ny=${Math.round(MAN.ty)} mm\nheading=${manDeg().toFixed(1)}°\nmirror=${MAN.mirror}\nReferenzpunkte=${refs.length}, Sensorpunkte=${loc.length}`;
+}
+function manPointer(e){ const r=e.currentTarget.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top}; }
+function manInit(){
+  const cv=document.getElementById('manMap');
+  document.getElementById('manTarget').onchange=e=>{MAN.target=+e.target.value; const p=MAN.data?.poses?.[String(MAN.target)]; if(p){MAN.tx=p.x;MAN.ty=p.y;MAN.ang=p.head*2*Math.PI/4096;MAN.mirror=p.mir||1;} MAN.view=null; manLoad();};
+  document.getElementById('manRefs').onchange=e=>{ if(e.target.type==='checkbox'){MAN.refs[e.target.checked?'add':'delete'](+e.target.value); drawManual();} };
+  document.getElementById('manMirror').onchange=e=>{MAN.mirror=+e.target.value; drawManual();};
+  document.getElementById('manReload').onclick=()=>{MAN.view=null; manLoad();};
+  document.getElementById('manClear').onclick=()=>MAN.target!=null&&postCmd(MAN.target,19,0);
+  document.getElementById('manSend').onclick=async()=>{ if(MAN.target==null) return; if(!confirm('Manuelle Pose an Sensor senden und alte Pose löschen?')) return; const r=await fetch('/manual_pose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:MAN.target,x:MAN.tx,y:MAN.ty,heading_deg:manDeg(),mirror:MAN.mirror})}); document.getElementById('manInfo').textContent=JSON.stringify(await r.json()); };
+  cv.onpointerdown=e=>{cv.setPointerCapture(e.pointerId); MAN.drag={p:manPointer(e), mode:e.shiftKey?'rot':'move', tx:MAN.tx, ty:MAN.ty, ang:MAN.ang, cx:MAN.view.cx, cy:MAN.view.cy};};
+  cv.onpointermove=e=>{if(!MAN.drag)return; const p=manPointer(e),dx=p.x-MAN.drag.p.x,dy=p.y-MAN.drag.p.y; if(MAN.drag.mode==='rot') MAN.ang=MAN.drag.ang+dx*0.01; else if(e.altKey){MAN.view.cx=MAN.drag.cx-dx/MAN.view.s;MAN.view.cy=MAN.drag.cy+dy/MAN.view.s;} else {MAN.tx=MAN.drag.tx+dx/MAN.view.s;MAN.ty=MAN.drag.ty-dy/MAN.view.s;} drawManual();};
+  cv.onpointerup=e=>{MAN.drag=null;};
+  cv.onwheel=e=>{e.preventDefault(); if(e.shiftKey){MAN.ang += (e.deltaY>0?-1:1)*Math.PI/180*3;} else {const f=e.deltaY>0?0.9:1.1; MAN.view.s*=f;} drawManual();};
+  cv.ondblclick=()=>{MAN.view=null; drawManual();};
+}
+setTimeout(manInit,0);
 
 async function tick(){
   try{

@@ -16,6 +16,8 @@ Endpunkte:
   GET  /events?since=N  neue catObserved ab Index N (für die Karten)
   POST /reset           akkumulierte Ereignisse löschen
   GET  /map             RasenKarte-Punkte (aus dem GitHub-Repo) für die Welt-Karte
+  GET  /manual_data     Daten fuer manuelle Sensor-Weltpose-Kalibration
+  POST /manual_pose     manuell bestimmte Pose als Kommando-Sequenz an Sensor senden
   POST /command         Webinterface -> Kommando-Queue {"target":id,"cmd":c,"info":i}
   GET  /commands        Manager holt anstehende Kommandos ab (CSV "target,cmd,info"), leert die Queue
 
@@ -474,6 +476,58 @@ def get_map():
     with _map_lock:
         return jsonify(points=_map)
 
+
+
+@app.get("/manual_data")
+def manual_data():
+    # Kompakter Snapshot fuer die manuelle Kalibrationsseite: aktive/steuerbare
+    # Sensoren, bekannte gueltige Posen und zuletzt gepufferte Treffer.
+    devices = load_devices()
+    now = time.time()
+    with _lock:
+        active = set(_devices.keys()) | set(_settings.keys())
+        devs = {}
+        for sid in sorted(set(devices.keys()) | active | set(_poses.keys())):
+            d = devices.get(sid, {})
+            hb = _devices.get(sid)
+            st = _settings.get(sid)
+            devs[str(sid)] = {
+                "name": d.get("name", dev_name(sid)),
+                "type": d.get("type", ""),
+                "group": d.get("group", 0),
+                "active": bool(hb and now - hb["t"] <= HB_WINDOW_S),
+                "ip": hb.get("ip", 0) if hb else 0,
+                "settings": {"sup": st["sup"], "val": st["val"], "act": st["act"]} if st else None,
+                "pose": _poses.get(sid),
+            }
+        evs = list(_events[-MAX_EVENTS:])
+        poses = dict(_poses)
+    calibratable = [int(sid) for sid, d in devs.items() if d.get("type", "") == "HLK"]
+    return jsonify(now=now, devices=devs, poses={str(k): v for k, v in poses.items()},
+                   events=evs, calibratable=calibratable)
+
+
+@app.post("/manual_pose")
+def manual_pose():
+    # Sendet eine manuell ausgerichtete Pose ueber den Manager an den Sensor.
+    # Die gemeinsame xCom-Schicht speichert sie in derselben worldPose-Struktur
+    # wie automatische /localize- oder /calibrate-Ergebnisse: Pose ist Pose.
+    d = request.get_json(force=True, silent=True) or {}
+    target = int(d.get("target", -1))
+    if target < 0:
+        return jsonify(error="target fehlt"), 400
+    x = int(round(float(d.get("x", 0))))
+    y = int(round(float(d.get("y", 0))))
+    heading_deg = float(d.get("heading_deg", 0.0)) % 360.0
+    heading_pa = int(round(heading_deg * 4096.0 / 360.0)) % 4096
+    mirror = -1 if int(d.get("mirror", 1)) < 0 else 1
+    cmds = [(target, 19, 0), (target, 24, x), (target, 25, y),
+            (target, 26, heading_pa), (target, 27, mirror), (254, 0, 0)]
+    with _cmd_lock:
+        _cmd_queue.extend(cmds)
+        n = len(_cmd_queue)
+    return jsonify(ok=True, queued=n, commands=len(cmds), target=target, x=x, y=y,
+                   heading_deg=heading_deg, heading_pa=heading_pa, mirror=mirror)
 
 @app.post("/command")
 def command():

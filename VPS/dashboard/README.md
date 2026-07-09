@@ -15,6 +15,7 @@ Erreichbar unter **`http://<VPS-IP>/`** (Port 80).
   - **Liste** — alle `catObserved`, pro Minute zu einem Eintrag zusammengefasst
     (Zeit + meldende Sensor-IDs).
   - **Welt-Karte** — `catObserved` in Welt-Koordinaten über der `RasenKarte`.
+  - **Manuelle Pose** — Weltkarte mit Referenz-`catObserved` gültig posierter Sensoren und beweglicher/drehbarer Trefferwolke eines zu kalibrierenden Radarsensors; Bestätigung sendet die Pose an den Sensor und löscht/ersetzt die alte Pose.
   - **Gruppe 1/2/3** — `catObserved` in relativen Koordinaten der jeweiligen
     Koordinatengruppe.
   - Farbe je `(Sensor, Ziel)`-Kombination (Radar bis 3 Ziele).
@@ -30,6 +31,8 @@ Erreichbar unter **`http://<VPS-IP>/`** (Port 80).
 | `GET`  | `/events?since=N` | neue catObserved ab Index N (für die Karten) |
 | `POST` | `/reset` | akkumulierte Ereignisse löschen |
 | `GET`  | `/map` | RasenKarte-Punkte (aus dem GitHub-Repo) |
+| `GET`  | `/manual_data` | Snapshot für die manuelle Pose-Seite (Geräte, gültige Posen, letzte Treffer) |
+| `POST` | `/manual_pose` | Manuell bestimmte Weltpose als Kommando-Sequenz an Sensor senden |
 | `GET/POST` | `/rec` | Aufnahme-Status / Pause-Append |
 | `GET`  | `/density /adata /amodel /alabels /acoverage` | Analyse-Tab (Fenster-Daten, Tracks aus der Analysierer-DB, Abdeckungs-Sektoren) |
 | `POST` | `/alabel /alabel_del /amark` | Labels + manuelle Track-Bewertung (Katze/Person/Vogel/Mäher/Insekt/Sturm/Störung/sicher keine Katze) |
@@ -55,8 +58,34 @@ gebacken).
 
 ## Deployment
 
+### Dashboard manuell auf dem VPS aktualisieren
+
 ```bash
+# auf dem VPS
 cd /opt/catfinder/dashboard
+git pull --ff-only
 docker compose up -d --build
+docker compose ps
 curl -s localhost/state | head
+```
+
+### Localizer-Container kontrolliert neu bauen/starten
+
+Der automatische Localizer bleibt unverändert im eigenen Container. Wenn du ihn
+manuell prüfen oder neu deployen willst:
+
+```bash
+# auf dem VPS
+cd /opt/catfinder/localizer
+git pull --ff-only
+docker compose up -d --build
+docker compose ps
+curl -s localhost:8080/health
+```
+
+Logs und Neustart bei Bedarf:
+
+```bash
+docker compose logs -f --tail=100
+docker compose restart
 ```

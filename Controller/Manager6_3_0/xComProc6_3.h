@@ -604,6 +604,33 @@ bool handleCommonMsg(const xMsg& m) {
         }
         return true;
       }
+      // Manuelle VPS-Pose: generisch fuer alle Geraete mit myPose.
+      // Der Sensor speichert am Ende exakt dieselbe worldPose-Struktur wie nach
+      // automatischer /localize- oder /calibrate-Antwort: Pose ist Pose.
+      if (c.cmd == cmdManualPoseX) {
+        manualPoseDraft = myPose;
+        manualPoseDraft.worldX = c.info;
+        return true;
+      }
+      if (c.cmd == cmdManualPoseY) {
+        manualPoseDraft.worldY = c.info;
+        return true;
+      }
+      if (c.cmd == cmdManualPoseHeading) {
+        manualPoseDraft.heading = (float)(((c.info % 4096) + 4096) % 4096);
+        return true;
+      }
+      if (c.cmd == cmdManualPoseMirrorCommit) {
+        manualPoseDraft.mirror = (c.info < 0) ? -1 : 1;
+        manualPoseDraft.validWorldPose = true;
+        myPose = manualPoseDraft;
+        savePose(myPose);
+        sendPoseReport();
+        sendUdpTextln("Manuelle VPS-Pose uebernommen (x=" + String(myPose.worldX) +
+                      ", y=" + String(myPose.worldY) + ", h=" + String(myPose.heading) +
+                      ", m=" + String(myPose.mirror) + ")");
+        return true;
+      }
       return false;   // andere Kommandos sind geraetespezifisch
     }
     default:
