@@ -27,6 +27,7 @@ boolean statusLightOn = false;
 #include <HTTPClient.h>
 
 #define PARAMS_PATH      "/catparams.csv"
+#define COVERAGE_PATH    "/coverage.csv"
 #define PARAMS_FETCH_TIMEOUT_MS 8000
 #define POSE_REQ_BOOT_MS 8000        // kurz nach dem Boot einmal nach Welt-Posen fragen
 
@@ -89,8 +90,11 @@ void setup() {
   ctSetDefaults();                   // einkompilierte Defaults (= DEFAULT_PARAMS im VPS)
   bool cached = ctLoadParamsFile(PARAMS_PATH);
   bool fresh  = ctFetchParams();     // VPS erreichbar -> aktuelle Parameter holen+cachen
+  bool covCached = ctLoadCoverageFile(COVERAGE_PATH);
+  bool covFresh  = ctFetchCoverage();
   sendUdpTextln(String("CatIdent bereit, Parameter: ") +
-                (fresh ? "vom VPS" : (cached ? "aus Cache" : "Defaults")));
+                (fresh ? "vom VPS" : (cached ? "aus Cache" : "Defaults")) +
+                ", Coverage: " + (covFresh ? "vom VPS" : (covCached ? "aus Cache" : "Sektoren")));
   sendSettingsReport();
   timer = millis();
 }
@@ -120,8 +124,10 @@ void handleCommand(const xMsg& m) {
   if (!getPayload(m, cmd)) return;
   if (cmd.cmd == cmdReloadParams) {  // Aktion: Modell-Parameter neu vom VPS laden
     bool ok = ctFetchParams();
-    sendUdpTextln(ok ? "CatIdent: Parameter neu geladen (" + ctParamSummary() + ")"
-                     : "CatIdent: Parameter-Reload FEHLGESCHLAGEN (VPS nicht erreichbar)");
+    bool covOk = ctFetchCoverage();
+    sendUdpTextln((ok ? "CatIdent: Parameter neu geladen (" + ctParamSummary() + ")"
+                      : "CatIdent: Parameter-Reload FEHLGESCHLAGEN") +
+                  String(covOk ? ", Coverage neu geladen" : ", Coverage nicht neu geladen"));
   }
 }
 

@@ -131,6 +131,127 @@ String ctParamSummary() {
          String((int)(CTP.max_path_mm / 1000)) + "m edge=" + String((int)CTP.edge_dist_mm);
 }
 
+
+
+// -------------------------------------------------------- Coverage-Polygone vom VPS
+static CtCoveragePoly ctCov[CT_MAX_COV_POLYS];
+static bool ctCovLoaded = false;
+
+static void ctClearCoverage() {
+  for (int i = 0; i < CT_MAX_COV_POLYS; i++) ctCov[i].used = false;
+  ctCovLoaded = false;
+}
+
+static int ctNextCsv(String& line, int& pos) {
+  int comma = line.indexOf(',', pos);
+  String tok = (comma < 0) ? line.substring(pos) : line.substring(pos, comma);
+  tok.trim();
+  pos = (comma < 0) ? line.length() : comma + 1;
+  return tok.toInt();
+}
+
+static bool ctApplyCoverageCsv(const String& body) {
+  ctClearCoverage();
+  int used = 0, start = 0;
+  while (start < (int)body.length()) {
+    int nl = body.indexOf('\n', start);
+    String line = (nl < 0) ? body.substring(start) : body.substring(start, nl);
+    line.trim();
+    if (line.length() && line[0] != '#' && used < CT_MAX_COV_POLYS) {
+      int pos = 0;
+      int sender = ctNextCsv(line, pos);
+      int sourceEnd = line.indexOf(',', pos);       // source-String ueberspringen
+      if (sourceEnd < 0) { if (nl < 0) break; start = nl + 1; continue; }
+      pos = sourceEnd + 1;
+      int n = ctNextCsv(line, pos);
+      if (sender >= 0 && sender < deviceCount && n >= 3) {
+        if (n > CT_MAX_COV_VERTS) n = CT_MAX_COV_VERTS;
+        CtCoveragePoly& p = ctCov[used];
+        p.used = true; p.sender = (uint8_t)sender; p.n = (uint8_t)n;
+        bool ok = true;
+        for (int i = 0; i < n; i++) {
+          if (pos >= (int)line.length()) { ok = false; break; }
+          p.x[i] = ctNextCsv(line, pos);
+          p.y[i] = ctNextCsv(line, pos);
+        }
+        if (ok) used++; else p.used = false;
+      }
+    }
+    if (nl < 0) break;
+    start = nl + 1;
+  }
+  ctCovLoaded = used > 0;
+  return ctCovLoaded;
+}
+
+bool ctLoadCoverageFile(const char* path) {
+  File f = LittleFS.open(path, "r");
+  if (!f) return false;
+  String body = f.readString();
+  f.close();
+  return ctApplyCoverageCsv(body);
+}
+
+bool ctFetchCoverage() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  HTTPClient http;
+  String url = "http://" + ipVPS.toString() + "/coverage_export.csv";
+  if (!http.begin(url)) return false;
+  http.setTimeout(PARAMS_FETCH_TIMEOUT_MS);
+  int code = http.GET();
+  bool ok = false;
+  if (code == 200) {
+    String body = http.getString();
+    if (ctApplyCoverageCsv(body)) {
+      File f = LittleFS.open(COVERAGE_PATH, "w");
+      if (f) { f.print(body); f.close(); }
+      ok = true;
+    }
+  }
+  http.end();
+  return ok;
+}
+
+static bool ctPointInCoveragePoly(const CtCoveragePoly& p, int32_t wx, int32_t wy) {
+  bool inside = false;
+  int j = p.n - 1;
+  for (int i = 0; i < p.n; i++) {
+    int32_t yi = p.y[i], yj = p.y[j];
+    if ((yi > wy) != (yj > wy)) {
+      double xint = (double)(p.x[j] - p.x[i]) * (double)(wy - yi) /
+                    (double)((yj - yi) ? (yj - yi) : 1) + (double)p.x[i];
+      if ((double)wx < xint) inside = !inside;
+    }
+    j = i;
+  }
+  return inside;
+}
+
+static float ctDistToSeg(int32_t px, int32_t py, int32_t ax, int32_t ay, int32_t bx, int32_t by) {
+  float vx = (float)(bx - ax), vy = (float)(by - ay);
+  float wx = (float)(px - ax), wy = (float)(py - ay);
+  float den = vx * vx + vy * vy;
+  float t = den > 0 ? (wx * vx + wy * vy) / den : 0.0f;
+  if (t < 0) t = 0; if (t > 1) t = 1;
+  float dx = (float)ax + t * vx - px, dy = (float)ay + t * vy - py;
+  return sqrtf(dx * dx + dy * dy);
+}
+
+static float ctPolygonDepth(int32_t wx, int32_t wy) {
+  float best = -1.0f;
+  for (int k = 0; k < CT_MAX_COV_POLYS; k++) {
+    CtCoveragePoly& p = ctCov[k];
+    if (!p.used || !ctPointInCoveragePoly(p, wx, wy)) continue;
+    float d = 1e9f;
+    for (int i = 0; i < p.n; i++) {
+      int j = (i + 1) % p.n;
+      d = min(d, ctDistToSeg(wx, wy, p.x[i], p.y[i], p.x[j], p.y[j]));
+    }
+    if (d > best) best = d;
+  }
+  return best;
+}
+
 // ------------------------------------------------- Sensor-Posen & Erfassungsrand
 // Sektoren = covL/covR/covRange aus device[] + Welt-Pose (poseReport, mitgehoert).
 // ctUnionDepth: wie tief liegt ein Welt-Punkt in der GESAMT-Abdeckung (Vereinigung
@@ -146,12 +267,14 @@ void ctSetPose(uint8_t sender, const worldPosePayload& wp) {
 }
 
 static bool ctEdgeActive() {
+  if (ctCovLoaded) return true;
   for (int i = 0; i < deviceCount; i++)
     if (device[i].covRangeMm > 0 && ctPose[i].validWorldPose) return true;
   return false;
 }
 
 static float ctUnionDepth(int32_t wx, int32_t wy) {
+  if (ctCovLoaded) return ctPolygonDepth(wx, wy);
   float best = -1.0f;
   for (int i = 0; i < deviceCount; i++) {
     if (device[i].covRangeMm == 0 || !ctPose[i].validWorldPose) continue;
