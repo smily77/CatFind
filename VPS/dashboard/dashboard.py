@@ -526,7 +526,11 @@ def manual_data():
             }
         evs = list(_events[-MAX_EVENTS:])
         poses = dict(_poses)
-    calibratable = [int(sid) for sid, d in devs.items() if "Radar" in d.get("type", "")]
+    # Manuell kalibrierbar = die HLK-Radarmodule (Dome/Mini_Dome/Compact_Dome).
+    # Sie tragen in xComDef den Typ "HLK" (nicht "Radar") und koennen sich – anders
+    # als der Lidar – nicht selbst per VPS lokalisieren, brauchen also eine manuelle
+    # oder kopierte Welt-Pose.
+    calibratable = [int(sid) for sid, d in devs.items() if "HLK" in d.get("type", "")]
     return jsonify(now=now, devices=devs, poses={str(k): v for k, v in poses.items()},
                    events=evs, calibratable=calibratable)
 
