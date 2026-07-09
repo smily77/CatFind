@@ -142,6 +142,13 @@ static void ctClearCoverage() {
   ctCovLoaded = false;
 }
 
+// Anzahl aktuell geladener Erfassungs-Polygone (fuer Status-/Debug-Meldungen).
+int ctCoverageCount() {
+  int n = 0;
+  for (int i = 0; i < CT_MAX_COV_POLYS; i++) if (ctCov[i].used) n++;
+  return n;
+}
+
 static int ctNextCsv(String& line, int& pos) {
   int comma = line.indexOf(',', pos);
   String tok = (comma < 0) ? line.substring(pos) : line.substring(pos, comma);

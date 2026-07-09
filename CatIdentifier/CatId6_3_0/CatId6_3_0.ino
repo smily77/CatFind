@@ -94,7 +94,8 @@ void setup() {
   bool covFresh  = ctFetchCoverage();
   sendUdpTextln(String("CatIdent bereit, Parameter: ") +
                 (fresh ? "vom VPS" : (cached ? "aus Cache" : "Defaults")) +
-                ", Coverage: " + (covFresh ? "vom VPS" : (covCached ? "aus Cache" : "Sektoren")));
+                ", Coverage: " + (covFresh ? "vom VPS" : (covCached ? "aus Cache" : "Sektoren")) +
+                " (" + String(ctCoverageCount()) + " Polygone)");
   sendSettingsReport();
   timer = millis();
 }
@@ -127,7 +128,8 @@ void handleCommand(const xMsg& m) {
     bool covOk = ctFetchCoverage();
     sendUdpTextln((ok ? "CatIdent: Parameter neu geladen (" + ctParamSummary() + ")"
                       : "CatIdent: Parameter-Reload FEHLGESCHLAGEN") +
-                  String(covOk ? ", Coverage neu geladen" : ", Coverage nicht neu geladen"));
+                  String(covOk ? ", Coverage neu geladen (" + String(ctCoverageCount()) + " Polygone)"
+                               : ", Coverage nicht neu geladen"));
   }
 }
 
