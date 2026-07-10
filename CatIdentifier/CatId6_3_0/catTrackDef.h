@@ -33,7 +33,10 @@ struct CtTrack {
   int32_t  x0, y0, xLast, yLast;
   uint32_t n;
   float    path;
-  float    birthDepth;                 // ctUnionDepth bei Geburt (-2 = Randlogik inaktiv)
+  bool     birthValid;                 // Randlogik war bei Geburt aktiv (Abdeckung bekannt)
+  float    birthDist;                  // SIGNIERTE Distanz zur Abdeckungsgrenze bei Geburt:
+                                       // >0 = innen (Tiefe), <0 = aussen (Abstand) - wie die
+                                       // VPS-_edge_dist-Logik: Bonus bei |dist|<=edge_dist_mm
   uint32_t senderMask;
   double   rt[CT_RING];
   int32_t  rx[CT_RING], ry[CT_RING];

@@ -72,7 +72,7 @@ void setup() {
   initPixel();
   allPixel(0x000000);
 
-  setUpWifi(device[ID].IP);          // statische IP .184; blinkt rot beim Verbinden
+  setUpWifi(device[ID].IP);          // LidarC1: device-IP 0 -> DHCP; blinkt rot beim Verbinden
   initMcUdp();
   initUnicast();
   initText2Udp();
