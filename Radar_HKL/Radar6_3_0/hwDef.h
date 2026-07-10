@@ -38,7 +38,7 @@
   #define S2_RX radar
   #define S2_baud 256000
 
-  #define periodeForHB 500
+  #define periodeForHB 5000
   #define statusLightDuration 10
   #define deadZone 500
 

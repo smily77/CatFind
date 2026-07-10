@@ -329,7 +329,7 @@ function anaFit(){
   (mapPoints||[]).forEach(p=>{ xs.push(p[0]*1000); ys.push(p[1]*1000); });
   (ANA.data?.events||[]).forEach(e=>{ if(e.wv===1){ xs.push(e.wx); ys.push(e.wy); } });
   if(xs.length < 2){ ANA.view = {cx:0, cy:5000, s:0.05}; return; }
-  const minx=Math.min(...xs), maxx=Math.max(...xs), miny=Math.min(...ys), maxy=Math.max(...ys);
+  const [minx,maxx]=minMaxArr(xs), [miny,maxy]=minMaxArr(ys);   // minMaxArr aus index.html (Spread-Limit)
   const cv = anaEl("anaMap"), W = cv.clientWidth, H = cv.clientHeight;
   const s = Math.min(W/Math.max(maxx-minx,1000), H/Math.max(maxy-miny,1000)) * 0.9;
   ANA.view = {cx:(minx+maxx)/2, cy:(miny+maxy)/2, s};
@@ -734,10 +734,12 @@ async function anaAddLabel(){
   const label = anaEl("anaLblSel").value;
   const sender = +anaEl("anaLblSender").value;
   const r = ANA.sel || ANA.win;
-  await anaJson("/alabel",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({t0:r.t0, t1:r.t1, sender, label})});
-  ANA.sel = null;
-  anaFetchWindow();
+  try{
+    await anaJson("/alabel",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({t0:r.t0, t1:r.t1, sender, label})});
+    ANA.sel = null;
+    anaFetchWindow();
+  }catch(e){ alert("Label setzen fehlgeschlagen: " + e.message); }
 }
 
 
@@ -749,7 +751,8 @@ async function anaCoverageLearn(){
   try{
     const prev = await anaJson("/coverage_learn", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(qs)});
     const q = prev.quality || {};
-    if(!confirm(`Coverage-Vorschau #${sid}: ${prev.polygon.length} Eckpunkte, ${q.point_count||prev.point_count} Punkte, Fläche ${(q.area_mm2/1e6).toFixed(1)} m². Speichern?`)) return;
+    const area = (typeof q.area_mm2 === "number") ? (q.area_mm2/1e6).toFixed(1)+" m²" : "?";
+    if(!confirm(`Coverage-Vorschau #${sid}: ${prev.polygon.length} Eckpunkte, ${q.point_count||prev.point_count} Punkte, Fläche ${area}. Speichern?`)) return;
     qs.save = true;
     await anaJson("/coverage_learn", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(qs)});
     ANA.coverage = await anaJson("/acoverage");

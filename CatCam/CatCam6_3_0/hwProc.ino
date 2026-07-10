@@ -2,7 +2,8 @@
 // die von xComProc erwarteten Kommentar-Ausgaben.
 
 void heardBeat() {
-  if ((timer + periodeForHB) < millis()) {
+  // millis()-Differenz statt Summenvergleich: wrap-sicher (Ueberlauf nach 49,7 Tagen)
+  if (millis() - timer >= periodeForHB) {
     hbPayload hb;
     hb.ip = getLastIpByte();
     hb.HBperiode = periodeForHB;

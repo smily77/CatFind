@@ -124,6 +124,9 @@ uint8_t getLastIpByte() {
   return ip[3];
 }
 
+#ifndef NTP_WAIT_MS
+#define NTP_WAIT_MS 15000   // max. Wartezeit auf NTP - vorher Endlosschleife ohne OTA-Ausweg:
+#endif                      // Internet-Ausfall beim Boot liess das Geraet dauerhaft haengen
 void setUpTime() {
   writelnComment("set up Time");
   #ifdef containLed
@@ -131,9 +134,9 @@ void setUpTime() {
      else setPixel(minPix,0xFFFF00);
   #endif
   configTzTime(time_zone, ntpServer1, ntpServer2);
-  while(!getLocalTime(&timeinfo)){
-    delay(50);
-  }
+  unsigned long t0 = millis();
+  while (!getLocalTime(&timeinfo, 200) && millis() - t0 < NTP_WAIT_MS) delay(50);
+  if (!getLocalTime(&timeinfo, 200)) writelnComment("NTP nicht erreichbar - weiter ohne Uhrzeit");
   #ifdef containLed
     if (maxPix > pixelNum) allPixel(0x000000);
       else setPixel(minPix,0x000000);
@@ -180,6 +183,7 @@ bool parseXMsg(AsyncUDPPacket &packet, xMsg &m) {
   if (packet.length() < sizeof(msgHeader)) return false;
   memcpy(&m.header, packet.data(), sizeof(msgHeader));
   if (m.header.version != XCOM_VERSION) return false;
+  if (m.header.sender >= deviceCount) return false;  // sender indexiert device[] -> OOB-Schutz
   if (m.header.payloadLen > maxPayloadLen) return false;
   if (packet.length() != sizeof(msgHeader) + m.header.payloadLen) return false;
   if (m.header.payloadLen) memcpy(m.payload, packet.data() + sizeof(msgHeader), m.header.payloadLen);
@@ -203,6 +207,26 @@ bool getHbPayload(const xMsg &m, hbPayload &out) {
   return true;
 }
 
+// Optionale Multicast-Empfangsqueue: definiert ein Geraet VOR dem Include
+// MC_QUEUE_LEN (z.B. der Manager als Gateway), sammelt der AsyncUDP-Callback
+// die Nachrichten in einem SPSC-Ringpuffer statt im Single-Buffer lastMcMsg.
+// Der Callback laeuft in einem eigenen Task und fuellt die Queue auch WAEHREND
+// der Sketch blockiert (z.B. HTTP-POST an den VPS) - vorher gingen dabei
+// regelmaessig Events verloren (nur EIN Puffer + Flag).
+#ifdef MC_QUEUE_LEN
+static xMsg mcQueue[MC_QUEUE_LEN];
+static volatile uint8_t  mcQHead = 0, mcQTail = 0;   // head: Callback schreibt, tail: loop liest
+static volatile uint16_t mcQDropped = 0;             // Queue voll -> Paket verworfen (Zaehler)
+
+bool mcQueuePop(xMsg& out) {
+  if (mcQTail == mcQHead) return false;
+  out = mcQueue[mcQTail];
+  mcQTail = (uint8_t)((mcQTail + 1) % MC_QUEUE_LEN);
+  return true;
+}
+uint16_t mcQueueDropped() { uint16_t d = mcQDropped; mcQDropped = 0; return d; }
+#endif
+
 //Udp
 void initMcUdp() {
   writelnComment("init UdP MC");
@@ -210,14 +234,21 @@ void initMcUdp() {
     // Callback registrieren: wird automatisch aufgerufen, sobald ein Paket eintrifft
     udpMc.onPacket([](AsyncUDPPacket packet) {
       xMsg m;
-      if (!parseXMsg(packet, m)) return; // falsche Version oder Länge -> ignorieren
+      if (!parseXMsg(packet, m)) return; // falsche Version/Länge/sender -> ignorieren
       if (m.header.msgCode == HB) {
         hbPayload hb;
         if (getHbPayload(m, hb)) device[m.header.sender].IP = hb.ip;
       }
-      lastMcMsg = m;
-      // Flag setzen, damit der Sketch das abrufen kann
-      mcDataReceived = true;
+      #ifdef MC_QUEUE_LEN
+        uint8_t nh = (uint8_t)((mcQHead + 1) % MC_QUEUE_LEN);
+        if (nh == mcQTail) { mcQDropped++; return; }     // Queue voll
+        mcQueue[mcQHead] = m;
+        mcQHead = nh;
+      #else
+        lastMcMsg = m;
+        // Flag setzen, damit der Sketch das abrufen kann
+        mcDataReceived = true;
+      #endif
     });
   } else {
     // Falls listenMulticast fehlgeschlagen ist, kann man hier Debug machen
@@ -319,7 +350,8 @@ void setUpOTA() {
       String type;
       if (ArduinoOTA.getCommand() == U_FLASH)
         type = "sketch";
-         type = "filesystem";
+      else
+        type = "filesystem";
       Serial.println("Start updating " + type);
       #ifdef containLed
         setPixel(minPix,0x0000FF);
@@ -644,6 +676,17 @@ bool handleCommonMsg(const xMsg& m) {
 // Fragt per poseRequest (Broadcast) und wartet kurz auf ein poseReport eines
 // Gruppenmitglieds (gleiche group) mit validWorldPose. true = Pose uebernommen+gespeichert.
 //---------------------------------------------------------------------------------------
+// Naechste Multicast-Nachricht holen - funktioniert im Queue- UND im Flag-Modus.
+static bool mcFetch(xMsg& m) {
+#ifdef MC_QUEUE_LEN
+  return mcQueuePop(m);
+#else
+  if (!mcDataReceived) return false;
+  m = lastMcMsg; mcDataReceived = false;
+  return true;
+#endif
+}
+
 bool copyPoseFromGroup(unsigned long waitMs) {
   uint8_t myGroup = device[ID].group;
   if (myGroup == groupNone) { sendUdpTextln("Pose kopieren: keine Gruppe"); return false; }
@@ -651,8 +694,8 @@ bool copyPoseFromGroup(unsigned long waitMs) {
   unsigned long t0 = millis();
   while (millis() - t0 < waitMs) {
     ArduinoOTA.handle();
-    if (mcDataReceived) {
-      xMsg m = lastMcMsg; mcDataReceived = false;
+    xMsg m;
+    if (mcFetch(m)) {
       if (m.header.msgCode == poseReport && m.header.sender != ID &&
           device[m.header.sender].group == myGroup) {
         worldPosePayload wp;
@@ -888,6 +931,7 @@ bool loadNoShot(const char* path) {
   if (!f) return false;
   nsRingStart[0] = 0;
   bool ringHasPts = false;
+  uint16_t skipped = 0;                             // Punkte ueber dem Puffer-Limit
   nsMinX = nsMinY = 0x7FFFFFFF; nsMaxX = nsMaxY = -0x7FFFFFFF;
   while (f.available()) {
     String line = f.readStringUntil('\n');
@@ -907,11 +951,22 @@ bool loadNoShot(const char* path) {
       nsX[nsPtCount] = x; nsY[nsPtCount] = y; nsPtCount++; ringHasPts = true;
       if (x < nsMinX) nsMinX = x; if (x > nsMaxX) nsMaxX = x;
       if (y < nsMinY) nsMinY = y; if (y > nsMaxY) nsMaxY = y;
+    } else {
+      skipped++;                                    // NICHT still abschneiden (s.u.)
     }
   }
   f.close();
   if (ringHasPts && nsRingCount < MAX_NOSHOT_RINGS) {  // letzten (nicht leerzeilen-) Ring schliessen
     nsRingCount++; nsRingStart[nsRingCount] = nsPtCount;
+  }
+  if (skipped) {
+    // Ein still abgeschnittenes Polygon waere ein FALSCHES Polygon. Lieber laut
+    // scheitern (fail-open: ungefiltert melden) als leise falsch filtern.
+    sendUdpTextln("Karte " + String(path) + ": zu viele Punkte (" +
+                  String(nsPtCount + skipped) + " > " + String(MAX_NOSHOT_PTS) +
+                  ") - Karte IGNORIERT");
+    noShotLoaded = false; nsPtCount = 0; nsRingCount = 0;
+    return false;
   }
   noShotLoaded = (nsRingCount > 0 && nsPtCount >= 3);
   return noShotLoaded;
@@ -954,6 +1009,8 @@ static bool waitForUc(uint8_t codeWanted, xMsg& out, unsigned long budget) {
     if (ucDataReceived) {
       out = lastUcMsg; ucDataReceived = false;
       if (out.header.msgCode == codeWanted) return true;
+      handleCommonMsg(out);   // generische Nachrichten (settingsRequest/cmdSetSetting/...)
+                              // waehrend des Wartens nicht einfach verwerfen
     }
     delay(1);
   }
