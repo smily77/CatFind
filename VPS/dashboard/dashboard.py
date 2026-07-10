@@ -58,7 +58,7 @@ der Geräte per /ingest ("poses", aus poseReport). Daraus baut catmodel.
 build_coverage_geo die Abdeckungs-Sektoren — nach dem Versetzen eines Sensors
 stimmt der Bereich sofort wieder. Fallback ohne Posen: empirische Abdeckung.
 """
-import os, re, time, json, base64, sqlite3, threading, hashlib, traceback, urllib.request
+import os, re, time, json, base64, sqlite3, threading, hashlib, traceback, urllib.request, zoneinfo
 from datetime import datetime
 from collections import deque, OrderedDict
 from flask import Flask, request, jsonify, send_from_directory, Response
@@ -73,6 +73,11 @@ HB_WINDOW_S  = int(os.environ.get("HB_WINDOW_S", "180"))    # "aktiv" = HB in de
 DB_PATH      = os.environ.get("DB_PATH", "/data/catfinder.db")
 PARAMS_PATH  = os.environ.get("PARAMS_PATH", "/data/model_params.json")
 PHOTOS_DIR   = os.environ.get("PHOTOS_DIR", "/data/photos")
+LOCAL_TZ     = os.environ.get("LOCAL_TZ", "Europe/Zurich")  # für die täglichen Bilder-Sperrzeiten
+try:
+    _TZ = zoneinfo.ZoneInfo(LOCAL_TZ)
+except Exception:                                            # noqa: BLE001
+    _TZ = None                                               # Fallback: OS-lokale Zeit
 XCOMDEF_URL  = os.environ.get(
     "XCOMDEF_URL",
     "https://raw.githubusercontent.com/smily77/CatFind/main/Controller/Manager6_3_0/xComDef6_3.h")
@@ -1317,6 +1322,109 @@ def avalidate():
 
 # ---------------------------------------------------------------- Fotos (Cat Cam)
 
+def _local_minute_of_day(epoch):
+    # Minuten seit lokaler Mitternacht (DST-korrekt via zoneinfo, sonst OS-lokal).
+    if _TZ is not None:
+        lt = datetime.fromtimestamp(epoch, _TZ)
+        return lt.hour * 60 + lt.minute
+    lt = time.localtime(epoch)
+    return lt.tm_hour * 60 + lt.tm_min
+
+
+def _hhmm_to_min(s):
+    h, m = str(s).split(":")
+    return int(h) * 60 + int(m)
+
+
+def _photo_windows():
+    # Liste der täglichen Bilder-Sperrzeiten [{"start":"HH:MM","end":"HH:MM"}].
+    with _db_lock:
+        raw = _meta_get("photo_block")
+    if not raw:
+        return []
+    try:
+        w = json.loads(raw)
+        return w if isinstance(w, list) else []
+    except Exception:                                        # noqa: BLE001
+        return []
+
+
+def _photo_blocked_window(epoch, windows=None):
+    # Liefert das zutreffende Sperrfenster (oder None). end<=start = über Mitternacht.
+    if windows is None:
+        windows = _photo_windows()
+    if not windows:
+        return None
+    mod = _local_minute_of_day(epoch)
+    for w in windows:
+        try:
+            a, b = _hhmm_to_min(w["start"]), _hhmm_to_min(w["end"])
+        except Exception:                                    # noqa: BLE001
+            continue
+        if a == b:
+            continue
+        if (a <= mod < b) if a < b else (mod >= a or mod < b):
+            return w
+    return None
+
+
+@app.get("/photo_block")
+def photo_block_get():
+    # Aktuelle Sperrzeiten + lokale Uhrzeit + ob gerade gesperrt (für die UI).
+    wins = _photo_windows()
+    now = time.time()
+    mod = _local_minute_of_day(now)
+    return jsonify(windows=wins, tz=LOCAL_TZ,
+                   now_local="%02d:%02d" % (mod // 60, mod % 60),
+                   blocked=bool(_photo_blocked_window(now, wins)))
+
+
+@app.post("/photo_block")
+def photo_block_set():
+    # Ersetzt die komplette Sperrzeiten-Liste. Body: {"windows":[{start,end,note?}]}.
+    d = request.get_json(force=True, silent=True) or {}
+    raw = d.get("windows", [])
+    out = []
+    for w in raw if isinstance(raw, list) else []:
+        try:
+            a, b = _hhmm_to_min(w["start"]), _hhmm_to_min(w["end"])
+        except Exception:                                    # noqa: BLE001
+            return jsonify(error="ungültige Zeit (HH:MM erwartet)"), 400
+        if not (0 <= a < 1440 and 0 <= b < 1440):
+            return jsonify(error="Zeit außerhalb 00:00–23:59"), 400
+        item = {"start": "%02d:%02d" % (a // 60, a % 60),
+                "end": "%02d:%02d" % (b // 60, b % 60)}
+        note = str(w.get("note", ""))[:60]
+        if note:
+            item["note"] = note
+        out.append(item)
+    with _db_lock:
+        _meta_set("photo_block", json.dumps(out))
+        _db.commit()
+    _sysmsg("Bilder-Sperrzeiten aktualisiert: " +
+            (", ".join("%s-%s" % (w["start"], w["end"]) for w in out) or "keine"))
+    return jsonify(ok=True, windows=out)
+
+
+@app.post("/photo_del")
+def photo_del():
+    # Einzelnes Foto löschen: DB-Eintrag UND Datei entfernen.
+    d = request.get_json(force=True, silent=True) or {}
+    pid = int(d.get("id", -1))
+    with _db_lock:
+        row = _db.execute("SELECT file FROM photos WHERE id=?", (pid,)).fetchone()
+        if row:
+            _db.execute("DELETE FROM photos WHERE id=?", (pid,))
+            _db.commit()
+    if not row:
+        return jsonify(error="unbekannt"), 404
+    try:
+        os.remove(os.path.join(PHOTOS_DIR, row[0]))
+    except OSError:
+        pass
+    return jsonify(ok=True)
+
+
 @app.post("/photo")
 def photo_upload():
     # Cat Cam laedt ein Foto hoch: Query-Parameter = Metadaten, Body = Base64-JPEG
@@ -1329,13 +1437,16 @@ def photo_upload():
     score = request.args.get("score", type=int, default=0)
     x = request.args.get("x", type=int, default=0)
     y = request.args.get("y", type=int, default=0)
+    now = time.time()
+    blk = _photo_blocked_window(now)
+    if blk:                              # tägliche Sperrzeit (z. B. Mäher) -> verwerfen
+        return jsonify(ok=True, blocked=True, window=blk)
     try:
         raw = base64.b64decode(request.get_data(as_text=True).strip(), validate=False)
     except Exception:                                        # noqa: BLE001
         return jsonify(error="Base64 ungueltig"), 400
     if len(raw) < 100 or raw[:2] != b"\xff\xd8":
         return jsonify(error="kein JPEG"), 400
-    now = time.time()
     fname = "%d_%s.jpg" % (int(now * 1000), re.sub(r"[^A-Za-z0-9]", "", trig) or "x")
     with open(os.path.join(PHOTOS_DIR, fname), "wb") as f:
         f.write(raw)
@@ -1447,11 +1558,17 @@ def aparams_set():
 
 @app.get("/alabels")
 def alabels():
-    t0, t1 = _win_args(default_all=True)
-    with _db_lock:
-        rows = _db.execute(
-            "SELECT id,t0,t1,sender,label,note FROM labels "
-            "WHERE t1>=? AND t0<=? ORDER BY t0", (t0, t1)).fetchall()
+    # all=1 -> ALLE Labels (zeitfensterunabhängig, für die globale Verwaltung).
+    if request.args.get("all"):
+        with _db_lock:
+            rows = _db.execute("SELECT id,t0,t1,sender,label,note FROM labels "
+                               "ORDER BY t0").fetchall()
+    else:
+        t0, t1 = _win_args(default_all=True)
+        with _db_lock:
+            rows = _db.execute(
+                "SELECT id,t0,t1,sender,label,note FROM labels "
+                "WHERE t1>=? AND t0<=? ORDER BY t0", (t0, t1)).fetchall()
     return jsonify(labels=[{"id": r[0], "t0": r[1], "t1": r[2], "sender": r[3],
                             "label": r[4], "note": r[5]} for r in rows])
 
