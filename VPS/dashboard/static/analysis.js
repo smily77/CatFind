@@ -704,17 +704,28 @@ function renderTracks(){
   });
 }
 
+// alle Labels der ganzen Aufnahme (zeitfensterunabhängig) für die Verwaltung laden
+async function anaLoadAllLabels(){
+  try{ ANA.allLabels = (await anaJson("/alabels?all=1")).labels; }
+  catch(e){ ANA.allLabels = []; }
+}
 function renderLabels(){
   const el = anaEl("anaLabels"); if(!el) return;
-  el.innerHTML = (ANA.labels||[]).map(l=>
+  const allChk = anaEl("anaLblAll");
+  const showAll = allChk && allChk.checked;
+  const list = showAll ? (ANA.allLabels||[]) : (ANA.labels||[]);
+  el.innerHTML = list.map(l=>
     `<div class="anaLbl"><i style="background:${LBL_COLORS[l.label]||'#999'}"></i>
      ${escapeHtml(l.label)} <small>${fmtDT(l.t0)} · ${fmtDur(l.t1-l.t0)}${l.sender>=0?` · #${l.sender}`:''}</small>
-     <button data-id="${l.id}">✕</button></div>`).join("") || "<div class='hint'>— keine Labels im Fenster —</div>";
+     <button data-id="${l.id}">✕</button></div>`).join("")
+     || (showAll ? "<div class='hint'>— keine Labels vorhanden —</div>"
+                 : "<div class='hint'>— keine Labels im Fenster —</div>");
   el.querySelectorAll(".anaLbl button").forEach(b=>{
     b.onclick = async ()=>{
       await anaJson("/alabel_del",{method:"POST",headers:{"Content-Type":"application/json"},
                     body:JSON.stringify({id:+b.dataset.id})});
-      anaFetchWindow();
+      if(showAll) await anaLoadAllLabels();
+      anaFetchWindow();        // aktualisiert Fenster-Labels + Zeitleiste; renderLabels läuft dabei erneut
     };
   });
 }
@@ -866,6 +877,10 @@ async function anaShow(){
     anaEl("anaBCovLearn").onclick = anaCoverageLearn;
     anaEl("anaBCovDel").onclick = anaCoverageDelete;
     anaEl("anaBLabel").onclick = anaAddLabel;
+    anaEl("anaLblAll").onchange = async ()=>{
+      if(anaEl("anaLblAll").checked) await anaLoadAllLabels();
+      renderLabels();
+    };
     anaEl("anaLblSel").innerHTML = Object.keys(LBL_COLORS).map(l=>`<option>${l}</option>`).join("");
     window.addEventListener("resize", ()=>{ if(view==="ana"){ drawTimeline(); drawAnaMap(); } });
     setInterval(async ()=>{

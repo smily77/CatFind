@@ -35,12 +35,22 @@
   .hint { color:#666; font-size:11px; padding:4px 12px; }
   /* ---- Bilder-Tab (Cat Cam) ---- */
   #pics { height:100%; overflow:auto; position:relative; }
+  #picsBar { display:flex; align-items:center; gap:10px; padding:8px 12px 0; }
+  #picBlkStatus.blk { color:#e6a; }
   #picsGrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; padding:10px; }
-  .picCard { background:#16161b; border:1px solid #333; border-radius:8px; overflow:hidden; cursor:pointer; }
+  .picCard { background:#16161b; border:1px solid #333; border-radius:8px; overflow:hidden; cursor:pointer; position:relative; }
   .picCard img { width:100%; aspect-ratio:1; object-fit:cover; display:block; background:#000; }
   .picCard .cap { font-size:11px; color:#aab; padding:5px 8px; }
   .picCard .cap b { color:#ddd; }
   .picCard .trk { color:#7fe0a4; }
+  .picCard .del { position:absolute; top:5px; right:5px; width:26px; height:26px; border:none; border-radius:50%; background:#000a; color:#f88; font-size:15px; line-height:26px; cursor:pointer; padding:0; display:none; }
+  .picCard:hover .del { display:block; }
+  #picBlkOv { position:fixed; inset:0; background:#000c; display:flex; align-items:center; justify-content:center; z-index:9; }
+  #picBlkBox { background:#1a1a22; border:1px solid #444; border-radius:8px; padding:14px; width:min(460px,92vw); max-height:88vh; overflow:auto; }
+  .picBlkRow { display:flex; align-items:center; gap:8px; margin:6px 0; }
+  .picBlkRow input[type=time] { background:#111; color:#ddd; border:1px solid #444; border-radius:4px; padding:3px 5px; }
+  .picBlkRow input.note { flex:1; background:#111; color:#ddd; border:1px solid #444; border-radius:4px; padding:3px 6px; }
+  .picBlkRow button { background:#302; color:#f88; border:1px solid #a55; border-radius:4px; cursor:pointer; padding:2px 8px; }
   #picsOv { position:fixed; inset:0; background:#000c; display:flex; align-items:center; justify-content:center; z-index:9; }
   #picsBox { background:#1a1a22; border:1px solid #444; border-radius:8px; padding:10px; max-width:92vw; max-height:92vh; display:flex; flex-direction:column; gap:8px; }
   #picsBox img { max-width:88vw; max-height:75vh; object-fit:contain; }
@@ -141,12 +151,30 @@
     <div id="list"></div>
     <div id="ctrl" style="display:none"></div>
     <div id="pics" style="display:none">
+      <div id="picsBar">
+        <span class="hint" id="picBlkStatus">—</span>
+        <button class="tab" id="picBlkEdit" title="Tägliche Zeitfenster festlegen, in denen keine Bilder gespeichert werden (z. B. während der Mäher läuft)">Sperrzeiten…</button>
+      </div>
       <div class="hint" id="picsInfo">— lädt —</div>
       <div id="picsGrid"></div>
       <div id="picsOv" style="display:none"><div id="picsBox">
         <img id="picsBig" alt="">
         <div id="picsMeta"></div>
-        <button class="tab" id="picsClose">Schliessen</button>
+        <div style="display:flex;gap:8px;justify-content:center;margin-top:6px">
+          <button class="tab" id="picsDel" style="color:#e88;border-color:#a55">Bild löschen</button>
+          <button class="tab" id="picsClose">Schliessen</button>
+        </div>
+      </div></div>
+      <div id="picBlkOv" style="display:none"><div id="picBlkBox">
+        <h3 style="margin:0 0 4px">Bilder-Sperrzeiten</h3>
+        <div class="hint" style="margin-bottom:8px">In diesen täglichen Zeitfenstern (Ortszeit <span id="picBlkTz"></span>) werden hochgeladene Bilder <b>verworfen</b> — z. B. während der Mäher läuft. Die Kamera läuft normal weiter.</div>
+        <div id="picBlkRows"></div>
+        <button class="tab" id="picBlkAdd" style="margin-top:6px">+ Zeitfenster</button>
+        <div class="hint" id="picBlkMsg" style="margin-top:6px"></div>
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <button class="act" style="width:auto" id="picBlkSave">Speichern</button>
+          <button class="tab" id="picBlkClose">Schliessen</button>
+        </div>
       </div></div>
     </div>
     <canvas id="cv" style="display:none"></canvas>
@@ -200,7 +228,7 @@
         <div id="anaSide">
           <h2>Sensoren (Fenster)</h2><div id="anaSensors"></div>
           <h2>Tracks (Modell)</h2><div id="anaTracks"></div>
-          <h2>Labels (Fenster)</h2><div id="anaLabels"></div>
+          <h2>Labels <label style="font-weight:normal;font-size:12px;color:#aab" title="Alle Labels der ganzen Aufnahme zeigen (nicht nur im sichtbaren Zeitfenster) — zum Finden und Löschen"><input type="checkbox" id="anaLblAll"> alle</label></h2><div id="anaLabels"></div>
         </div>
       </div>
       <div id="anaParamsOv" style="display:none">
@@ -259,7 +287,9 @@ function setView(v,b){
 
 // ---- Bilder-Tab: Fotos der Cat Cam (Ausloeser: catDetected / eigene KI / manuell)
 const PIC_TRIG = {catDetected:"🚨 CatDetected", ki:"🐱 Kamera-KI", manuell:"📷 manuell"};
+let picOpenId = null;                       // gerade in der Grossansicht offenes Foto
 async function loadPics(){
+  loadBlock();
   try{
     const r = await (await fetch("/photos?limit=200")).json();
     document.getElementById("picsInfo").textContent =
@@ -268,25 +298,95 @@ async function loadPics(){
       const dt = new Date(p.t*1000).toLocaleString("de-CH");
       const trk = p.track!=null ? ` · <span class="trk">Track Nr ${p.track}${p.track_cat?" 🐱":""}</span>` : "";
       return `<div class="picCard" data-id="${p.id}" data-meta="${dt} · ${PIC_TRIG[p.trigger]||p.trigger}${p.score?` · Score ${p.score}`:""}${p.track!=null?` · Track Nr ${p.track}`:""}">
+        <button class="del" title="Bild löschen">✕</button>
         <img loading="lazy" src="/photo/${p.id}" alt="">
         <div class="cap"><b>${dt}</b><br>${PIC_TRIG[p.trigger]||p.trigger}${p.score?` · Score ${p.score}`:""}${trk}</div></div>`;
     }).join("");
     document.querySelectorAll(".picCard").forEach(c=>{
       c.onclick = ()=>{
+        picOpenId = c.dataset.id;
         document.getElementById("picsBig").src = "/photo/"+c.dataset.id;
         document.getElementById("picsMeta").textContent = c.dataset.meta;
         document.getElementById("picsOv").style.display = "flex";
       };
+      c.querySelector(".del").onclick = (e)=>{ e.stopPropagation(); delPhoto(c.dataset.id); };
     });
-    document.getElementById("picsClose").onclick =
-      ()=> document.getElementById("picsOv").style.display = "none";
-    document.getElementById("picsOv").onclick = (e)=>{
-      if(e.target.id==="picsOv") document.getElementById("picsOv").style.display = "none";
-    };
   }catch(e){
     document.getElementById("picsInfo").textContent = "Fehler: " + e.message;
   }
 }
+async function delPhoto(id){
+  if(!confirm("Dieses Bild endgültig löschen?")) return;
+  try{
+    await fetch("/photo_del",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id:+id})});
+    document.getElementById("picsOv").style.display = "none";
+    loadPics();
+  }catch(e){ alert("Löschen fehlgeschlagen: "+e.message); }
+}
+document.getElementById("picsClose").onclick =
+  ()=> document.getElementById("picsOv").style.display = "none";
+document.getElementById("picsOv").onclick = (e)=>{
+  if(e.target.id==="picsOv") document.getElementById("picsOv").style.display = "none";
+};
+document.getElementById("picsDel").onclick = ()=>{ if(picOpenId!=null) delPhoto(picOpenId); };
+
+// ---- Bilder-Sperrzeiten (täglich, z. B. während der Mäher läuft) ----
+let blkWins = [], blkTz = "";
+async function loadBlock(){
+  try{
+    const r = await (await fetch("/photo_block")).json();
+    blkWins = r.windows || [];
+    blkTz = r.tz || "";
+    const el = document.getElementById("picBlkStatus");
+    const list = blkWins.map(w=>`${w.start}–${w.end}`).join(", ");
+    el.textContent = blkWins.length
+      ? `Sperrzeiten: ${list} (${r.tz}, jetzt ${r.now_local})${r.blocked?" — JETZT gesperrt":""}`
+      : "Keine Sperrzeiten — alle Bilder werden gespeichert";
+    el.classList.toggle("blk", !!r.blocked);
+  }catch(e){}
+}
+function renderBlkRows(){
+  document.getElementById("picBlkRows").innerHTML = blkWins.map((w,i)=>
+    `<div class="picBlkRow">
+       <input type="time" data-i="${i}" data-f="start" value="${w.start}">–
+       <input type="time" data-i="${i}" data-f="end" value="${w.end}">
+       <input class="note" data-i="${i}" data-f="note" placeholder="Notiz (z. B. Mäher)" value="${(w.note||'').replace(/"/g,'&quot;')}">
+       <button data-i="${i}">✕</button>
+     </div>`).join("") || "<div class='hint'>— keine Sperrzeiten —</div>";
+  document.querySelectorAll("#picBlkRows input").forEach(inp=>{
+    inp.onchange = ()=>{ blkWins[+inp.dataset.i][inp.dataset.f] = inp.value; };
+  });
+  document.querySelectorAll("#picBlkRows button").forEach(b=>{
+    b.onclick = ()=>{ blkWins.splice(+b.dataset.i,1); renderBlkRows(); };
+  });
+}
+document.getElementById("picBlkEdit").onclick = async ()=>{
+  await loadBlock();
+  document.getElementById("picBlkTz").textContent = blkTz;
+  blkWins = blkWins.map(w=>({start:w.start,end:w.end,note:w.note||""}));
+  document.getElementById("picBlkMsg").textContent = "";
+  renderBlkRows();
+  document.getElementById("picBlkOv").style.display = "flex";
+};
+document.getElementById("picBlkAdd").onclick = ()=>{
+  blkWins.push({start:"15:00",end:"16:00",note:""}); renderBlkRows();
+};
+document.getElementById("picBlkSave").onclick = async ()=>{
+  try{
+    const r = await (await fetch("/photo_block",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({windows:blkWins})})).json();
+    if(r.error){ document.getElementById("picBlkMsg").textContent = "Fehler: "+r.error; return; }
+    document.getElementById("picBlkOv").style.display = "none";
+    loadBlock();
+  }catch(e){ document.getElementById("picBlkMsg").textContent = "Fehler: "+e.message; }
+};
+document.getElementById("picBlkClose").onclick =
+  ()=> document.getElementById("picBlkOv").style.display = "none";
+document.getElementById("picBlkOv").onclick = (e)=>{
+  if(e.target.id==="picBlkOv") document.getElementById("picBlkOv").style.display = "none";
+};
 setInterval(()=>{ if(view==="pics") loadPics(); }, 15000);
 document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>setView(b.dataset.v,b));
 
