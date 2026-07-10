@@ -45,6 +45,8 @@
   .picCard .trk { color:#7fe0a4; }
   .picCard .del { position:absolute; top:5px; right:5px; width:26px; height:26px; border:none; border-radius:50%; background:#000a; color:#f88; font-size:15px; line-height:26px; cursor:pointer; padding:0; display:none; }
   .picCard:hover .del { display:block; }
+  .picCard .sel { position:absolute; top:7px; left:7px; width:20px; height:20px; z-index:2; cursor:pointer; accent-color:#2d6cdf; }
+  .picCard.picked { outline:3px solid #2d6cdf; outline-offset:-3px; }
   #picBlkOv { position:fixed; inset:0; background:#000c; display:flex; align-items:center; justify-content:center; z-index:9; }
   #picBlkBox { background:#1a1a22; border:1px solid #444; border-radius:8px; padding:14px; width:min(460px,92vw); max-height:88vh; overflow:auto; }
   .picBlkRow { display:flex; align-items:center; gap:8px; margin:6px 0; }
@@ -154,6 +156,8 @@
       <div id="picsBar">
         <span class="hint" id="picBlkStatus">—</span>
         <button class="tab" id="picBlkEdit" title="Tägliche Zeitfenster festlegen, in denen keine Bilder gespeichert werden (z. B. während der Mäher läuft)">Sperrzeiten…</button>
+        <button class="tab" id="picSelDel" style="display:none;color:#e88;border-color:#a55" title="Alle angehakten Bilder löschen">Auswahl löschen (<span id="picSelN">0</span>)</button>
+        <button class="tab" id="picSelClr" style="display:none" title="Auswahl aufheben">Auswahl leeren</button>
       </div>
       <div class="hint" id="picsInfo">— lädt —</div>
       <div id="picsGrid"></div>
@@ -288,48 +292,73 @@ function setView(v,b){
 // ---- Bilder-Tab: Fotos der Cat Cam (Ausloeser: catDetected / eigene KI / manuell)
 const PIC_TRIG = {catDetected:"🚨 CatDetected", ki:"🐱 Kamera-KI", manuell:"📷 manuell"};
 let picOpenId = null;                       // gerade in der Grossansicht offenes Foto
+const picSel = new Set();                    // angehakte Foto-IDs (Mehrfachauswahl)
+function updateSelBar(){
+  const n = picSel.size;
+  document.getElementById("picSelN").textContent = n;
+  document.getElementById("picSelDel").style.display = n ? "inline-block" : "none";
+  document.getElementById("picSelClr").style.display = n ? "inline-block" : "none";
+}
 async function loadPics(){
   loadBlock();
   try{
     const r = await (await fetch("/photos?limit=200")).json();
     document.getElementById("picsInfo").textContent =
-      r.photos.length ? `${r.photos.length} Fotos (neueste zuerst) — Klick = gross` : "— noch keine Fotos —";
+      r.photos.length ? `${r.photos.length} Fotos (neueste zuerst) — Klick = gross, Kästchen = mehrere auswählen` : "— noch keine Fotos —";
     document.getElementById("picsGrid").innerHTML = r.photos.map(p=>{
       const dt = new Date(p.t*1000).toLocaleString("de-CH");
       const trk = p.track!=null ? ` · <span class="trk">Track Nr ${p.track}${p.track_cat?" 🐱":""}</span>` : "";
       return `<div class="picCard" data-id="${p.id}" data-meta="${dt} · ${PIC_TRIG[p.trigger]||p.trigger}${p.score?` · Score ${p.score}`:""}${p.track!=null?` · Track Nr ${p.track}`:""}">
+        <input type="checkbox" class="sel" title="zum Mehrfach-Löschen auswählen">
         <button class="del" title="Bild löschen">✕</button>
         <img loading="lazy" src="/photo/${p.id}" alt="">
         <div class="cap"><b>${dt}</b><br>${PIC_TRIG[p.trigger]||p.trigger}${p.score?` · Score ${p.score}`:""}${trk}</div></div>`;
     }).join("");
     document.querySelectorAll(".picCard").forEach(c=>{
+      const id = c.dataset.id;
+      const cb = c.querySelector(".sel");
+      cb.checked = picSel.has(id);
+      c.classList.toggle("picked", cb.checked);
+      cb.onclick = (e)=>{
+        e.stopPropagation();
+        if(cb.checked) picSel.add(id); else picSel.delete(id);
+        c.classList.toggle("picked", cb.checked);
+        updateSelBar();
+      };
       c.onclick = ()=>{
-        picOpenId = c.dataset.id;
-        document.getElementById("picsBig").src = "/photo/"+c.dataset.id;
+        picOpenId = id;
+        document.getElementById("picsBig").src = "/photo/"+id;
         document.getElementById("picsMeta").textContent = c.dataset.meta;
         document.getElementById("picsOv").style.display = "flex";
       };
-      c.querySelector(".del").onclick = (e)=>{ e.stopPropagation(); delPhoto(c.dataset.id); };
+      c.querySelector(".del").onclick = (e)=>{ e.stopPropagation(); delPhoto(id); };
     });
+    updateSelBar();
   }catch(e){
     document.getElementById("picsInfo").textContent = "Fehler: " + e.message;
   }
 }
-async function delPhoto(id){
-  if(!confirm("Dieses Bild endgültig löschen?")) return;
+async function delPhotos(ids){
+  if(!ids.length) return;
+  if(!confirm(ids.length===1 ? "Dieses Bild endgültig löschen?"
+                             : `${ids.length} Bilder endgültig löschen?`)) return;
   try{
     await fetch("/photo_del",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({id:+id})});
+      body:JSON.stringify({ids:ids.map(Number)})});
+    ids.forEach(i=>picSel.delete(String(i)));
     document.getElementById("picsOv").style.display = "none";
     loadPics();
   }catch(e){ alert("Löschen fehlgeschlagen: "+e.message); }
 }
+function delPhoto(id){ delPhotos([id]); }
 document.getElementById("picsClose").onclick =
   ()=> document.getElementById("picsOv").style.display = "none";
 document.getElementById("picsOv").onclick = (e)=>{
   if(e.target.id==="picsOv") document.getElementById("picsOv").style.display = "none";
 };
 document.getElementById("picsDel").onclick = ()=>{ if(picOpenId!=null) delPhoto(picOpenId); };
+document.getElementById("picSelDel").onclick = ()=> delPhotos([...picSel]);
+document.getElementById("picSelClr").onclick = ()=>{ picSel.clear(); loadPics(); };
 
 // ---- Bilder-Sperrzeiten (täglich, z. B. während der Mäher läuft) ----
 let blkWins = [], blkTz = "";
@@ -388,7 +417,9 @@ document.getElementById("picBlkOv").onclick = (e)=>{
   if(e.target.id==="picBlkOv") document.getElementById("picBlkOv").style.display = "none";
 };
 setInterval(()=>{ if(view==="pics") loadPics(); }, 15000);
-document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>setView(b.dataset.v,b));
+// nur echte Tab-Knöpfe (mit data-v) schalten die Ansicht um — sonst würden auch
+// gleich gestylte .tab-Buttons (Sperrzeiten…, Schliessen, …) als Tab wirken.
+document.querySelectorAll(".tab[data-v]").forEach(b=>b.onclick=()=>setView(b.dataset.v,b));
 
 async function postCmd(target,cmd,info){
   try{ await fetch("/command",{method:"POST",headers:{"Content-Type":"application/json"},

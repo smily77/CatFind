@@ -1408,21 +1408,32 @@ def photo_block_set():
 
 @app.post("/photo_del")
 def photo_del():
-    # Einzelnes Foto löschen: DB-Eintrag UND Datei entfernen.
+    # Foto(s) löschen: DB-Eintrag UND Datei entfernen. Body {"id":N} oder
+    # {"ids":[...]} (Mehrfachauswahl).
     d = request.get_json(force=True, silent=True) or {}
-    pid = int(d.get("id", -1))
-    with _db_lock:
-        row = _db.execute("SELECT file FROM photos WHERE id=?", (pid,)).fetchone()
-        if row:
-            _db.execute("DELETE FROM photos WHERE id=?", (pid,))
-            _db.commit()
-    if not row:
-        return jsonify(error="unbekannt"), 404
+    ids = d.get("ids")
+    if not isinstance(ids, list):
+        ids = [d.get("id", -1)]
     try:
-        os.remove(os.path.join(PHOTOS_DIR, row[0]))
-    except OSError:
-        pass
-    return jsonify(ok=True)
+        ids = [int(x) for x in ids]
+    except (TypeError, ValueError):
+        return jsonify(error="ungültige id"), 400
+    files = []
+    with _db_lock:
+        for pid in ids:
+            row = _db.execute("SELECT file FROM photos WHERE id=?", (pid,)).fetchone()
+            if row:
+                files.append(row[0])
+                _db.execute("DELETE FROM photos WHERE id=?", (pid,))
+        _db.commit()
+    for f in files:
+        try:
+            os.remove(os.path.join(PHOTOS_DIR, f))
+        except OSError:
+            pass
+    if not files:
+        return jsonify(error="unbekannt"), 404
+    return jsonify(ok=True, deleted=len(files))
 
 
 @app.post("/photo")
