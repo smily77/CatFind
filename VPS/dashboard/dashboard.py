@@ -16,6 +16,8 @@ Endpunkte:
   GET  /events?since=N  neue catObserved ab Index N (für die Karten)
   POST /reset           akkumulierte Ereignisse löschen
   GET  /map             RasenKarte-Punkte (aus dem GitHub-Repo) für die Welt-Karte
+  GET/POST /coverage_*  gelernte Sensor-Erfassungs-Polygone aus Mäherfahrten
+                        inkl. /coverage_export(.csv) fuer CatIdentifier/ESP32
   GET  /manual_data     Daten fuer manuelle Sensor-Weltpose-Kalibration
   POST /manual_pose     manuell bestimmte Pose als Kommando-Sequenz an Sensor senden
   POST /command         Webinterface -> Kommando-Queue {"target":id,"cmd":c,"info":i}
@@ -165,6 +167,16 @@ _poses = {}                      # sender -> {x, y, head, mir, valid, t}  (aus p
                                  # der nach Reboot noch nicht re-validiert ist, steht
                                  # physisch ja weiterhin am selben Ort)
 
+def _sysmsg(msg):
+    """VPS-eigene Meldung ins scrollende Debug-Fenster stellen (wie Bus-Debug).
+    Damit sieht der Benutzer direkt, ob eine Aktion (Coverage lernen/loeschen,
+    manuelle Pose) tatsaechlich gegriffen hat."""
+    line = "VPS: " + str(msg)
+    with _lock:
+        _debug.append({"t": time.time(), "msg": line[:200]})
+    print(line, flush=True)
+
+
 _cmd_lock = threading.Lock()
 _cmd_queue = []                  # [(target, cmd, info)]  Webinterface -> Manager -> Bus
 
@@ -224,6 +236,12 @@ def init_db():
     # Zeitleiste — Lücken = Pause/Container-Downtime sichtbar machen)
     _db.execute("""CREATE TABLE IF NOT EXISTS recspans(
         id INTEGER PRIMARY KEY AUTOINCREMENT, t0 REAL, t1 REAL)""")
+    # gelernte, posegebundene Welt-Polygone je Sensor-Erfassungsbereich
+    _db.execute("""CREATE TABLE IF NOT EXISTS coverage_polygons(
+        sender INT PRIMARY KEY, active INT, pose_x INT, pose_y INT,
+        pose_head REAL, pose_mir INT, pose_hash TEXT, polygon_json TEXT,
+        point_count INT, source_t0 REAL, source_t1 REAL, quality REAL,
+        created REAL, note TEXT)""")
     _db.commit()
     row = _db.execute("SELECT v FROM meta WHERE k='rec'").fetchone()
     _rec_on = (row is None) or (row[0] == "1")   # Default: Aufnahme AN
@@ -356,10 +374,15 @@ def ingest():
             _settings[sid] = {"sup": int(s.get("sup", 0)), "val": int(s.get("val", 0)),
                               "act": int(s.get("act", 0)), "t": now}
         pose_rows = []
+        invalid_pose_sids = []
         for p in data.get("poses", []):
             sid = int(p.get("sender", -1))
-            if sid < 0 or int(p.get("valid", 0)) != 1:
-                continue                       # ungültige Posen nicht übernehmen
+            if sid < 0:
+                continue
+            if int(p.get("valid", 0)) != 1:
+                _poses.pop(sid, None)
+                invalid_pose_sids.append(sid)
+                continue
             pose = {"x": int(p.get("x", 0)), "y": int(p.get("y", 0)),
                     "head": float(p.get("head", 0)), "mir": int(p.get("mir", 1)),
                     "valid": 1, "t": now}
@@ -387,11 +410,22 @@ def ingest():
         if len(_events) > MAX_EVENTS:
             del _events[0:len(_events) - MAX_EVENTS]
     dropped = int(data.get("dropped", 0) or 0)
-    if pose_rows:
+    if pose_rows or invalid_pose_sids:
         with _db_lock:
-            _db.executemany("INSERT OR REPLACE INTO poses(sender,x,y,head,mir,t) "
-                            "VALUES(?,?,?,?,?,?)", pose_rows)
+            if pose_rows:
+                _db.executemany("INSERT OR REPLACE INTO poses(sender,x,y,head,mir,t) "
+                                "VALUES(?,?,?,?,?,?)", pose_rows)
+                for sid, x, y, head, mir, _t in pose_rows:
+                    ph = catmodel.pose_hash({"x": x, "y": y, "head": head, "mir": mir, "valid": 1})
+                    _db.execute("UPDATE coverage_polygons SET active=0,note=? "
+                                "WHERE sender=? AND active=1 AND pose_hash<>?",
+                                ("Pose geaendert -> Polygon deaktiviert", sid, ph))
+            for sid in invalid_pose_sids:
+                _db.execute("DELETE FROM poses WHERE sender=?", (sid,))
+                _db.execute("UPDATE coverage_polygons SET active=0,note=? WHERE sender=?",
+                            ("Pose geloescht/ungueltig -> Polygon deaktiviert", sid))
             _db.commit()
+        _coverage_dirty()
     if _rec_on:
         with _db_lock:
             # Abschnitt auch OHNE Events fortschreiben: solange der Manager
@@ -502,7 +536,11 @@ def manual_data():
             }
         evs = list(_events[-MAX_EVENTS:])
         poses = dict(_poses)
-    calibratable = [int(sid) for sid, d in devs.items() if d.get("type", "") == "HLK"]
+    # Manuell kalibrierbar = die HLK-Radarmodule (Dome/Mini_Dome/Compact_Dome).
+    # Sie tragen in xComDef den Typ "HLK" (nicht "Radar") und koennen sich – anders
+    # als der Lidar – nicht selbst per VPS lokalisieren, brauchen also eine manuelle
+    # oder kopierte Welt-Pose.
+    calibratable = [int(sid) for sid, d in devs.items() if "HLK" in d.get("type", "")]
     return jsonify(now=now, devices=devs, poses={str(k): v for k, v in poses.items()},
                    events=evs, calibratable=calibratable)
 
@@ -521,11 +559,18 @@ def manual_pose():
     heading_deg = float(d.get("heading_deg", 0.0)) % 360.0
     heading_pa = int(round(heading_deg * 4096.0 / 360.0)) % 4096
     mirror = -1 if int(d.get("mirror", 1)) < 0 else 1
+    with _db_lock:
+        _db.execute("UPDATE coverage_polygons SET active=0,note=? WHERE sender=?",
+                    ("manuelle Pose gesendet -> neu lernen", target))
+        _db.commit()
+    _coverage_dirty()
     cmds = [(target, 19, 0), (target, 24, x), (target, 25, y),
             (target, 26, heading_pa), (target, 27, mirror), (254, 0, 0)]
     with _cmd_lock:
         _cmd_queue.extend(cmds)
         n = len(_cmd_queue)
+    _sysmsg("Manuelle Pose an #%d (%s) gesendet: x=%d y=%d head=%.1f mir=%+d (gelerntes Polygon deaktiviert)"
+            % (target, dev_name(target), x, y, heading_deg, mirror))
     return jsonify(ok=True, queued=n, commands=len(cmds), target=target, x=x, y=y,
                    heading_deg=heading_deg, heading_pa=heading_pa, mirror=mirror)
 
@@ -649,6 +694,54 @@ _cov_ts = 0.0
 _cov_key = None
 
 
+
+def _coverage_dirty():
+    global _cov, _cov_ts, _cov_key
+    with _cov_lock:
+        _cov = None
+        _cov_ts = 0.0
+        _cov_key = None
+
+
+def _active_coverage_profiles():
+    with _db_lock:
+        rows = _db.execute("""SELECT sender,active,pose_x,pose_y,pose_head,pose_mir,
+                            pose_hash,polygon_json,point_count,source_t0,source_t1,
+                            quality,created,note FROM coverage_polygons""").fetchall()
+    out = {}
+    for r in rows:
+        try:
+            poly = json.loads(r[7] or "[]")
+        except Exception:  # noqa: BLE001
+            poly = []
+        out[int(r[0])] = {"sender": int(r[0]), "active": int(r[1]),
+                          "pose": {"x": r[2], "y": r[3], "head": r[4], "mir": r[5], "valid": 1},
+                          "pose_hash": r[6], "polygon": poly, "point_count": r[8],
+                          "source_t0": r[9], "source_t1": r[10], "quality": r[11],
+                          "created": r[12], "note": r[13] or ""}
+    return out
+
+
+def _coverage_polygons_for_current(devices, poses):
+    profiles = _active_coverage_profiles()
+    polys, sources = {}, {}
+    for sid, dev in (devices or {}).items():
+        pose = (poses or {}).get(sid) or (poses or {}).get(str(sid))
+        if not pose or not pose.get("valid"):
+            continue
+        ph = catmodel.pose_hash(pose)
+        prof = profiles.get(int(sid))
+        if prof and prof["active"] and prof["pose_hash"] == ph and len(prof["polygon"]) >= 3:
+            polys[int(sid)] = prof["polygon"]
+            sources[str(sid)] = "learned"
+            continue
+        poly = catmodel.sector_polygon(dev, pose)
+        if poly:
+            polys[int(sid)] = poly
+            sources[str(sid)] = "default"
+    return polys, sources
+
+
 def _empirical_coverage(p):
     global _cov, _cov_ts, _cov_key
     key = (p["cov_cell_mm"], p["cov_min_events"])
@@ -674,11 +767,139 @@ def get_coverage(p):
     devices = load_devices()
     with _lock:
         poses = dict(_poses)
-    cov = catmodel.build_coverage_geo(devices, poses, p["cov_cell_mm"])
-    if cov["senders"]:
+    polys, sources = _coverage_polygons_for_current(devices, poses)
+    if polys:
+        cov = catmodel.build_coverage_polygons(polys, p["cov_cell_mm"],
+                                               "polygon" if all(v == "learned" for v in sources.values()) else "mixed")
+        cov["polygon_sources"] = sources
         return cov
     return _empirical_coverage(p)
 
+
+
+@app.get("/coverage_profiles")
+def coverage_profiles():
+    devices = load_devices()
+    with _lock:
+        poses = dict(_poses)
+    profs = _active_coverage_profiles()
+    for sid, pr in profs.items():
+        cur = poses.get(sid)
+        pr["pose_matches"] = bool(cur and catmodel.pose_hash(cur) == pr["pose_hash"])
+        pr["device"] = devices.get(sid, {})
+    return jsonify(profiles={str(k): v for k, v in profs.items()},
+                   poses={str(k): v for k, v in poses.items()})
+
+
+@app.post("/coverage_learn")
+def coverage_learn():
+    d = request.get_json(force=True, silent=True) or {}
+    sid = int(d.get("sender", -1))
+    if sid < 0:
+        return jsonify(error="sender fehlt"), 400
+    try:
+        t0, t1 = float(d["t0"]), float(d["t1"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify(error="t0/t1 fehlen"), 400
+    save = bool(d.get("save", False))
+    name = dev_name(sid)
+    with _lock:
+        pose = dict(_poses.get(sid) or {})
+    if not pose or not pose.get("valid"):
+        _sysmsg("Coverage lernen #%d (%s) abgebrochen: keine gueltige Welt-Pose" % (sid, name))
+        return jsonify(error="Sensor hat keine gueltige Pose"), 400
+    with _db_lock:
+        rows = _db.execute("SELECT wx,wy FROM events WHERE sender=? AND wv=1 AND t>=? AND t<=?",
+                           (sid, t0, t1)).fetchall()
+    pts = [(x, y) for x, y in rows]
+    poly, q = catmodel.learn_mower_polygon(
+        pts, pose,
+        angle_bin_deg=float(d.get("angle_bin_deg", 10)),
+        quantile=float(d.get("quantile", 0.90)),
+        min_points=int(d.get("min_points", 40)),
+        target_vertices=int(d.get("target_vertices", 8)))
+    win = "%s-%s" % (time.strftime("%H:%M:%S", time.localtime(t0)),
+                     time.strftime("%H:%M:%S", time.localtime(t1)))
+    if not poly:
+        _sysmsg("Coverage lernen #%d (%s) FEHLGESCHLAGEN: %s (%d Punkte, Fenster %s)"
+                % (sid, name, q.get("reason", "unbekannt"), len(pts), win))
+        return jsonify(ok=False, error=q.get("reason", "Polygon konnte nicht erzeugt werden"),
+                       quality=q, point_count=len(pts)), 400
+    ph = catmodel.pose_hash(pose)
+    area_m2 = float(q.get("area_mm2", 0.0)) / 1e6
+    if save:
+        with _db_lock:
+            _db.execute("""INSERT OR REPLACE INTO coverage_polygons
+                (sender,active,pose_x,pose_y,pose_head,pose_mir,pose_hash,polygon_json,
+                 point_count,source_t0,source_t1,quality,created,note)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (sid, 1, pose["x"], pose["y"], pose["head"], pose["mir"], ph,
+                 json.dumps(poly, separators=(",", ":")), len(pts), t0, t1,
+                 float(q.get("area_mm2", 0.0)), time.time(), "aus Maeherperiode gelernt"))
+            _db.commit()
+        _coverage_dirty()
+        _sysmsg("Coverage GELERNT + aktiv: #%d (%s) - %d Ecken, %d Punkte, %.1f m2, Fenster %s"
+                % (sid, name, len(poly), len(pts), area_m2, win))
+    else:
+        _sysmsg("Coverage-Vorschau #%d (%s): %d Ecken, %d Punkte, %.1f m2 (noch nicht gespeichert)"
+                % (sid, name, len(poly), len(pts), area_m2))
+    return jsonify(ok=True, saved=save, sender=sid, pose_hash=ph, polygon=poly,
+                   quality=q, point_count=len(pts), t0=t0, t1=t1)
+
+
+@app.post("/coverage_delete")
+def coverage_delete():
+    d = request.get_json(force=True, silent=True) or {}
+    sid = int(d.get("sender", -1))
+    if sid < 0:
+        return jsonify(error="sender fehlt"), 400
+    with _db_lock:
+        cur = _db.execute("UPDATE coverage_polygons SET active=0,note=? WHERE sender=? AND active=1",
+                          ("manuell deaktiviert", sid))
+        n = cur.rowcount
+        _db.commit()
+    _coverage_dirty()
+    if n:
+        _sysmsg("Coverage GELOESCHT: #%d (%s) deaktiviert -> wieder Default-Sektor"
+                % (sid, dev_name(sid)))
+    else:
+        _sysmsg("Coverage loeschen #%d (%s): kein aktives Polygon vorhanden"
+                % (sid, dev_name(sid)))
+    return jsonify(ok=True, sender=sid, deactivated=n)
+
+
+@app.get("/coverage_export")
+def coverage_export():
+    p = catmodel.merged_params(load_params())
+    devices = load_devices()
+    with _lock:
+        poses = dict(_poses)
+    polys, sources = _coverage_polygons_for_current(devices, poses)
+    return jsonify(version=1, cell_mm=p["cov_cell_mm"],
+                   polygons=[{"sender": sid, "source": sources.get(str(sid), ""),
+                              "pose_hash": catmodel.pose_hash(poses.get(sid) or poses.get(str(sid))),
+                              "points": poly}
+                             for sid, poly in sorted(polys.items())])
+
+
+
+@app.get("/coverage_export.csv")
+def coverage_export_csv():
+    # Kompakter ESP32-Export: sender,source,n,x1,y1,x2,y2,...
+    # Der CatIdentifier nutzt eine Liste von Polygonen (inside-any), keine Union.
+    p = catmodel.merged_params(load_params())
+    devices = load_devices()
+    with _lock:
+        poses = dict(_poses)
+    polys, sources = _coverage_polygons_for_current(devices, poses)
+    lines = ["# CatFinder Coverage-Polygone v1", "# sender,source,n,x1,y1,..."]
+    for sid, poly in sorted(polys.items()):
+        pts = poly[:16]                  # ESP32-Budget: kleine Polygone
+        fields = [str(sid), sources.get(str(sid), ""), str(len(pts))]
+        for x, y in pts:
+            fields += [str(int(x)), str(int(y))]
+        lines.append(",".join(fields))
+    return Response("\n".join(lines) + "\n", mimetype="text/plain; charset=utf-8")
 
 @app.get("/acoverage")
 def acoverage():
@@ -691,6 +912,8 @@ def acoverage():
     return jsonify(cell_mm=cell, senders=out,
                    source=cov.get("source", ""),
                    sectors={str(k): v for k, v in cov.get("sectors", {}).items()},
+                   polygons={str(k): v for k, v in cov.get("polygons", {}).items()},
+                   polygon_sources=cov.get("polygon_sources", {}),
                    union_cells=len(cov["union"]),
                    edge_active=len(cov["union"]) >= p["cov_min_cells"])
 
