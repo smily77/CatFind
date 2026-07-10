@@ -16,6 +16,7 @@ Erreichbar unter **`http://<VPS-IP>/`** (Port 80).
     (Zeit + meldende Sensor-IDs).
   - **Welt-Karte** — `catObserved` in Welt-Koordinaten über der `RasenKarte`.
   - **Manuelle Pose** — Weltkarte mit Referenz-`catObserved` gültig posierter Sensoren und beweglicher/drehbarer Trefferwolke eines zu kalibrierenden Radarsensors; Bestätigung sendet die Pose an den Sensor und löscht/ersetzt die alte Pose.
+  - **Gelernte Erfassungs-Polygone** — aus einer manuell gewählten Mäherperiode erzeugt der VPS pro Sensor ein posegebundenes Weltpolygon (6–10 Punkte). Wenn kein passendes Polygon vorhanden ist, wird der Default-Bereich aus xComDef als Polygon verwendet.
   - **Gruppe 1/2/3** — `catObserved` in relativen Koordinaten der jeweiligen
     Koordinatengruppe.
   - Farbe je `(Sensor, Ziel)`-Kombination (Radar bis 3 Ziele).
@@ -33,6 +34,8 @@ Erreichbar unter **`http://<VPS-IP>/`** (Port 80).
 | `GET`  | `/map` | RasenKarte-Punkte (aus dem GitHub-Repo) |
 | `GET`  | `/manual_data` | Snapshot für die manuelle Pose-Seite (Geräte, gültige Posen, letzte Treffer) |
 | `POST` | `/manual_pose` | Manuell bestimmte Weltpose als Kommando-Sequenz an Sensor senden |
+| `GET`  | `/coverage_profiles` `/coverage_export` | gelernte Erfassungs-Polygone verwalten / kompakt für ESP32 exportieren |
+| `POST` | `/coverage_learn` `/coverage_delete` | Polygon aus Mäherperiode lernen / gelerntes Polygon deaktivieren |
 | `GET/POST` | `/rec` | Aufnahme-Status / Pause-Append |
 | `GET`  | `/density /adata /amodel /alabels /acoverage` | Analyse-Tab (Fenster-Daten, Tracks aus der Analysierer-DB, Abdeckungs-Sektoren) |
 | `POST` | `/alabel /alabel_del /amark` | Labels + manuelle Track-Bewertung (Katze/Person/Vogel/Mäher/Insekt/Sturm/Störung/sicher keine Katze) |
@@ -40,6 +43,25 @@ Erreichbar unter **`http://<VPS-IP>/`** (Port 80).
 | `GET`  | `/atracks` `/atracks.csv` | komplette Trackliste inkl. Bewertungen+Klebungen (JSON/CSV, separat verwendbar) |
 | `GET`  | `/avalidate` | Modell gegen alle von Hand bewerteten Tracks prüfen (Übereinstimmung, Abweichungsliste) |
 | `POST` | `/devreload` | xComDef (Typen+Erfassungsbereiche) sofort neu lesen + poseRequest |
+
+## Gelernte Erfassungs-Polygone
+
+Für Radar-Sensoren kann der reale, auf den Rasen begrenzte Erfassungsbereich aus
+einer kontrollierten Robomäher-Periode gelernt werden. Vorgehen:
+
+1. Sensor muss eine gültige Weltpose haben; der Mäherzeitraum wird im Analyse-Tab
+   ausgewählt (Fenster oder Shift-Selektion).
+2. **Coverage lernen** erzeugt per polarer Hüllkurve um den Sensorstandort ein
+   einfaches Weltpolygon (typisch 6–10 Punkte) aus den `catObserved` des Sensors.
+3. Das Polygon wird zusammen mit der Pose gespeichert. Ändert oder verliert der
+   Sensor seine Pose, wird das Polygon deaktiviert und bis zum Neulernen der
+   Default-Bereich aus xComDef verwendet.
+4. Für VPS-Modell und ESP32/CatIdentifier gilt dasselbe Prinzip: Coverage ist
+   eine Liste aktiver Polygone; der ESP32 nutzt `inside-any-polygon` statt eine
+   komplizierte Polygon-Union berechnen zu müssen. Der kompakte Export liegt als
+   `/coverage_export.csv` vor und wird vom CatIdentifier gecacht.
+
+Ausführliche Beschreibung: siehe `AbbildungErfassungsbereich.md`.
 
 ## Kontinuierliche Trackerkennung
 

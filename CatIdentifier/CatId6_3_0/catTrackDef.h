@@ -40,3 +40,16 @@ struct CtTrack {
   uint8_t  rs[CT_RING];                // sender je Ringpunkt
   uint8_t  rn, rh;                     // Anzahl (<=CT_RING), Schreibkopf
 };
+
+
+// Erfassungs-Polygone vom VPS (/coverage_export.csv). Der ESP32 nutzt eine
+// Liste aktiver Polygone (inside-any) statt eine teure Polygon-Union zu bauen.
+#define CT_MAX_COV_POLYS 12
+#define CT_MAX_COV_VERTS 16
+struct CtCoveragePoly {
+  bool     used;
+  uint8_t  sender;
+  uint8_t  n;
+  int32_t  x[CT_MAX_COV_VERTS];
+  int32_t  y[CT_MAX_COV_VERTS];
+};

@@ -364,8 +364,23 @@ function drawAnaMap(){
   // Erfassungsbereiche: Sektoren aus xComDef + Welt-Pose (Quelle "xComDef"),
   // sonst Fallback empirische Zellen
   if(ANA.showCov && ANA.coverage){
+    const polys = ANA.coverage.polygons || {};
+    if(Object.keys(polys).length){
+      for(const [sid, poly] of Object.entries(polys)){
+        const keys = senderKeys(sid);
+        if(keys.length && !keys.some(k=>!ANA.sensorOff.has(k))) continue;
+        if(!poly.length) continue;
+        const col = colorFor(+sid, 0);
+        ctx.beginPath();
+        poly.forEach(([wx,wy],i)=> i ? ctx.lineTo(X(wx),Y(wy)) : ctx.moveTo(X(wx),Y(wy)));
+        ctx.closePath();
+        ctx.fillStyle = col; ctx.globalAlpha = 0.10; ctx.fill();
+        ctx.globalAlpha = 0.70; ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
     const secs = ANA.coverage.sectors || {};
-    if(Object.keys(secs).length){
+    if(!Object.keys(polys).length && Object.keys(secs).length){
       for(const [sid, sec] of Object.entries(secs)){
         const keys = senderKeys(sid);
         if(keys.length && !keys.some(k=>!ANA.sensorOff.has(k))) continue;
@@ -615,7 +630,9 @@ function renderTracks(){
     : "";
   const edge = ANA.model.edge_active
     ? (ANA.model.cov_source==="empirisch"
-        ? `<div class="hint" style="color:#c93">Abdeckung noch empirisch — keine Sensor-Posen bekannt (Knopf „Geräte ⟳")</div>` : "")
+        ? `<div class="hint" style="color:#c93">Abdeckung noch empirisch — keine Sensor-Posen bekannt (Knopf „Geräte ⟳")</div>`
+        : (ANA.model.cov_source==="polygon" || ANA.model.cov_source==="mixed")
+          ? `<div class="hint" style="color:#7fe0a4">Abdeckung: ${escapeHtml(ANA.model.cov_source)} (gelernte Polygone/Default-Polygone)</div>` : "")
     : `<div class="hint" style="color:#c93">Randlogik inaktiv — keine Abdeckungsdaten</div>`;
   const ana = ANA.model.ana || {};
   const behind = ana.backlog
@@ -709,6 +726,31 @@ async function anaAddLabel(){
   await anaJson("/alabel",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({t0:r.t0, t1:r.t1, sender, label})});
   ANA.sel = null;
+  anaFetchWindow();
+}
+
+
+async function anaCoverageLearn(){
+  const r = ANA.sel || ANA.win;
+  const sid = +(prompt("Sensor-ID für Coverage lernen (Mäherfenster)", anaEl("anaLblSender")?.value !== "-1" ? anaEl("anaLblSender").value : "1") || -1);
+  if(sid < 0 || !r) return;
+  const qs = {sender:sid, t0:r.t0, t1:r.t1, angle_bin_deg:10, quantile:0.90, target_vertices:8, save:false};
+  try{
+    const prev = await anaJson("/coverage_learn", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(qs)});
+    const q = prev.quality || {};
+    if(!confirm(`Coverage-Vorschau #${sid}: ${prev.polygon.length} Eckpunkte, ${q.point_count||prev.point_count} Punkte, Fläche ${(q.area_mm2/1e6).toFixed(1)} m². Speichern?`)) return;
+    qs.save = true;
+    await anaJson("/coverage_learn", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(qs)});
+    ANA.coverage = await anaJson("/acoverage");
+    anaFetchWindow();
+  }catch(e){ alert("Coverage lernen fehlgeschlagen: " + e.message); }
+}
+async function anaCoverageDelete(){
+  const sid = +(prompt("Sensor-ID des gelernten Coverage-Polygons löschen/deaktivieren", "1") || -1);
+  if(sid < 0) return;
+  if(!confirm(`Coverage-Polygon für Sensor #${sid} deaktivieren?`)) return;
+  await anaJson("/coverage_delete", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sender:sid})});
+  ANA.coverage = await anaJson("/acoverage");
   anaFetchWindow();
 }
 
@@ -821,6 +863,8 @@ async function anaShow(){
     anaEl("anaBParams").onclick = anaParams;
     anaEl("anaBValid").onclick = anaValidate;
     anaEl("anaBDev").onclick = anaDevReload;
+    anaEl("anaBCovLearn").onclick = anaCoverageLearn;
+    anaEl("anaBCovDel").onclick = anaCoverageDelete;
     anaEl("anaBLabel").onclick = anaAddLabel;
     anaEl("anaLblSel").innerHTML = Object.keys(LBL_COLORS).map(l=>`<option>${l}</option>`).join("");
     window.addEventListener("resize", ()=>{ if(view==="ana"){ drawTimeline(); drawAnaMap(); } });

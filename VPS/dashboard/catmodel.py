@@ -194,6 +194,178 @@ def build_coverage_geo(devices, poses, cell_mm):
     return _cov_finish(senders, cell_mm, "xComDef", sectors)
 
 
+
+def pose_hash(pose):
+    """Stabiler Fingerprint einer Welt-Pose fuer posegebundene Coverage-Profile."""
+    if not pose or not pose.get("valid"):
+        return ""
+    return "%d:%d:%.3f:%d" % (int(pose.get("x", 0)), int(pose.get("y", 0)),
+                                float(pose.get("head", 0)), int(pose.get("mir", 1)))
+
+
+def polygon_area(poly):
+    if len(poly) < 3:
+        return 0.0
+    a = 0.0
+    for i, (x1, y1) in enumerate(poly):
+        x2, y2 = poly[(i + 1) % len(poly)]
+        a += x1 * y2 - x2 * y1
+    return abs(a) * 0.5
+
+
+def point_in_poly(x, y, poly):
+    inside = False
+    if len(poly) < 3:
+        return False
+    j = len(poly) - 1
+    for i, (xi, yi) in enumerate(poly):
+        xj, yj = poly[j]
+        if (yi > y) != (yj > y):
+            xint = (xj - xi) * (y - yi) / ((yj - yi) or 1e-9) + xi
+            if x < xint:
+                inside = not inside
+        j = i
+    return inside
+
+
+def _rdp(points, eps):
+    if len(points) <= 2:
+        return points[:]
+    ax, ay = points[0]; bx, by = points[-1]
+    den = math.hypot(bx - ax, by - ay) or 1.0
+    best_i, best_d = 0, -1.0
+    for i, (px, py) in enumerate(points[1:-1], 1):
+        d = abs((by - ay) * px - (bx - ax) * py + bx * ay - by * ax) / den
+        if d > best_d:
+            best_i, best_d = i, d
+    if best_d > eps:
+        return _rdp(points[:best_i + 1], eps)[:-1] + _rdp(points[best_i:], eps)
+    return [points[0], points[-1]]
+
+
+def simplify_polygon(poly, min_pts=6, max_pts=10):
+    if len(poly) <= max_pts:
+        return poly[:]
+    closed = poly + [poly[0]]
+    lo, hi = 0.0, max(max(abs(x) for x, _ in poly), max(abs(y) for _, y in poly), 1.0)
+    best = poly[:]
+    for _ in range(24):
+        mid = (lo + hi) / 2.0
+        simp = _rdp(closed, mid)[:-1]
+        if len(simp) > max_pts:
+            lo = mid
+        else:
+            hi = mid
+            if len(simp) >= min_pts:
+                best = simp
+    if len(best) > max_pts:
+        # Fallback: gleichmaessig ausduennen, damit der ESP32 kleine Polygone bekommt.
+        step = len(best) / max_pts
+        best = [best[int(i * step) % len(best)] for i in range(max_pts)]
+    return best
+
+
+def _quantile(vals, q):
+    vals = sorted(vals)
+    if not vals:
+        return 0.0
+    pos = (len(vals) - 1) * q
+    lo = int(math.floor(pos)); hi = int(math.ceil(pos))
+    if lo == hi:
+        return vals[lo]
+    return vals[lo] * (hi - pos) + vals[hi] * (pos - lo)
+
+
+def learn_mower_polygon(points, pose, angle_bin_deg=10.0, quantile=0.90,
+                        min_points=40, min_bins=4, target_vertices=8):
+    """Erzeugt ein einfaches Weltpolygon aus Mäherpunkten (wx,wy).
+
+    Variante B: Winkel-Bins um den Sensorstandort, robuste Maximaldistanz je
+    Bin, danach Vereinfachung auf 6..10 Punkte. Die Punkte sind bereits die vom
+    Sensor gemeldeten Weltpunkte (inkl. RasenMap-Filterung auf dem Radar)."""
+    if not pose or not pose.get("valid"):
+        return None, {"ok": False, "reason": "keine gueltige Pose"}
+    px, py = float(pose["x"]), float(pose["y"])
+    pts = [(float(x), float(y)) for x, y in points]
+    if len(pts) < min_points:
+        return None, {"ok": False, "reason": "zu wenige Punkte", "point_count": len(pts)}
+    bins = {}
+    step = max(float(angle_bin_deg), 1.0)
+    for x, y in pts:
+        dx, dy = x - px, y - py
+        r = math.hypot(dx, dy)
+        if r < 100:       # Sensor-Eigenrauschen im Ursprung ignorieren
+            continue
+        deg = math.degrees(math.atan2(dx, dy))  # wie Radar: 0 = lokale/world +y Richtung
+        b = int(math.floor((deg + 180.0) / step))
+        bins.setdefault(b, []).append(r)
+    used = [(b, _quantile(rs, min(max(float(quantile), 0.5), 0.99)))
+            for b, rs in bins.items() if len(rs) >= 2]
+    used.sort()
+    if len(used) < min_bins:
+        return None, {"ok": False, "reason": "zu wenige Winkel-Bins",
+                      "point_count": len(pts), "bin_count": len(used)}
+    hull = []
+    for b, r in used:
+        deg = -180.0 + (b + 0.5) * step
+        rad = math.radians(deg)
+        hull.append((px + math.sin(rad) * r, py + math.cos(rad) * r))
+    poly = simplify_polygon(hull, max(3, target_vertices - 2), min(10, max(6, target_vertices + 2)))
+    if polygon_area(poly) <= 1.0:
+        return None, {"ok": False, "reason": "Polygonflaeche zu klein",
+                      "point_count": len(pts), "bin_count": len(used)}
+    q = {"ok": True, "point_count": len(pts), "bin_count": len(used),
+         "area_mm2": polygon_area(poly), "angle_bin_deg": step,
+         "quantile": float(quantile), "vertices": len(poly)}
+    return [[int(round(x)), int(round(y))] for x, y in poly], q
+
+
+def sector_polygon(dev, pose, arc_step_deg=12.0):
+    """Default-xComDef-Sektor als Weltpolygon, damit alle Coverage-Quellen als
+    Polygonliste exportierbar sind (ESP32: inside-any-polygon)."""
+    rng = float(dev.get("covRange", 0) or 0)
+    if rng <= 0 or not pose or not pose.get("valid"):
+        return []
+    px, py = float(pose["x"]), float(pose["y"])
+    a = float(pose.get("head", 0)) * (2.0 * math.pi / 4096.0)
+    mir = -1 if int(pose.get("mir", 1)) < 0 else 1
+    ca, sa = math.cos(a), math.sin(a)
+    left, right = float(dev.get("covL", -180)), float(dev.get("covR", 180))
+    span = max(right - left, 1.0)
+    n = max(2, int(math.ceil(span / max(arc_step_deg, 2.0))))
+    poly = [[int(round(px)), int(round(py))]]
+    for i in range(n + 1):
+        deg = left + span * i / n
+        rad = math.radians(deg)
+        xl, yl = math.sin(rad) * rng, math.cos(rad) * rng
+        ym = mir * yl
+        wx = px + xl * ca - ym * sa
+        wy = py + xl * sa + ym * ca
+        poly.append([int(round(wx)), int(round(wy))])
+    return poly
+
+
+def build_coverage_polygons(poly_by_sender, cell_mm, source="polygon"):
+    """Rasterisiert Weltpolygone in dieselbe Coverage-Struktur wie Sektoren."""
+    senders, polygons = {}, {}
+    for sid, poly in (poly_by_sender or {}).items():
+        if not poly or len(poly) < 3:
+            continue
+        minx, maxx = min(x for x, _ in poly), max(x for x, _ in poly)
+        miny, maxy = min(y for _, y in poly), max(y for _, y in poly)
+        cells = set()
+        for ix in range(math.floor(minx / cell_mm) - 1, math.floor(maxx / cell_mm) + 2):
+            for iy in range(math.floor(miny / cell_mm) - 1, math.floor(maxy / cell_mm) + 2):
+                wx, wy = (ix + 0.5) * cell_mm, (iy + 0.5) * cell_mm
+                if point_in_poly(wx, wy, poly):
+                    cells.add((ix, iy))
+        if cells:
+            senders[int(sid)] = cells
+            polygons[int(sid)] = poly
+    cov = _cov_finish(senders, cell_mm, source)
+    cov["polygons"] = polygons
+    return cov
+
 def _edge_dist(cov, x, y):
     """Distanz eines Welt-Punkts zum Rand der Gesamtabdeckung (mm)."""
     if not cov or not cov["boundary"]:
