@@ -96,7 +96,8 @@ void gwAddHb(uint8_t sender, uint8_t ip) {
 }
 
 void gwFlush() {
-  if (WiFi.status() != WL_CONNECTED) { gwEventN = gwDebugN = gwHbN = 0; gwDropped = 0; return; }
+  if (WiFi.status() != WL_CONNECTED) return;   // Puffer BEHALTEN - naechster Flush versucht es erneut
+                                               // (Ueberlauf faengt der Burst-Schutz/gwDropped ab)
   // Eigene Einstellungen des Managers stets aktuell mitfuehren (er sendet sich selbst kein
   // settingsReport per Multicast) -> so erscheint auch der Manager auf der VPS-Steuerseite.
   {
@@ -106,8 +107,6 @@ void gwFlush() {
     if (slot >= 0) { gwSet[slot].sup = mySettings.supported; gwSet[slot].val = mySettings.values; gwSet[slot].act = mySettings.actions; }
   }
   if (gwEventN == 0 && gwDebugN == 0 && gwHbN == 0 && !gwSettingsDirty && !gwPosesDirty) return;
-  gwSettingsDirty = false;
-  gwPosesDirty = false;
 
   String body;
   body.reserve(2048 + gwEventN * 160);
@@ -143,12 +142,18 @@ void gwFlush() {
 
   HTTPClient http;
   String url = "http://" + ipVPS.toString() + ":80/ingest";
+  int code = -1;
   if (http.begin(url)) {
     http.addHeader("Content-Type", "application/json");
     http.setTimeout(4000);
-    http.POST(body);
+    code = http.POST(body);
     http.end();
   }
+  if (code <= 0) return;               // Verbindungsfehler: Puffer behalten, naechster Flush wiederholt
+                                       // (jeder HTTP-Status, auch 4xx/5xx, gilt als zugestellt -
+                                       // sonst wuerden Events bei VPS-Fehlern endlos dupliziert)
+  gwSettingsDirty = false;
+  gwPosesDirty = false;
   gwEventN = gwDebugN = gwHbN = 0; gwDropped = 0;
 }
 

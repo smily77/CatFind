@@ -85,16 +85,17 @@ XCOMDEF_URL  = os.environ.get(
 # Fallback-Geräteverzeichnis (Name/Typ/Gruppe/Erfassungsbereich), falls
 # xComDef6_3.h nicht erreichbar ist. Führend ist IMMER die live geparste
 # xComDef6_3.h (s.u.). Erfassungsbereich = (links Grad, rechts Grad, Reichweite mm).
+# Namen identisch zur device[]-Tabelle in xComDef6_3.h halten!
 FALLBACK_DEVICES = {
-    0:("Manager","MananagementDevice",0,0,0,0), 1:("Dome","HLK",3,-60,60,7000),
-    2:("MiniDome","HLK",2,-60,60,7000), 3:("CompactDome","HLK",1,-60,60,7000),
-    4:("PA2i","PowerActor",1,0,0,0), 5:("Disp7","Screen",0,0,0,0),
-    6:("CYD","Controller",0,0,0,0), 7:("LD06","Lidar",1,-180,180,12000),
-    8:("Schalter","onOffSchalter",0,0,0,0), 9:("Disp5","Screen",0,0,0,0),
+    0:("Manager_Dev","MananagementDevice",0,0,0,0), 1:("Dome","HLK",3,-60,60,7000),
+    2:("Mini_Dome","HLK",2,-60,60,7000), 3:("Compact_Dome","HLK",1,-60,60,7000),
+    4:("PowerActor1","PowerActor",1,0,0,0), 5:("Disp_7","Screen",0,0,0,0),
+    6:("CYD","Controller",0,0,0,0), 7:("LD6","Lidar",1,-180,180,12000),
+    8:("Button","onOffSchalter",0,0,0,0), 9:("Disp_5","Screen",0,0,0,0),
     10:("Core2","Screen",0,0,0,0), 11:("Tab5","Screen",0,0,0,0),
-    12:("CYD35Z","Screen",0,0,0,0), 13:("Wave7z","Screen",0,0,0,0),
-    14:("Sim","MananagementDevice",0,0,0,0), 15:("LaserMarker","Marker",0,0,0,0),
-    16:("PA1_1","PowerActor",2,0,0,0), 17:("LidarC1","Lidar",0,-180,180,12000),
+    12:("CYD35Zoll","Screen",0,0,0,0), 13:("Wavetec_7inch","Screen",0,0,0,0),
+    14:("Simulator","MananagementDevice",0,0,0,0), 15:("Laser_Marker","Marker",0,0,0,0),
+    16:("PowerActor1_1","PowerActor",2,0,0,0), 17:("LidarC1","Lidar",0,-180,180,12000),
     18:("Cat_Identifier","Detector",0,0,0,0), 19:("Cat_Cam","Kamera",0,-31,31,8000),
 }
 
@@ -165,6 +166,10 @@ _lock = threading.Lock()
 _debug = deque(maxlen=80)        # {t, msg}
 _devices = {}                    # sender -> {t, ip}
 _events = []                     # {t, sender, sensor, wx, wy, wv, x, y, group}
+_events_base = 0                 # ABSOLUTER Index des ersten RAM-Events: /events?since=N
+                                 # arbeitet mit absoluten Indizes, damit das Protokoll auch
+                                 # nach dem Trimmen auf MAX_EVENTS weiterlaeuft (vorher fror
+                                 # die Live-Ansicht ein, sobald der Puffer voll war)
 _reset_seq = 0
 _settings = {}                   # sender -> {sup, val, act, t}  (aus settingsReport)
 _poses = {}                      # sender -> {x, y, head, mir, valid, t}  (aus poseReport;
@@ -342,7 +347,11 @@ app = Flask(__name__, static_folder="static")
 
 @app.after_request
 def no_cache(resp):
-    # Browser nie cachen lassen -> Live-Daten + immer aktuelle Seite
+    # Browser nie cachen lassen -> Live-Daten + immer aktuelle Seite.
+    # AUSNAHME /photo/<id>: Fotos sind unveraenderlich - ohne Cache laedt der
+    # Bilder-Tab bei jedem 15-s-Refresh alle Thumbnails neu (Flackern+Bandbreite).
+    if request.path.startswith("/photo/"):
+        return resp                          # max_age aus send_from_directory gilt
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     return resp
@@ -413,7 +422,10 @@ def ingest():
             db_rows.append((ev["t"], sid, ev["sensor"], ev["wx"], ev["wy"],
                             ev["wv"], ev["x"], ev["y"], ev["group"], ev["speed"]))
         if len(_events) > MAX_EVENTS:
-            del _events[0:len(_events) - MAX_EVENTS]
+            cut = len(_events) - MAX_EVENTS
+            del _events[0:cut]
+            global _events_base
+            _events_base += cut
     dropped = int(data.get("dropped", 0) or 0)
     if pose_rows or invalid_pose_sids:
         with _db_lock:
@@ -492,19 +504,26 @@ def state():
 
 @app.get("/events")
 def events():
+    # since = ABSOLUTER Event-Index (base im letzten Response + Anzahl gelieferter
+    # Events). Liegt er vor dem RAM-Fenster (getrimmt) oder dahinter (Server-
+    # Neustart), wird auf den Fensteranfang zurueckgesetzt - der Client erkennt
+    # das an base < since und ersetzt seine Ansicht.
     since = int(request.args.get("since", "0"))
     with _lock:
-        if since < 0 or since > len(_events):
-            since = 0
-        return jsonify(reset_seq=_reset_seq, base=since, total=len(_events),
-                       events=_events[since:since + 5000])
+        total = _events_base + len(_events)
+        if since < _events_base or since > total:
+            since = _events_base
+        lo = since - _events_base
+        return jsonify(reset_seq=_reset_seq, base=since, total=total,
+                       events=_events[lo:lo + 5000])
 
 
 @app.post("/reset")
 def reset():
-    global _reset_seq
+    global _reset_seq, _events_base
     with _lock:
         _events.clear()
+        _events_base = 0
         _reset_seq += 1
     return jsonify(ok=True, reset_seq=_reset_seq)
 
@@ -539,7 +558,9 @@ def manual_data():
                 "settings": {"sup": st["sup"], "val": st["val"], "act": st["act"]} if st else None,
                 "pose": _poses.get(sid),
             }
-        evs = list(_events[-MAX_EVENTS:])
+        # nur die juengsten Events: die Kalibrieransicht nutzt ohnehin nur die
+        # letzten Punktwolken - alle 20k RAM-Events waeren mehrere MB pro Aufruf
+        evs = list(_events[-4000:])
         poses = dict(_poses)
     # Manuell kalibrierbar = die HLK-Radarmodule (Dome/Mini_Dome/Compact_Dome).
     # Sie tragen in xComDef den Typ "HLK" (nicht "Radar") und koennen sich – anders
@@ -899,7 +920,9 @@ def coverage_export_csv():
     polys, sources = _coverage_polygons_for_current(devices, poses)
     lines = ["# CatFinder Coverage-Polygone v1", "# sender,source,n,x1,y1,..."]
     for sid, poly in sorted(polys.items()):
-        pts = poly[:16]                  # ESP32-Budget: kleine Polygone
+        # ESP32-Budget: max. 16 Ecken - VEREINFACHEN statt abschneiden (ein hartes
+        # poly[:16] machte den 360-Grad-Lidar-Sektor zum Halbkreis).
+        pts = poly if len(poly) <= 16 else catmodel.simplify_polygon(poly, 6, 16)
         fields = [str(sid), sources.get(str(sid), ""), str(len(pts))]
         for x, y in pts:
             fields += [str(int(x)), str(int(y))]
@@ -1098,12 +1121,14 @@ def _analyzer_loop():
 
 # ------------------------------------------------- Tracks servieren (aus der DB)
 
-def _combine_tracks(members, params, devices, coverage):
+def _combine_tracks(members, params, devices, coverage, storms=None):
     """Geklebte Tracks zu EINEM zusammenfassen und als Ganzes neu bewerten
-    (so, wie das Modell den Track sähe, wäre er nie zerrissen worden)."""
+    (so, wie das Modell den Track sähe, wäre er nie zerrissen worden).
+    storms = Sturm-Fenster aus storm_iv - ohne sie zählten Sturm-Punkte, die
+    in den Einzeltracks verworfen waren, nach dem Kleben plötzlich als Evidenz."""
     members = sorted(members, key=lambda m: m["t0"])
     pts = sorted([list(p) for m in members for p in m["pts"]])
-    feats = catmodel.score_track(pts, {}, coverage, devices, params, 0,
+    feats = catmodel.score_track(pts, storms or {}, coverage, devices, params, 0,
                                  -1e18, 1e18)
     feats["id"] = min(m["id"] for m in members)
     feats["key"] = members[0]["key"]
@@ -1123,6 +1148,10 @@ def _served_tracks(t0, t1, params, devices, coverage):
                                "WHERE t1>=? AND t0<=? ORDER BY t0",
                                (t0, t1)).fetchall()
         groups = _db.execute("SELECT id,keys FROM merges").fetchall()
+        srows = _db.execute("SELECT sender,t0,t1 FROM storm_iv").fetchall()
+    storms = {}
+    for sid, a, b in srows:
+        storms.setdefault(int(sid), []).append([a, b])
     tracks = {}
     for rid, key, data in rows:
         tr = json.loads(data)
@@ -1146,7 +1175,7 @@ def _served_tracks(t0, t1, params, devices, coverage):
         members = [tracks[k] for k in keys if k in tracks]
         if len(members) < 2:
             continue
-        comb = _combine_tracks(members, params, devices, coverage)
+        comb = _combine_tracks(members, params, devices, coverage, storms)
         comb["merge_id"] = gid
         for m in members:
             tracks.pop(m["key"], None)
