@@ -19,7 +19,16 @@ bool targetAlarm = false;
 #define NOSHOT_PATH "/noshot.csv"
 #define RASEN_PATH  "/rasen.csv"
 
+// Multicast-Empfangsqueue statt Single-Buffer: der AsyncUDP-Task sammelt Pakete
+// auch waehrend der blockierenden Gateway-HTTP-Posts (gwFlush/gwPollCommands) -
+// vorher gingen dabei ~50% der Events bei 10-Hz-Radar-Bursts verloren.
+#define MC_QUEUE_LEN 24
+
 #include <xComProc6_3.h>
+
+// Bus-Verkehr seriell mitdrucken? Bei 10 Hz kostet jede Zeile ~9 ms auf der
+// 115200er-Konsole und bremst die Loop - nur fuer USB-Diagnose einschalten.
+#define PRINT_BUS_TRAFFIC false
 
 // Default-No-Shot-Karte: wird beim ersten Boot ins LittleFS geschrieben, falls dort
 // noch keine Datei liegt. So kann der Manager auch ohne separaten Filesystem-Upload
@@ -203,10 +212,13 @@ void loop() {
       }
     }
   }
-  if (mcDataReceived) {
-    xMsg mcMsg;
-    mcMsg=lastMcMsg;
-    printSensorData(mcMsg);
+  {
+    uint16_t qd = mcQueueDropped();    // Queue lief ueber (extremer Burst) -> sichtbar machen
+    if (qd) gwAddDebug("MC-Queue voll: " + String(qd) + " Pakete verworfen");
+  }
+  xMsg mcMsg;
+  while (mcQueuePop(mcMsg)) {
+    if (PRINT_BUS_TRAFFIC) printSensorData(mcMsg);
     handleCommonMsg(mcMsg);            // settingsRequest/poseRequest generisch beantworten
 
     if (mcMsg.header.msgCode == HB) {
@@ -262,7 +274,6 @@ void loop() {
       if (getPayload(mcMsg, wp) && mcMsg.header.sender != ID)            // (fuer die Erfassungssektoren)
         gwAddPose(mcMsg.header.sender, wp);
     }
-    mcDataReceived = false;
   }
   gwTick();                            // Gateway: gepufferte Ereignisse periodisch an den VPS posten
   if (blinkOn && (millis()> timer)) {

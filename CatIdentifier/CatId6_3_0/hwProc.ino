@@ -2,7 +2,8 @@
 // Onboard-LED statt Pixeln) und die von xComProc erwarteten Kommentar-Ausgaben.
 
 void heardBeat() {
-  if ((timer + periodeForHB) < millis()) {
+  // millis()-Differenz statt Summenvergleich: wrap-sicher (Ueberlauf nach 49,7 Tagen)
+  if (millis() - timer >= periodeForHB) {
     hbPayload hb;
     hb.ip = getLastIpByte();
     hb.HBperiode = periodeForHB;
@@ -11,7 +12,7 @@ void heardBeat() {
     if (settingOn(stgHbLed)) digitalWrite(CATID_LED, CATID_LED_ON);   // HB-Blitz schaltbar
     timer = millis();
   }
-  if (statusLightOn && ((timer + HB_FLASH_MS) < millis())) {
+  if (statusLightOn && (millis() - timer >= HB_FLASH_MS)) {
     statusLightOn = false;
     if (!detLedOffMs) digitalWrite(CATID_LED, CATID_LED_OFF);           // Det-Blitz nicht abwuergen
     timer = millis();

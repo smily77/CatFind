@@ -101,7 +101,9 @@ def merged_params(params):
             w.update({str(kk): float(vv) for kk, vv in v.items()})
             p[k] = w
         elif k in DEFAULT_PARAMS and not isinstance(DEFAULT_PARAMS[k], dict):
-            p[k] = type(DEFAULT_PARAMS[k])(v)
+            d = DEFAULT_PARAMS[k]
+            # int-Parameter RUNDEN statt abschneiden (59.9 wurde sonst still zu 59)
+            p[k] = int(round(float(v))) if isinstance(d, int) else float(v)
     return p
 
 
@@ -305,8 +307,22 @@ def learn_mower_polygon(points, pose, angle_bin_deg=10.0, quantile=0.90,
     if len(used) < min_bins:
         return None, {"ok": False, "reason": "zu wenige Winkel-Bins",
                       "point_count": len(pts), "bin_count": len(used)}
+    # Deckt der Sensor nur einen Teilkreis ab (deutliche Winkelluecke), muss der
+    # SENSOR-STANDORT selbst Polygon-Scheitel sein - sonst schneidet die Sehne
+    # zwischen den Randwinkeln das Nahfeld direkt vor dem Sensor ab (eine Katze
+    # 2 m vor dem Radar laege "ausserhalb der Abdeckung"). Vgl. sector_polygon.
+    nbins_full = max(int(round(360.0 / step)), 1)
+    bidx = [b for b, _ in used]
+    gap_after = [((bidx[(i + 1) % len(bidx)] - bidx[i]) % nbins_full) or nbins_full
+                 for i in range(len(bidx))]
+    gi = max(range(len(gap_after)), key=lambda i: gap_after[i])
     hull = []
-    for b, r in used:
+    if gap_after[gi] * step >= 60.0:            # Teilkreis: Faecher mit Sensor als Scheitel
+        order = used[gi + 1:] + used[:gi + 1]
+        hull.append((px, py))                   # bleibt als poly[0] auch nach simplify erhalten
+    else:                                       # Rundum-Abdeckung: geschlossener Ring
+        order = used
+    for b, r in order:
         deg = -180.0 + (b + 0.5) * step
         rad = math.radians(deg)
         hull.append((px + math.sin(rad) * r, py + math.cos(rad) * r))
@@ -320,9 +336,13 @@ def learn_mower_polygon(points, pose, angle_bin_deg=10.0, quantile=0.90,
     return [[int(round(x)), int(round(y))] for x, y in poly], q
 
 
-def sector_polygon(dev, pose, arc_step_deg=12.0):
+def sector_polygon(dev, pose, arc_step_deg=12.0, max_pts=16):
     """Default-xComDef-Sektor als Weltpolygon, damit alle Coverage-Quellen als
-    Polygonliste exportierbar sind (ESP32: inside-any-polygon)."""
+    Polygonliste exportierbar sind (ESP32: inside-any-polygon).
+
+    max_pts begrenzt die Gesamtpunktzahl (Ursprung + Bogen) aufs ESP32-Budget:
+    ein 360-Grad-Lidar bekaeme sonst 32 Ecken, und ein hartes Abschneiden im
+    Export wuerde den Sektor zum Halbkreis machen."""
     rng = float(dev.get("covRange", 0) or 0)
     if rng <= 0 or not pose or not pose.get("valid"):
         return []
@@ -333,6 +353,7 @@ def sector_polygon(dev, pose, arc_step_deg=12.0):
     left, right = float(dev.get("covL", -180)), float(dev.get("covR", 180))
     span = max(right - left, 1.0)
     n = max(2, int(math.ceil(span / max(arc_step_deg, 2.0))))
+    n = min(n, max(2, int(max_pts) - 2))     # Ursprung + n+1 Bogenpunkte <= max_pts
     poly = [[int(round(px)), int(round(py))]]
     for i in range(n + 1):
         deg = left + span * i / n
@@ -408,7 +429,10 @@ def detect_storms(events, p):
         if not buckets:
             continue
         ivs = []
-        for k in range(min(buckets), max(buckets) + 1):
+        # nur BELEGTE Slots als Fensterstart: range(min,max) waere bei duennen
+        # Daten ueber Wochen Millionen Leer-Iterationen pro Sender (Backfill);
+        # ein Fenster ab leerem Slot kann die Schwelle ohnehin kaum erreichen.
+        for k in sorted(buckets):
             ws = [buckets[i] for i in range(k, k + slots_per_win) if i in buckets]
             n = sum(b[0] for b in ws)
             if n < need:

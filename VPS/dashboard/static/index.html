@@ -259,10 +259,15 @@
   </div>
 </div>
 <script>
-let events=[], resetSeq=null, mapPoints=null, view="list", lastSettings={};
+let events=[], evNext=0, resetSeq=null, mapPoints=null, view="list", lastSettings={};
+// evNext = naechster ABSOLUTER Event-Index fuer /events?since= (der Server trimmt
+// seinen RAM-Puffer; mit absoluten Indizes laeuft das Protokoll danach weiter,
+// statt dass die Live-Karten einfrieren).
 
 function colorFor(sender, sensor){ const h=(sender*53 + sensor*97)%360; return `hsl(${h},85%,55%)`; }
 function fmtTime(t){ return new Date(t*1000).toLocaleTimeString(); }
+// min/max ohne Spread: Math.min(...arr) wirft ab ~65k Elementen einen RangeError
+function minMaxArr(a){ let lo=Infinity, hi=-Infinity; for(const v of a){ if(v<lo)lo=v; if(v>hi)hi=v; } return [lo,hi]; }
 
 // Einstellungen/Aktionen (Bit-Index = stg*/act* aus xComDef6_3.h)
 const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor","CatDetected-Anzeige","Kamera-KI"];
@@ -519,7 +524,7 @@ function drawMap(pts, bg, title){
   pts.forEach(p=>{xs.push(p.x); ys.push(p.y);});
   if(view[0]==="g"){ xs.push(0); ys.push(0); }            // Ursprung als Referenz
   if(xs.length<2){ ctx.fillStyle="#555"; ctx.fillText("keine Daten", 12, 20); buildLegend([]); return; }
-  let minx=Math.min(...xs), maxx=Math.max(...xs), miny=Math.min(...ys), maxy=Math.max(...ys);
+  let [minx,maxx]=minMaxArr(xs), [miny,maxy]=minMaxArr(ys);
   const pad=0.5; minx-=pad; maxx+=pad; miny-=pad; maxy+=pad;
   const m=30, sx=(W-2*m)/(maxx-minx||1), sy=(H-2*m)/(maxy-miny||1), sc=Math.min(sx,sy);
   const X=x=> m + (x-minx)*sc;
@@ -574,7 +579,7 @@ function manWorld(p){ const c=Math.cos(MAN.ang), s=Math.sin(MAN.ang), y=MAN.mirr
 function manFit(W,H){
   const {refs,loc}=manPts(); const xs=[],ys=[]; (mapPoints||[]).forEach(p=>{xs.push(p[0]*1000);ys.push(p[1]*1000);}); refs.forEach(p=>{xs.push(p.x);ys.push(p.y)}); loc.map(manWorld).forEach(p=>{xs.push(p.x);ys.push(p.y)});
   if(xs.length<2){ MAN.view={cx:0,cy:0,s:0.05}; return; }
-  const minx=Math.min(...xs), maxx=Math.max(...xs), miny=Math.min(...ys), maxy=Math.max(...ys); MAN.view={cx:(minx+maxx)/2, cy:(miny+maxy)/2, s:Math.min(W/(maxx-minx+1000), H/(maxy-miny+1000))};
+  const [minx,maxx]=minMaxArr(xs), [miny,maxy]=minMaxArr(ys); MAN.view={cx:(minx+maxx)/2, cy:(miny+maxy)/2, s:Math.min(W/(maxx-minx+1000), H/(maxy-miny+1000))};
 }
 function drawManual(){
   const cv=document.getElementById('manMap'); if(!cv||cv.offsetParent===null) return; const dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight; cv.width=W*dpr; cv.height=H*dpr; const ctx=cv.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.fillStyle='#0c0c10'; ctx.fillRect(0,0,W,H); if(!MAN.view) manFit(W,H);
@@ -582,7 +587,9 @@ function drawManual(){
   ctx.strokeStyle='#222'; for(let gx=Math.floor((MAN.view.cx-W/2/MAN.view.s)/1000)*1000;gx<MAN.view.cx+W/2/MAN.view.s;gx+=1000){ctx.beginPath();ctx.moveTo(X(gx),0);ctx.lineTo(X(gx),H);ctx.stroke()} for(let gy=Math.floor((MAN.view.cy-H/2/MAN.view.s)/1000)*1000;gy<MAN.view.cy+H/2/MAN.view.s;gy+=1000){ctx.beginPath();ctx.moveTo(0,Y(gy));ctx.lineTo(W,Y(gy));ctx.stroke()}
   ctx.fillStyle='#566'; (mapPoints||[]).forEach(p=>ctx.fillRect(X(p[0]*1000)-1,Y(p[1]*1000)-1,2,2));
   const {refs,loc}=manPts(); refs.forEach(p=>{ctx.fillStyle=colorFor(p.s,p.sub);ctx.beginPath();ctx.arc(X(p.x),Y(p.y),3,0,7);ctx.fill();}); loc.forEach(p=>{const q=manWorld(p);ctx.fillStyle='#ffd23b';ctx.beginPath();ctx.arc(X(q.x),Y(q.y),3.5,0,7);ctx.fill();});
-  ctx.strokeStyle='#ffd23b'; ctx.beginPath(); ctx.arc(X(MAN.tx),Y(MAN.ty),8,0,7); ctx.stroke(); ctx.beginPath(); ctx.moveTo(X(MAN.tx),Y(MAN.ty)); ctx.lineTo(X(MAN.tx+700*Math.cos(MAN.ang)),Y(MAN.ty+700*Math.sin(MAN.ang))); ctx.stroke();
+  // Richtungslinie = BLICKRICHTUNG des Sensors (lokale +y-Achse, wie toPol/fillWorld),
+  // nicht die x-Achse - sonst zeigt sie beim Ausrichten um 90 Grad daneben.
+  ctx.strokeStyle='#ffd23b'; ctx.beginPath(); ctx.arc(X(MAN.tx),Y(MAN.ty),8,0,7); ctx.stroke(); ctx.beginPath(); ctx.moveTo(X(MAN.tx),Y(MAN.ty)); ctx.lineTo(X(MAN.tx-MAN.mirror*700*Math.sin(MAN.ang)),Y(MAN.ty+MAN.mirror*700*Math.cos(MAN.ang))); ctx.stroke();
   document.getElementById('manPoseTxt').textContent=`x=${Math.round(MAN.tx)} mm\ny=${Math.round(MAN.ty)} mm\nheading=${manDeg().toFixed(1)}°\nmirror=${MAN.mirror}\nReferenzpunkte=${refs.length}, Sensorpunkte=${loc.length}`;
 }
 function manPointer(e){ const r=e.currentTarget.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top}; }
@@ -611,11 +618,16 @@ async function tick(){
     if(view==="list") renderList(st.summary);
     if(view==="ctrl") renderCtrl(lastSettings);
     if(resetSeq===null) resetSeq=st.reset_seq;
-    if(st.reset_seq!==resetSeq){ events=[]; resetSeq=st.reset_seq; }
-    const ev = await (await fetch("/events?since="+events.length)).json();
-    if(ev.reset_seq!==resetSeq){ events=[]; resetSeq=ev.reset_seq; }
-    if(ev.base===0) events = ev.events.slice();
-    else if(ev.base===events.length) events = events.concat(ev.events);
+    if(st.reset_seq!==resetSeq){ events=[]; evNext=0; resetSeq=st.reset_seq; }
+    const ev = await (await fetch("/events?since="+evNext)).json();
+    if(ev.reset_seq!==resetSeq){ events=[]; evNext=0; resetSeq=ev.reset_seq; }
+    if(ev.base < evNext){                 // Server neu gestartet / zurueckgesprungen -> Ansicht ersetzen
+      events = ev.events.slice();
+    } else {                              // base > evNext = getrimmte Events verpasst -> einfach anhaengen
+      events = events.concat(ev.events);
+      if(events.length > 30000) events = events.slice(events.length - 30000);  // RAM-Schutz Browser
+    }
+    evNext = ev.base + ev.events.length;
     if(view!=="list") drawCurrent();
   }catch(e){ /* VPS kurz weg -> nächster Tick */ }
 }

@@ -12,6 +12,10 @@
 
 void announceCat(const catDetectedPayload& cd);   // im Hauptsketch
 
+// Modellzeit in Sekunden, 64-bit-Basis (esp_timer): millis()/1000.0 wuerde nach
+// 49,7 Tagen wrappen - dann waeren alle Track-/Sturm-Zeiten kaputt.
+static inline double ctNow() { return (double)(esp_timer_get_time() / 1000ULL) / 1000.0; }
+
 // ------------------------------------------------------------------ Parameter
 // (Struct-Definitionen in catTrackDef.h - Arduino-Autoprototypen brauchen sie frueher)
 CatParams CTP;
@@ -244,19 +248,24 @@ static float ctDistToSeg(int32_t px, int32_t py, int32_t ax, int32_t ay, int32_t
   return sqrtf(dx * dx + dy * dy);
 }
 
-static float ctPolygonDepth(int32_t wx, int32_t wy) {
-  float best = -1.0f;
+// SIGNIERTE Grenzdistanz ueber alle Polygone: innen = maximale Tiefe (>0),
+// aussen = -minimale Distanz zum naechsten Polygonrand. So bekommt ein Track,
+// der KNAPP AUSSERHALB der Abdeckung geboren wird (Normalfall beim Hereinlaufen),
+// denselben Eintritts-Bonus wie im VPS-Referenzmodell (_edge_dist).
+static float ctPolygonBorderDist(int32_t wx, int32_t wy) {
+  float inBest = -1.0f, outBest = 1e9f;
   for (int k = 0; k < CT_MAX_COV_POLYS; k++) {
     CtCoveragePoly& p = ctCov[k];
-    if (!p.used || !ctPointInCoveragePoly(p, wx, wy)) continue;
+    if (!p.used) continue;
     float d = 1e9f;
     for (int i = 0; i < p.n; i++) {
       int j = (i + 1) % p.n;
       d = min(d, ctDistToSeg(wx, wy, p.x[i], p.y[i], p.x[j], p.y[j]));
     }
-    if (d > best) best = d;
+    if (ctPointInCoveragePoly(p, wx, wy)) { if (d > inBest) inBest = d; }
+    else                                  { if (d < outBest) outBest = d; }
   }
-  return best;
+  return (inBest >= 0) ? inBest : -outBest;
 }
 
 // ------------------------------------------------- Sensor-Posen & Erfassungsrand
@@ -280,27 +289,33 @@ static bool ctEdgeActive() {
   return false;
 }
 
-static float ctUnionDepth(int32_t wx, int32_t wy) {
-  if (ctCovLoaded) return ctPolygonDepth(wx, wy);
-  float best = -1.0f;
+static float ctUnionBorderDist(int32_t wx, int32_t wy) {
+  if (ctCovLoaded) return ctPolygonBorderDist(wx, wy);
+  float inBest = -1.0f, outBest = 1e9f;
   for (int i = 0; i < deviceCount; i++) {
     if (device[i].covRangeMm == 0 || !ctPose[i].validWorldPose) continue;
     int xl, yl;
     worldToLocal(wx, wy, ctPose[i], xl, yl);
     float r = sqrtf((float)xl * xl + (float)yl * yl);
     float rng = device[i].covRangeMm;
-    if (r > rng) continue;                                  // ausserhalb dieses Sektors
-    float depth = rng - r;
     bool full = (device[i].covRightDeg - device[i].covLeftDeg) >= 360;
+    float phi = 0, margin = 0;
     if (!full) {
-      float phi = atan2f((float)xl, (float)yl) * 180.0f / M_PI;   // wie toPol
-      float margin = min(phi - device[i].covLeftDeg, (float)device[i].covRightDeg - phi);
-      if (margin < 0) continue;                             // ausserhalb des Winkels
-      depth = min(depth, margin * (float)M_PI / 180.0f * r);      // Bogenabstand zum Seitenrand
+      phi = atan2f((float)xl, (float)yl) * 180.0f / M_PI;         // wie toPol
+      margin = min(phi - device[i].covLeftDeg, (float)device[i].covRightDeg - phi);
     }
-    if (depth > best) best = depth;
+    if (r <= rng && (full || margin >= 0)) {                      // innen: Tiefe bis zum Rand
+      float depth = rng - r;
+      if (!full) depth = min(depth, margin * (float)M_PI / 180.0f * r);  // Bogenabstand Seitenrand
+      if (depth > inBest) inBest = depth;
+    } else {                                                      // aussen: Abstand zur Grenze (Naeherung)
+      float dr = (r > rng) ? (r - rng) : 0.0f;
+      float da = (!full && margin < 0) ? (-margin * (float)M_PI / 180.0f * min(r, rng)) : 0.0f;
+      float dist = sqrtf(dr * dr + da * da);
+      if (dist < outBest) outBest = dist;
+    }
   }
-  return best;
+  return (inBest >= 0) ? inBest : ((outBest < 1e8f) ? -outBest : -1e9f);
 }
 
 // ------------------------------------------------------------- Sturm je Sensor
@@ -419,9 +434,11 @@ static void ctEvaluate(CtTrack& tr, bool stationaryNow) {
   if ((int)tr.n >= CTP.long_track_points) score += CTP.score_long;
   if (tr.tLast - tr.t0 < CTP.short_track_s) score -= CTP.penalty_short;
   if (tr.fusion) score += CTP.score_fusion;
-  if (tr.birthDepth > -1.5f) {                              // Randlogik war aktiv
-    if (tr.birthDepth >= 0 && tr.birthDepth <= CTP.edge_dist_mm) score += CTP.score_entry;
-    else if (tr.birthDepth > CTP.edge_dist_mm) score -= CTP.penalty_mid_birth;
+  if (tr.birthValid) {                                      // Randlogik war bei Geburt aktiv
+    // wie VPS _edge_dist: nahe der Grenze (innen ODER knapp aussen) = Eintritt;
+    // tief in der Abdeckung aufgetaucht = weicher Malus; weit aussen = neutral.
+    if (fabsf(tr.birthDist) <= CTP.edge_dist_mm)  score += CTP.score_entry;
+    else if (tr.birthDist > CTP.edge_dist_mm)     score -= CTP.penalty_mid_birth;
   }
   if (stationaryNow) score += CTP.score_stationary;
   if (score < 0) score = 0; if (score > 100) score = 100;
@@ -441,7 +458,7 @@ static void ctEvaluate(CtTrack& tr, bool stationaryNow) {
 
 // neues catObserved (Welt-mm) ins Modell
 void ctFeed(uint8_t sender, int32_t wx, int32_t wy) {
-  double t = millis() / 1000.0;
+  double t = ctNow();
   if (ctStormFeedAndCheck(sender, t, wx, wy)) return;       // Sturm: keine Evidenz
 
   // beste Fortsetzung suchen (Gate; nach track_gap bis stitch_gap: Naht wie stitch_tracks)
@@ -470,7 +487,8 @@ void ctFeed(uint8_t sender, int32_t wx, int32_t wy) {
     tr.used = true;
     tr.t0 = tr.tLast = t;
     tr.x0 = tr.xLast = wx; tr.y0 = tr.yLast = wy;
-    tr.birthDepth = ctEdgeActive() ? ctUnionDepth(wx, wy) : -2.0f;
+    tr.birthValid = ctEdgeActive();
+    tr.birthDist = tr.birthValid ? ctUnionBorderDist(wx, wy) : 0.0f;
     best = slot;
   }
   CtTrack& tr = ctTr[best];
@@ -506,7 +524,7 @@ void ctTick() {
   static unsigned long lastSweep = 0;
   if (millis() - lastSweep < 2000) return;
   lastSweep = millis();
-  double t = millis() / 1000.0;
+  double t = ctNow();
   for (int i = 0; i < CT_MAX_TRACKS; i++)
     if (ctTr[i].used && t - ctTr[i].tLast > CTP.stitch_gap_s) ctTr[i].used = false;
 }

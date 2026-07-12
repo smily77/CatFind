@@ -1,5 +1,6 @@
 void  heardBeat() {
-  if ((timer + periodeForHB) < millis()) {
+  // millis()-Differenz statt Summenvergleich: wrap-sicher (Ueberlauf nach 49,7 Tagen)
+  if (millis() - timer >= periodeForHB) {
     radarHbPayload rhb;
     rhb.hb.ip = getLastIpByte();
     rhb.hb.HBperiode = periodeForHB;
@@ -9,7 +10,7 @@ void  heardBeat() {
     if (settingOn(stgHbLed)) setPixel(minPix,0x00FF00);   // HB-Anzeige schaltbar
     timer = millis();
   }
-  if (statusLightOn && ((timer + statusLightDuration) < millis())) {
+  if (statusLightOn && (millis() - timer >= statusLightDuration)) {
     statusLightOn = false;
     setPixel(minPix,0x000000);
     timer = millis();
