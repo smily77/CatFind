@@ -370,7 +370,13 @@ let blkWins = [], blkTz = "";
 async function loadBlock(){
   try{
     const r = await (await fetch("/photo_block")).json();
-    blkWins = r.windows || [];
+    // Waehrend der Dialog offen ist, darf der periodische Hintergrund-Poll
+    // (alle 15s ueber loadPics) laufende Bearbeitungen (neue/geaenderte
+    // Zeilen) nicht ueberschreiben - sonst gehen unsichtbar Eingaben verloren,
+    // wenn das Ausfuellen (z. B. Zeit-Wahlrad am iPhone) laenger dauert.
+    if(document.getElementById("picBlkOv").style.display === "none"){
+      blkWins = r.windows || [];
+    }
     blkTz = r.tz || "";
     const el = document.getElementById("picBlkStatus");
     const list = blkWins.map(w=>`${w.start}–${w.end}`).join(", ");
