@@ -332,7 +332,9 @@ async function loadPics(){
       };
       c.onclick = ()=>{
         picOpenId = id;
-        document.getElementById("picsBig").src = "/photo/"+id;
+        const big = document.getElementById("picsBig");
+        big.src = "";     // altes Bild sofort verwerfen - sonst zeigt es bis zum
+        big.src = "/photo/"+id;  // Laden des neuen Fotos noch das vorige (Beschriftung waere schon aktuell)
         document.getElementById("picsMeta").textContent = c.dataset.meta;
         document.getElementById("picsOv").style.display = "flex";
       };
