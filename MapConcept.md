@@ -206,16 +206,81 @@ der Notweg soll simpel bleiben.
 
 ## Umsetzung in Stufen (jede einzeln deploybar)
 
-| Stufe | Inhalt | Deploy |
-|---|---|---|
-| 1 | Manager: Karten aus dem Code raus; Annahme-Code (Validierung, Auto-Version, Announce) für die per VPS abgeholte Karte; Kartenstand-Push an VPS. Kein WebServer nötig — nur `/commands`-Poll (existiert) + `HTTP GET` vom VPS (`HTTPClient` existiert schon) | Manager-OTA |
-| 2 | VPS: Spiegel statt GitHub-Regex, `/mapsync`, `/maps/<typ>`, pending-Mechanik im `/commands`-Kanal, automatischer Git-Commit der angenommenen Karte nach `Map/<typ>.csv` | VPS |
-| 3 | Analyse-Tab: Polygon-Editor mit Status-Rückmeldung | VPS |
-| 4 | Lidar/Radar: `mapInfo`-Announce-Handler + stündlicher Re-Check | Sensor-OTA |
-| 5 | Repo/Doku aufräumen (alte CSVs, README, Doku-Kapitel) | — |
+| Stufe | Inhalt | Deploy | Status |
+|---|---|---|---|
+| 1 | Manager: Karten aus dem Code raus; Annahme-Code (Validierung, Auto-Version, Announce) für die per VPS abgeholte Karte; Kartenstand-Push an VPS. Kein WebServer nötig — nur `/commands`-Poll (existiert) + `HTTP GET` vom VPS (`HTTPClient` existiert schon) | Manager-OTA | ✅ umgesetzt |
+| 2 | VPS: Spiegel statt GitHub-Regex, `/mapsync`, `/maps/<typ>`, pending-Mechanik im `/commands`-Kanal, automatischer Git-Commit der angenommenen Karte nach `Map/<typ>.csv` | VPS | ✅ umgesetzt |
+| 3 | Analyse-Tab: Polygon-Editor mit Status-Rückmeldung | VPS | ✅ umgesetzt |
+| 4 | Lidar/Radar: `mapInfo`-Announce-Handler + stündlicher Re-Check | Sensor-OTA | ✅ umgesetzt |
+| 5 | Repo/Doku aufräumen (alte CSVs, README, Doku-Kapitel) | — | ✅ umgesetzt |
 
 Stufe 1 allein entfernt bereits die Karten aus dem Code, liefert aber noch
 keinen Weg für eine neue Karte (kein Pending-Mechanismus ohne Stufe 2) — für
 den ersten produktiven Nutzen gehören Stufe 1+2 zusammen. Der Notweg
 (Repo-CSV + Flash) funktioniert schon ab Stufe 1 unabhängig davon. Die
 Stufen 3–4 sind Komfort (Editor, Live-Reload).
+
+## Umsetzungsstatus und Warnungen (nach Implementierung)
+
+Alle fünf Stufen sind im Code umgesetzt (Manager-Firmware, VPS-Backend,
+Analyse-Tab-Editor, Sensor-Firmware, Repo-Aufräumung). Geprüft wurde:
+
+- **VPS-Backend**: end-to-end per Flask-Testclient UND per echtem Browser
+  (Playwright) durchgespielt — Editor speichert → `/maps/<typ>` pending →
+  simulierter Manager holt ab (`GET /maps/<typ>?pending=1`) → bestätigt
+  (`POST /mapsync`) → Spiegel aktualisiert, `Map/<typ>.csv`-Commit ausgelöst
+  (ohne Token no-op, siehe unten) → Editor-Statuszeile pollt und zeigt
+  „übernommen als vN“. Alle Schritte funktionieren wie im Konzept beschrieben.
+- **Analyse-Tab-Editor**: Punkt ziehen, Klick-auf-Kante-fügt-Punkt-ein,
+  Punkt löschen (Taste/Button), Ring hinzufügen/löschen im echten Browser
+  geprüft (Playwright, Koordinaten aus dem Seiten-Kontext berechnet) —
+  funktioniert korrekt inkl. Welt-mm-Umrechnung.
+- **Manager-Firmware**: **konnte nicht kompiliert werden** — diese Umgebung
+  hat keine Arduino-Toolchain/Board-Definitionen. Geprüft wurden stattdessen
+  Klammern-/Klammer-Balance, Funktions-/Variablen-Sichtbarkeit über die
+  `.ino`-Tab-Reihenfolge (Arduino generiert nur für Funktionen automatische
+  Prototypen, nicht für Variablen — dabei wurde ein echter Fehler gefunden
+  und behoben: `ensureMaps()` griff direkt auf `gwMapVer`/`gwMapCrc` aus
+  `gatewayProc.ino` zu, das textuell NACH `Manager6_3_0.ino` einfliesst;
+  jetzt nur noch ein Funktionsaufruf) sowie die Handhabung von
+  `noShotLoaded`/`insideNoShot` (Annahme-Validierung mutiert dieselbe
+  globale Polygon-Struktur wie die Fire-Gating-Logik — auf dem Manager
+  unkritisch, da er `insideNoShot` selbst nie aufruft; auf den Sensoren
+  wurde bewusst NUR die eigene Status-Variable `noShotOK`/`rasenLoaded`
+  zurückgesetzt, nie `noShotLoaded` direkt, damit ein Announce/Re-Check nie
+  ein Fail-Open-Fenster öffnet). **Vor dem Flashen auf echte Hardware:
+  Kompilieren und auf dem Simulator/einem Testgerät verifizieren.**
+- **Sensoren (Radar/LidarC1)**: dieselbe Einschränkung — kein Compiler
+  verfügbar, nur Code-Review + Cross-Tab-Sichtbarkeitsprüfung.
+
+Offene Punkte / bewusste Vereinfachungen:
+
+- **Keine Authentifizierung** auf den neuen VPS-Endpunkten (`/maps/<typ>`,
+  `/mapsync`) — passt zum bereits bekannten offenen Punkt „Review-Punkt 10“
+  (gilt für alle VPS-Schreibendpunkte, nicht neu durch dieses Konzept).
+- **Git-Commit ist best-effort**: ohne `GITHUB_MAP_TOKEN` (Env-Var) wird er
+  übersprungen (kein Fehler, keine Blockade der Kartenverteilung selbst).
+  Token muss vor dem produktiven Einsatz von Stufe 2 gesetzt werden, sonst
+  bleibt Leitplanke 5 („Repo ist immer Abbild“) unerfüllt.
+- **Header-`crc=`-Feld ist rein informativ**: es deckt nur die Ring-Daten
+  ohne Kopfzeile ab (ein selbstreferenzieller CRC über die ganze Datei
+  inkl. der eigenen `crc=`-Zeichenkette ist unmöglich). Der tatsächlich
+  fürs Versions-/Integritätsprotokoll verwendete `fileCrc`
+  (`mapInfoPayload`) wird weiterhin korrekt über die komplette Datei
+  berechnet (`mapFileInfo`/`crc32Bytes`) — nur die Textzahl im Kommentar
+  ist eine Annäherung fürs menschliche Auge.
+- **Ring-Validierung ist etwas großzügiger als „jeder Ring ≥ 3 Punkte“**:
+  `gwAcceptMap` nutzt den vorhandenen `loadNoShot`-Parser, der nur prüft
+  „mindestens 1 Ring UND insgesamt ≥ 3 Punkte“ (nicht: JEDER Ring einzeln
+  ≥ 3). Über den regulären Weg (Editor) kann das nicht passieren — sowohl
+  das Frontend als auch `/maps/<typ>` (POST) im VPS lehnen Ringe mit < 3
+  Punkten schon vorher ab. Nur beim Notweg (Repo-CSV von Hand editieren,
+  am Editor vorbei) könnte ein zu kurzer Ring unbemerkt durchrutschen; er
+  würde von `insideNoShot` dann still ignoriert (Ring mit < 3 Punkten
+  trägt nicht zum Point-in-Polygon-Test bei), nicht hart abgelehnt.
+- **Editor-„Ring +“** legt ein kleines Dreieck in der Kartenmitte an, das
+  man danach an Ort und Stelle ziehen muss — kein Klick-zum-Zeichnen-Modus
+  (bewusst einfach gehalten, siehe Aufwand/Nutzen).
+- **Statuszeile „Lidar: v13 ✓“** (Sensor-Kartenversion im HB) ist wie im
+  Entwurf vermerkt NICHT umgesetzt — bräuchte eine Protokolländerung
+  (`hbPayload`/Sensor-Firmware), als eigene Ausbaustufe offen.

@@ -340,6 +340,13 @@ struct __attribute__((packed)) settingsPayload {
 #define cmdManualPoseY            25   // info: Welt-Y (mm) fuer manuelle VPS-Kalibration vorbereiten
 #define cmdManualPoseHeading      26   // info: Heading in PA-Einheiten (0..4095) fuer manuelle VPS-Kalibration
 #define cmdManualPoseMirrorCommit 27   // info: Mirror (+1/-1); uebernimmt+speichert vorbereitete manuelle Pose
+// Karten-Sync ueber den VPS (MapConcept.md, Weg "VPS-Editor"). Beide nur an den
+// Manager selbst gerichtet (target = Manager in der /commands-Queue) und werden
+// in gwInjectCommand() VOR der generischen commandMsg-Behandlung abgefangen -
+// sie laufen nicht ueber den Bus, sondern loesen direkt einen HTTP-Aufruf zum
+// VPS aus (der Manager ist der einzige, der den VPS erreichen kann).
+#define cmdMapFetch               28   // info: Kartentyp (mapNoShot/mapRasen) - pending Karte vom VPS abholen+annehmen
+#define cmdMapPush                29   // info: Kartentyp - aktuelle Karte (egal welcher Herkunft) an /mapsync melden (Re-Sync)
 
 //---------------------------------------------------------------------------------------
 // Welt-Pose dieses Geraets (jedes Geraet besitzt diese Variablen, damit die

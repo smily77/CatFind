@@ -1064,6 +1064,22 @@ bool acquireNoShot(const char* path, uint8_t managerOctet, unsigned long waitMs)
   return acquireMap(mapNoShot, path, managerOctet, waitMs);
 }
 
+// Unaufgeforderten mapInfo-Announce (Multicast, vom Manager nach jeder angenommenen
+// Kartenaenderung gesendet - siehe gwAcceptMap in gatewayProc.ino) auswerten: true =
+// die Announce-Karte betrifft mapType UND weicht von der lokal geladenen Version/CRC
+// ab. Blockiert NICHT selbst (acquireMap wartet bis zu waitMs) - der Aufrufer soll nur
+// ein Flag setzen und den eigentlichen Download aus der naechsten Service-Routine
+// anstossen (Fangnetz siehe MapConcept.md Stufe 4: stuendlicher Re-Check zusaetzlich,
+// falls ein Announce per UDP verlorengeht - es gibt kein Resend).
+bool mapAnnounceOutdated(const xMsg& m, uint8_t mapType, const char* path) {
+  if (m.header.msgCode != mapInfo) return false;
+  mapInfoPayload info;
+  if (!getPayload(m, info) || info.mapType != mapType) return false;
+  uint16_t lv = 0; uint32_t lcrc = 0, llen = 0;
+  if (mapFileInfo(path, lv, lcrc, llen) && info.version == lv && info.fileCrc == lcrc) return false;
+  return true;
+}
+
 //---------------------------------------------------------------------------------------
 // Welt-Pose per VPS bestimmen. wrap360f/angDiff180 + resolvePose sind generisch; der
 // eigentliche HTTP-Aufruf vpsLocalize zieht HTTPClient und wird nur kompiliert, wenn

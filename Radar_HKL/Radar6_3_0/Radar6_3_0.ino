@@ -41,6 +41,8 @@ posPayload obsData;
 #define RASEN_PATH        "/rasen.csv"
 #define MAP_WAIT_MS        6000   // so lange auf mapInfo/Chunks vom Manager warten
 #define MAP_RETRY_MS      60000   // Karte nicht bekommen -> so lange bis zum naechsten Versuch
+#define MAP_RECHECK_MS  3600000UL // Fangnetz: auch mit geladener Karte stuendlich neu pruefen
+                                  // (ein mapInfo-Announce kann per UDP verlorengehen - kein Resend)
 
 int32_t  lastTargetX = 0, lastTargetY = 0;   // juengste eigene Detektion (fuer Health-Check)
 unsigned long lastTargetMs = 0;              // wann zuletzt ein Radar-Target aktiv war
@@ -48,6 +50,7 @@ unsigned long lastWorldObsMs = 0;            // wann zuletzt eine welt-valide ca
 unsigned long autoArmMs = 0;                 // seit wann Co-Observation anliegt (0 = nicht)
 bool     rasenLoaded = false;                // RasenKarte im RAM (insideNoShot nutzbar)
 unsigned long lastMapTry = 0;                // letzter Beschaffungsversuch (0 = noch keiner)
+bool     mapRecheckNow = false;              // per Announce (mapInfo) sofortiger Re-Check angefordert
 
 #include <xComProc6_3.h>
 
@@ -123,6 +126,10 @@ void handleCommand(const xMsg& m) {
 // (im Fenster sammeln; sonst Health-Check der eigenen Pose).
 void handleObservation(const xMsg& m) {
   if (handleCommonMsg(m)) return;    // settingsRequest/poseRequest (Broadcast) generisch
+  if (m.header.msgCode == mapInfo) {  // Announce: Manager hat eine Karte angenommen (gwAcceptMap)
+    if (mapAnnounceOutdated(m, mapRasen, RASEN_PATH)) { rasenLoaded = false; mapRecheckNow = true; }
+    return;
+  }
   if (m.header.msgCode != catObserved || m.header.sender == ID) return;
   posPayload obs;
   if (!getPayload(m, obs) || !obs.worldValid) return;   // nur welt-valide Quellen taugen
@@ -177,11 +184,15 @@ void processTargets() {
 
 // RasenKarte beschaffen, sobald eine gueltige Welt-Pose da ist (vorher nuetzt sie nichts):
 // erst lokaler LittleFS-Cache + Versionsabgleich beim Manager, sonst Download (acquireMap
-// blockiert dabei bis MAP_WAIT_MS - passiert nur einmal bzw. alle MAP_RETRY_MS).
+// blockiert dabei bis MAP_WAIT_MS). Ohne Karte alle MAP_RETRY_MS neuer Versuch; MIT
+// geladener Karte zusaetzlich alle MAP_RECHECK_MS ein Fangnetz-Re-Check UND sofort bei
+// einem passenden mapInfo-Announce (mapRecheckNow, siehe handleObservation).
 void serviceRasenMap() {
-  if (rasenLoaded || !myPose.validWorldPose || calib.active) return;
-  if (lastMapTry != 0 && millis() - lastMapTry < MAP_RETRY_MS) return;
+  if (!myPose.validWorldPose || calib.active) return;
+  unsigned long dueMs = rasenLoaded ? MAP_RECHECK_MS : MAP_RETRY_MS;
+  if (!mapRecheckNow && lastMapTry != 0 && millis() - lastMapTry < dueMs) return;
   lastMapTry = millis();
+  mapRecheckNow = false;
   rasenLoaded = acquireMap(mapRasen, RASEN_PATH, device[Manager].IP, MAP_WAIT_MS);
   sendUdpTextln(rasenLoaded ? "RasenKarte geladen - melde nur Ziele auf dem Rasen"
                             : "RasenKarte nicht verfuegbar - melde ungefiltert");

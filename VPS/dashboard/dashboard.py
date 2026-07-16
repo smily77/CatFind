@@ -11,11 +11,18 @@ auf einer Web-Seite dar:
 
 Endpunkte:
   GET  /                index.html (Single-Page-UI)
-  POST /ingest          Manager-Push: {"events":[...],"debug":[...],"hb":[...],"settings":[...]}
+  POST /ingest          Manager-Push: {"events":[...],"debug":[...],"hb":[...],"settings":[...],
+                        "maps":[{"type","version","crc"},...]}
   GET  /state           Debug + Geräte + Minuten-Zusammenfassung + Geräte-Einstellungen
   GET  /events?since=N  neue catObserved ab Index N (für die Karten)
   POST /reset           akkumulierte Ereignisse löschen
-  GET  /map             RasenKarte-Punkte (aus dem GitHub-Repo) für die Welt-Karte
+  GET  /map             Rasen-Punkte (Manager-Spiegel, Meter) für die Welt-Karte
+  GET  /noshot          No-Shot-Karte (Manager-Spiegel) als Ringe in Welt-mm
+  GET  /rasenmap        RasenKarte (Manager-Spiegel) als Ringe in Welt-mm (für den Editor)
+  GET  /maps/<typ>      Manager holt eine pending Karte ab (204 = nichts pending)
+  POST /maps/<typ>      Editor speichert eine Kartenänderung als pending {"rings":[[[x,y],...],...]}
+  POST /mapsync         Manager meldet die aktive Karte (Version/CRC in der Query, CSV im Body) -
+                        siehe MapConcept.md für den vollständigen Karten-Sync-Ablauf
   GET/POST /coverage_*  gelernte Sensor-Erfassungs-Polygone aus Mäherfahrten
                         inkl. /coverage_export(.csv) fuer CatIdentifier/ESP32
   GET  /manual_data     Daten fuer manuelle Sensor-Weltpose-Kalibration
@@ -58,16 +65,12 @@ der Geräte per /ingest ("poses", aus poseReport). Daraus baut catmodel.
 build_coverage_geo die Abdeckungs-Sektoren — nach dem Versetzen eines Sensors
 stimmt der Bereich sofort wieder. Fallback ohne Posen: empirische Abdeckung.
 """
-import os, re, time, json, base64, sqlite3, threading, hashlib, traceback, urllib.request, zoneinfo
+import os, re, time, json, base64, sqlite3, threading, hashlib, traceback, urllib.request, urllib.error, zoneinfo
 from datetime import datetime
 from collections import deque, OrderedDict
 from flask import Flask, request, jsonify, send_from_directory, Response
 import catmodel
 
-MAP_URL      = os.environ.get(
-    "MAP_URL",
-    "https://raw.githubusercontent.com/smily77/CatFind/main/Map/RasenKarte.csv")
-FALLBACK_MAP = os.environ.get("FALLBACK_MAP", "/app/RasenKarte.csv")
 MAX_EVENTS   = int(os.environ.get("MAX_EVENTS", "20000"))
 HB_WINDOW_S  = int(os.environ.get("HB_WINDOW_S", "180"))    # "aktiv" = HB in den letzten 3 min
 DB_PATH      = os.environ.get("DB_PATH", "/data/catfinder.db")
@@ -81,9 +84,86 @@ except Exception:                                            # noqa: BLE001
 XCOMDEF_URL  = os.environ.get(
     "XCOMDEF_URL",
     "https://raw.githubusercontent.com/smily77/CatFind/main/Controller/Manager6_3_0/xComDef6_3.h")
-NOSHOT_URL   = os.environ.get(
-    "NOSHOT_URL",
-    "https://raw.githubusercontent.com/smily77/CatFind/main/Controller/Manager6_3_0/Manager6_3_0.ino")
+
+# --- Karten-Spiegel (MapConcept.md) ------------------------------------------------
+# Kein GitHub-Regex-Fetch mehr (frueher NOSHOT_URL -> Manager6_3_0.ino parsen bzw.
+# MAP_URL auf die Meter-RasenKarte): der VPS zeigt nur noch, was der Manager per
+# /mapsync SELBST bestaetigt hat - das ist immer der wirklich aktive Kartenstand,
+# nicht das, was zuletzt auf GitHub gepusht wurde. Ist der Spiegel leer (frischer
+# VPS, Manager noch nie verbunden), liefern /map und /noshot schlicht nichts.
+GITHUB_REPO      = os.environ.get("GITHUB_REPO", "smily77/CatFind")
+GITHUB_MAP_TOKEN = os.environ.get("GITHUB_MAP_TOKEN", "")   # Deploy-Token, nur Schreibrecht auf Map/
+MAP_REPO_PATH = {"noshot": "Map/noshot.csv", "rasen": "Map/rasen.csv"}
+MAP_TYPE_ID   = {"noshot": 1, "rasen": 2}      # == mapNoShot/mapRasen in xComDef6_3.h
+MAP_CMD_FETCH = 28   # == cmdMapFetch (xComDef6_3.h): Manager holt eine pending Karte ab
+MAP_CMD_PUSH  = 29   # == cmdMapPush  (xComDef6_3.h): Manager meldet die aktive Karte (Re-Sync)
+MANAGER_TARGET = 0   # == #define Manager 0 (xComDef6_3.h device-Index)
+
+_map_mirror_lock = threading.Lock()
+_map_mirror = {}                 # {"noshot": {"version","crc","csv","rings","t"}, "rasen": {...}}
+_map_pending_lock = threading.Lock()
+_map_pending = {}                # {"noshot": {"csv","t"}, "rasen": {...}} - Editor "Speichern", bis
+                                  # der Manager sie abgeholt (und via /mapsync bestaetigt) hat
+_map_resync_requested = {}       # type -> letzter cmdMapPush-Anstoss (Anti-Spam in ingest())
+
+
+def _parse_map_csv(text):
+    """CSV (Kommentarzeilen '#', Ringe durch Leerzeile getrennt, 'x,y' in Welt-mm) -> Ringe."""
+    rings, ring = [], []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            if len(ring) >= 3:
+                rings.append(ring)
+            ring = []
+            continue
+        if line.startswith("#"):
+            continue
+        p = line.replace(";", ",").split(",")
+        try:
+            ring.append([int(float(p[0])), int(float(p[1]))])
+        except (ValueError, IndexError):
+            continue
+    if len(ring) >= 3:
+        rings.append(ring)
+    return rings
+
+
+def _github_commit_map(map_type, csv_text, version):
+    """Vom Manager bestaetigte Karte nach Map/<typ>.csv committen (GitHub Contents
+    API - kein lokaler Git-Client/Checkout im Container noetig). Best-effort: ohne
+    Token oder bei Fehlern nur geloggt, nie fatal - die Kartenverteilung selbst
+    haengt NICHT vom Repo-Spiegel ab (Leitplanke 1, MapConcept.md)."""
+    if not GITHUB_MAP_TOKEN:
+        return
+    path = MAP_REPO_PATH.get(map_type)
+    if not path:
+        return
+    api = "https://api.github.com/repos/%s/contents/%s" % (GITHUB_REPO, path)
+    headers = {"Authorization": "token " + GITHUB_MAP_TOKEN,
+               "Accept": "application/vnd.github+json",
+               "User-Agent": "CatFind-VPS"}
+    try:
+        sha = None
+        try:
+            with urllib.request.urlopen(urllib.request.Request(api, headers=headers), timeout=10) as r:
+                sha = json.load(r).get("sha")
+        except urllib.error.HTTPError as e:
+            if e.code != 404:        # 404 = Datei existiert noch nicht -> sha bleibt None (Neuanlage)
+                raise
+        payload = {
+            "message": "Karte %s: v%s vom Manager uebernommen (VPS-Editor)" % (map_type, version),
+            "content": base64.b64encode(csv_text.encode("utf-8")).decode("ascii"),
+        }
+        if sha:
+            payload["sha"] = sha
+        req = urllib.request.Request(api, data=json.dumps(payload).encode("utf-8"),
+                                      headers=headers, method="PUT")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            r.read()
+        print("map %s: v%s nach %s committet" % (map_type, version, path), flush=True)
+    except Exception as e:                                        # noqa: BLE001
+        print("map %s: Git-Commit fehlgeschlagen: %s" % (map_type, e), flush=True)
 
 # Fallback-Geräteverzeichnis (Name/Typ/Gruppe/Erfassungsbereich), falls
 # xComDef6_3.h nicht erreichbar ist. Führend ist IMMER die live geparste
@@ -192,10 +272,6 @@ def _sysmsg(msg):
 
 _cmd_lock = threading.Lock()
 _cmd_queue = []                  # [(target, cmd, info)]  Webinterface -> Manager -> Bus
-
-_map_lock = threading.Lock()
-_map = []                        # [[x,y],...] Meter
-_map_ts = 0.0
 
 # ---------------------------------------------------------------- Persistenz (SQLite im Docker-Volume)
 
@@ -316,76 +392,22 @@ def save_params(p):
         json.dump(p, f, indent=2, sort_keys=True)
 
 
-def load_map():
-    global _map, _map_ts
-    with _map_lock:
-        if _map and time.time() - _map_ts < 600:
-            return
-        text = None
-        try:
-            with urllib.request.urlopen(MAP_URL, timeout=10) as r:
-                text = r.read().decode("utf-8", "replace")
-        except Exception as e:                                  # noqa: BLE001
-            print("map fetch failed: %s" % e, flush=True)
-        if text is None and os.path.exists(FALLBACK_MAP):
-            text = open(FALLBACK_MAP, encoding="utf-8", errors="replace").read()
-        pts = []
-        if text:
-            for line in text.splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                p = line.replace(";", ",").split(",")
-                try:
-                    pts.append([float(p[0]), float(p[1])])
-                except (ValueError, IndexError):
-                    continue
-        if pts:
-            _map, _map_ts = pts, time.time()
-            print("map loaded: %d points" % len(pts), flush=True)
+def map_mirror_rings(map_type):
+    """Aktuelle Ringe eines Kartentyps aus dem Manager-Spiegel (leer = noch nichts
+    bestaetigt - kein GitHub-Fallback mehr, siehe /mapsync und _map_mirror oben)."""
+    with _map_mirror_lock:
+        return list(_map_mirror.get(map_type, {}).get("rings", []))
 
 
-_noshot, _noshot_ts = None, 0.0
-_noshot_lock = threading.Lock()
-
-def load_noshot():
-    # No-Shot-Karte (erlaubte Schusszone, Welt-mm) fürs Karten-Overlay. Quelle =
-    # NOSHOT_DEFAULT-Seed im Manager-Quellcode (GitHub main, wie xComDef) — der
-    # Manager verteilt dieselbe Karte aus seinem LittleFS an die Aktoren
-    # (Kartenänderung = git push + Manager-Update). Mehrere Ringe durch
-    # Leerzeile getrennt.
-    global _noshot, _noshot_ts
-    with _noshot_lock:
-        if _noshot is not None and time.time() - _noshot_ts < 600:
-            return _noshot
-        rings = []
-        try:
-            with urllib.request.urlopen(NOSHOT_URL, timeout=10) as r:
-                src = r.read().decode("utf-8", "replace")
-            m = re.search(r'NOSHOT_DEFAULT\[\]\s*=\s*R"CSV\((.*?)\)CSV"', src, re.S)
-            ring = []
-            for line in (m.group(1) if m else "").splitlines():
-                line = line.strip()
-                if line.startswith("#"):
-                    continue
-                if not line:
-                    if len(ring) >= 3:
-                        rings.append(ring)
-                    ring = []
-                    continue
-                p = line.replace(";", ",").split(",")
-                try:
-                    ring.append([int(float(p[0])), int(float(p[1]))])
-                except (ValueError, IndexError):
-                    continue
-            if len(ring) >= 3:
-                rings.append(ring)
-        except Exception as e:                                  # noqa: BLE001
-            print("noshot fetch failed: %s" % e, flush=True)
-        if rings or _noshot is None:
-            _noshot = rings
-        _noshot_ts = time.time()
-        return _noshot
+def map_status(map_type):
+    """Ringe + Version + Pending-Status - fuer den Editor (Statuszeile "wartet auf
+    Manager..." -> "uebernommen als vN"), siehe analysis.js anaMapEditPoll()."""
+    with _map_mirror_lock:
+        m = _map_mirror.get(map_type, {})
+        rings, version = list(m.get("rings", [])), int(m.get("version", 0))
+    with _map_pending_lock:
+        pending = map_type in _map_pending
+    return {"rings": rings, "version": version, "pending": pending}
 
 
 app = Flask(__name__, static_folder="static")
@@ -504,6 +526,28 @@ def ingest():
                 _db.execute("INSERT INTO drops(t,dropped) VALUES(?,?)", (now, dropped))
             if changed or db_rows or dropped:
                 _db.commit()
+    # Leichter Kartenstand-Heartbeat (Version/CRC, kein Body - siehe gwFlush im
+    # Manager): weicht er vom Spiegel ab (z.B. nach einem Notweg-Flash, oder der
+    # Spiegel ist noch leer), stoesst der VPS per cmdMapPush ueber /commands einen
+    # Re-Sync an (der Manager postet dann die volle CSV an /mapsync). Anti-Spam:
+    # hoechstens alle 60s pro Kartentyp, sonst wuerde jeder gwFlush (1,5s) erneut anstossen.
+    for mp in data.get("maps", []):
+        typ = mp.get("type")
+        if typ not in MAP_REPO_PATH:
+            continue
+        version = int(mp.get("version", 0) or 0)
+        if not version:
+            continue                                       # Manager hat selbst noch keine Karte
+        crc = int(mp.get("crc", 0) or 0)
+        with _map_mirror_lock:
+            mirrored = _map_mirror.get(typ)
+        if mirrored and mirrored.get("version") == version and mirrored.get("crc") == crc:
+            continue                                        # Spiegel schon aktuell
+        if now - _map_resync_requested.get(typ, 0) < 60:
+            continue
+        _map_resync_requested[typ] = now
+        with _cmd_lock:
+            _cmd_queue.append((MANAGER_TARGET, MAP_CMD_PUSH, MAP_TYPE_ID[typ]))
     return jsonify(ok=True)
 
 
@@ -578,15 +622,95 @@ def reset():
 
 @app.get("/map")
 def get_map():
-    load_map()
-    with _map_lock:
-        return jsonify(points=_map)
+    # Weltkarten-Hintergrund (Rasen-Umriss): Spiegel vom Manager (Welt-mm -> Meter
+    # fuers bestehende Frontend-Format; einzelne Punkte, keine Ringlinien - das
+    # Frontend zeichnet sie ohnehin nur als Punktwolke, siehe index.html). Ringe
+    # werden dafuer flach zusammengefasst (Loecher sind fuer den Hintergrund
+    # irrelevant); die strukturierte Variante liefert /noshot fuer den Editor.
+    rings = map_mirror_rings("rasen")
+    pts = [[x / 1000.0, y / 1000.0] for ring in rings for x, y in ring]
+    return jsonify(points=pts)
 
 
 @app.get("/noshot")
 def get_noshot():
-    # No-Shot-Karte (erlaubte Schusszone) als Ringe in Welt-mm.
-    return jsonify(rings=load_noshot() or [])
+    # No-Shot-Karte (erlaubte Schusszone) als Ringe in Welt-mm - Spiegel vom Manager,
+    # plus version/pending fuer die Editor-Statuszeile (siehe map_status()).
+    return jsonify(**map_status("noshot"))
+
+
+@app.get("/rasenmap")
+def get_rasenmap():
+    # RasenKarte (Relevanzfilter) als Ringe in Welt-mm - fuer den Karten-Editor
+    # (derselbe Editor bearbeitet NoShot UND Rasen, siehe analysis.js).
+    return jsonify(**map_status("rasen"))
+
+
+@app.get("/maps/<typ>")
+def maps_get(typ):
+    # Regulaerer Weg: der Manager holt eine vom Editor gespeicherte pending Karte
+    # ab (ausgeloest durch cmdMapFetch aus /commands). 204 = nichts pending -
+    # das ist der Normalfall, kein Fehler.
+    if typ not in MAP_REPO_PATH:
+        return "", 404
+    with _map_pending_lock:
+        p = _map_pending.get(typ)
+    if not p:
+        return "", 204
+    return p["csv"], 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+
+@app.post("/maps/<typ>")
+def maps_post(typ):
+    # Editor "Speichern": Ring-Rohdaten (OHNE Versions-Header - den vergibt
+    # ausschliesslich der Manager) als pending ablegen und den Manager beim
+    # naechsten /commands-Poll zum Abholen auffordern.
+    if typ not in MAP_REPO_PATH:
+        return jsonify(error="unbekannter Kartentyp"), 404
+    d = request.get_json(force=True, silent=True) or {}
+    rings = d.get("rings") or []
+    if not rings or not all(isinstance(r, list) and len(r) >= 3 for r in rings):
+        return jsonify(error="jeder Ring braucht mindestens 3 Punkte"), 400
+    lines = []
+    for i, ring in enumerate(rings):
+        if i:
+            lines.append("")
+        for pt in ring:
+            lines.append("%d,%d" % (int(round(float(pt[0]))), int(round(float(pt[1])))))
+    csv_text = "\n".join(lines) + "\n"
+    with _map_pending_lock:
+        _map_pending[typ] = {"csv": csv_text, "t": time.time()}
+    with _cmd_lock:
+        _cmd_queue.append((MANAGER_TARGET, MAP_CMD_FETCH, MAP_TYPE_ID[typ]))
+    _sysmsg("Karte %s: Aenderung gespeichert, wartet auf Manager" % typ)
+    return jsonify(ok=True, pending=True)
+
+
+@app.post("/mapsync")
+def mapsync():
+    # Manager meldet die aktive Karte (gleich welcher Herkunft - VPS-Weg oder
+    # Notweg-Flash): Version/CRC in der Query, CSV-Text im Body. Der VPS
+    # uebernimmt sie in den Spiegel und committet sie bei Abweichung ins Repo.
+    typ = request.args.get("type", "")
+    if typ not in MAP_REPO_PATH:
+        return jsonify(error="unbekannter Kartentyp"), 404
+    version = request.args.get("version", type=int) or 0
+    crc = request.args.get("crc", type=int) or 0
+    csv_text = request.get_data(as_text=True) or ""
+    rings = _parse_map_csv(csv_text)
+
+    with _map_mirror_lock:
+        old = _map_mirror.get(typ)
+        changed = not old or old.get("version") != version or old.get("crc") != crc
+        _map_mirror[typ] = {"version": version, "crc": crc, "csv": csv_text,
+                             "rings": rings, "t": time.time()}
+    with _map_pending_lock:
+        was_pending = _map_pending.pop(typ, None) is not None
+    if was_pending:
+        _sysmsg("Karte %s: uebernommen als v%d" % (typ, version))
+    if changed:
+        threading.Thread(target=_github_commit_map, args=(typ, csv_text, version), daemon=True).start()
+    return jsonify(ok=True)
 
 
 
@@ -1722,7 +1846,6 @@ def alabel_del():
 
 
 init_db()
-load_map()
 load_devices()
 # kontinuierlicher Analysierer: Trackerkennung läuft ab jetzt im Hintergrund
 # über die ganze Aufnahme — unabhängig davon, was im Browser betrachtet wird

@@ -31,6 +31,7 @@ const ANA = {
   showCov: false,       // Erfassungsbereiche (xComDef-Sektoren) einblenden
   coverage: null,       // /acoverage (Sektoren + Zellen)
   noshot: null,         // /noshot: erlaubte Schusszone (Ringe, Welt-mm) — rote Punkte
+  rasen: null,          // /rasenmap: RasenKarte (Ringe, Welt-mm) — nur fürs Editieren geladen
   sensorOff: new Set(), // "sender.sensor" ausgeblendet
   view: null,           // Karten-Transform {cx,cy,s} (Welt-mm -> px)
   selKey: null,         // angeklickter Track (stabiler key) — gelb in Karte+Zeitleiste
@@ -38,6 +39,12 @@ const ANA = {
   sel: null,            // Zeit-Selektion auf der Zeitleiste {t0,t1}
   fetchTimer: null,
   behindTimer: null,    // Auto-Refresh, solange der Analysierer noch nachrechnet
+  // Karten-Editor (MapConcept.md): Ringe werden im Edit-Modus als Arbeitskopie
+  // gehalten (editRings) und erst bei "Speichern" an den VPS gepostet.
+  editType: null,       // null | "noshot" | "rasen" - Editor aktiv für diesen Typ
+  editRings: null,      // Arbeitskopie der Ringe waehrend des Bearbeitens
+  editSel: null,        // {ring, idx} markierter Punkt (Ziehen/Löschen)
+  editPollTimer: null,  // Poll auf /noshot|/rasenmap, bis der Manager die Karte übernommen hat
 };
 const SEL_COLOR = "#ffd23b";   // Hervorhebung des angeklickten Tracks
 
@@ -344,6 +351,20 @@ function secToWorld(sec, xl, yl){
   return [sec.x + xl*c - ym*s, sec.y + xl*s + ym*c];
 }
 
+// Welt-mm <-> Canvas-px, konsistent für Zeichnen (drawAnaMap) UND Editor-
+// Interaktion (mapBind/anaMapEdit*) - immer aus ANA.view + der aktuellen
+// CSS-Grösse des Canvas berechnet, kein DPR (das betrifft nur cv.width/height).
+function mapTransform(cv){
+  const v = ANA.view, W = cv.clientWidth, H = cv.clientHeight;
+  return {
+    W, H,
+    X:  wx => W/2 + (wx - v.cx) * v.s,
+    Y:  wy => H/2 - (wy - v.cy) * v.s,
+    invX: px => v.cx + (px - W/2) / v.s,
+    invY: py => v.cy - (py - H/2) / v.s,
+  };
+}
+
 function drawAnaMap(){
   const cv = anaEl("anaMap"); if(!cv || cv.offsetParent === null) return;
   if(!ANA.view) anaFit();
@@ -353,8 +374,7 @@ function drawAnaMap(){
   const ctx = cv.getContext("2d"); ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.fillStyle = "#0c0c10"; ctx.fillRect(0,0,W,H);
   const v = ANA.view;
-  const X = wx => W/2 + (wx - v.cx) * v.s;
-  const Y = wy => H/2 - (wy - v.cy) * v.s;
+  const {X, Y} = mapTransform(cv);
   // Gitter (1 m bzw. 5 m)
   const step = v.s*1000 > 25 ? 1000 : 5000;
   const wx0 = v.cx - W/2/v.s, wx1 = v.cx + W/2/v.s;
@@ -446,13 +466,31 @@ function drawAnaMap(){
   if(mapPoints) { ctx.fillStyle="#556"; mapPoints.forEach(p=>ctx.fillRect(X(p[0]*1000)-1.5, Y(p[1]*1000)-1.5, 3, 3)); }
   // No-Shot-Karte (erlaubte Schusszone): Eckpunkte rot, dazu eine feine rote
   // Linie, damit der Zonenverlauf zwischen den (wenigen) Ecken erkennbar ist.
-  for(const ring of (ANA.noshot||[])){
-    ctx.strokeStyle = "#e33"; ctx.lineWidth = 1; ctx.globalAlpha = 0.4;
-    ctx.beginPath();
-    ring.forEach(([x,y],i)=> i ? ctx.lineTo(X(x),Y(y)) : ctx.moveTo(X(x),Y(y)));
-    ctx.closePath(); ctx.stroke();
-    ctx.globalAlpha = 1; ctx.fillStyle = "#e33";
-    ring.forEach(([x,y])=>ctx.fillRect(X(x)-1.5, Y(y)-1.5, 3, 3));
+  // Im Edit-Modus wird stattdessen die Arbeitskopie (ANA.editRings) gezeigt -
+  // grösser greifbare Punkte, markierter Punkt gelb hervorgehoben.
+  if(ANA.editType){
+    for(const ring of (ANA.editRings||[])){
+      ctx.strokeStyle = "#f5a623"; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.7;
+      ctx.beginPath();
+      ring.forEach(([x,y],i)=> i ? ctx.lineTo(X(x),Y(y)) : ctx.moveTo(X(x),Y(y)));
+      ctx.closePath(); ctx.stroke();
+      ctx.globalAlpha = 1;
+      ring.forEach(([x,y],i)=>{
+        const sel = ANA.editSel && ANA.editSel.ring===ring && ANA.editSel.idx===i;
+        ctx.fillStyle = sel ? "#ffd23b" : "#f5a623";
+        ctx.beginPath(); ctx.arc(X(x), Y(y), sel?7:5, 0, 7); ctx.fill();
+        if(sel){ ctx.strokeStyle="#fff"; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(X(x),Y(y),7,0,7); ctx.stroke(); }
+      });
+    }
+  } else {
+    for(const ring of (ANA.noshot||[])){
+      ctx.strokeStyle = "#e33"; ctx.lineWidth = 1; ctx.globalAlpha = 0.4;
+      ctx.beginPath();
+      ring.forEach(([x,y],i)=> i ? ctx.lineTo(X(x),Y(y)) : ctx.moveTo(X(x),Y(y)));
+      ctx.closePath(); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.fillStyle = "#e33";
+      ring.forEach(([x,y])=>ctx.fillRect(X(x)-1.5, Y(y)-1.5, 3, 3));
+    }
   }
   // Events des Fensters (Alter im Fenster -> Helligkeit)
   const w = ANA.win, span = Math.max(w.t1-w.t0, 1e-6);
@@ -516,18 +554,79 @@ function drawAnaMap(){
   ctx.fillText((step/1000) + " m Raster", 8, H-8);
 }
 
+// Abstand Punkt->Strecke (Canvas-px) + Projektionsparameter t (0..1 auf dem Segment).
+function distToSeg(px,py, ax,ay, bx,by){
+  const dx=bx-ax, dy=by-ay, len2=dx*dx+dy*dy;
+  const t = len2 ? Math.max(0, Math.min(1, ((px-ax)*dx+(py-ay)*dy)/len2)) : 0;
+  return Math.hypot(px-(ax+t*dx), py-(ay+t*dy));
+}
+const EDIT_PT_PX = 9, EDIT_EDGE_PX = 6;
+
+function anaMapHitPoint(T, px, py){
+  for(const ring of (ANA.editRings||[]))
+    for(let i=0; i<ring.length; i++){
+      const [x,y] = ring[i];
+      if(Math.hypot(T.X(x)-px, T.Y(y)-py) <= EDIT_PT_PX) return {ring, idx:i};
+    }
+  return null;
+}
+
+function anaMapHitEdge(T, px, py){
+  let best = null;
+  for(const ring of (ANA.editRings||[]))
+    for(let i=0; i<ring.length; i++){
+      const a = ring[i], b = ring[(i+1) % ring.length];
+      const d = distToSeg(px,py, T.X(a[0]),T.Y(a[1]), T.X(b[0]),T.Y(b[1]));
+      if(d <= EDIT_EDGE_PX && (!best || d < best.d)) best = {ring, afterIdx:i, d};
+    }
+  return best;
+}
+
 function mapBind(){
   const cv = anaEl("anaMap");
-  let drag = null;
-  cv.addEventListener("mousedown", e => { drag = {x:e.offsetX, y:e.offsetY}; });
+  let drag = null, dragPt = null, moved = false, lastPos = null;
+  cv.addEventListener("mousedown", e => {
+    lastPos = {x:e.offsetX, y:e.offsetY};
+    moved = false;
+    if(ANA.editType){
+      const hit = anaMapHitPoint(mapTransform(cv), e.offsetX, e.offsetY);
+      if(hit){ dragPt = hit; ANA.editSel = hit; drawAnaMap(); return; }
+    }
+    drag = {x:e.offsetX, y:e.offsetY};
+  });
   cv.addEventListener("mousemove", e => {
+    lastPos = {x:e.offsetX, y:e.offsetY};
+    if(dragPt){
+      const T = mapTransform(cv);
+      dragPt.ring[dragPt.idx] = [T.invX(e.offsetX), T.invY(e.offsetY)];
+      moved = true;
+      drawAnaMap();
+      return;
+    }
     if(!drag) return;
+    moved = true;
     ANA.view.cx -= (e.offsetX - drag.x) / ANA.view.s;
     ANA.view.cy += (e.offsetY - drag.y) / ANA.view.s;
     drag = {x:e.offsetX, y:e.offsetY};
     drawAnaMap();
   });
-  window.addEventListener("mouseup", ()=> drag=null);
+  window.addEventListener("mouseup", ()=>{
+    if(dragPt){ dragPt = null; drag = null; return; }
+    // Klick (kein Pan) im Edit-Modus: Kante getroffen -> Punkt einfügen, sonst abwählen.
+    if(drag && !moved && ANA.editType && lastPos){
+      const T = mapTransform(cv);
+      const hit = anaMapHitEdge(T, lastPos.x, lastPos.y);
+      if(hit){
+        const pt = [Math.round(T.invX(lastPos.x)), Math.round(T.invY(lastPos.y))];
+        hit.ring.splice(hit.afterIdx + 1, 0, pt);
+        ANA.editSel = {ring:hit.ring, idx:hit.afterIdx + 1};
+      } else {
+        ANA.editSel = null;
+      }
+      drawAnaMap();
+    }
+    drag = null;
+  });
   cv.addEventListener("wheel", e => {
     e.preventDefault();
     const f = e.deltaY > 0 ? 1/1.25 : 1.25;
@@ -538,7 +637,121 @@ function mapBind(){
     v.cy = wy + (e.offsetY - H/2)/v.s;
     drawAnaMap();
   }, {passive:false});
-  cv.addEventListener("dblclick", ()=>{ anaFit(); drawAnaMap(); });
+  cv.addEventListener("dblclick", ()=>{ if(!ANA.editType){ anaFit(); drawAnaMap(); } });
+  window.addEventListener("keydown", e=>{
+    if(!ANA.editType || !ANA.editSel) return;
+    if((e.key==="Delete" || e.key==="Backspace") && document.activeElement===document.body){
+      e.preventDefault(); anaMapEditDelPoint();
+    }
+  });
+}
+
+// ------------------------------------------------------- Karten-Editor (Stufe 3)
+// Regulärer Weg (MapConcept.md): Speichern legt die Ringe beim VPS als "pending"
+// ab; der Manager holt sie beim nächsten /commands-Poll ab, validiert, vergibt
+// Version/CRC und bestätigt per /mapsync. anaMapEditPoll zeigt den Fortschritt.
+
+function anaMapSetStatus(s){ const el = anaEl("anaMapEditStatus"); if(el) el.textContent = s; }
+
+function anaMapEditStart(){
+  const type = anaEl("anaMapType").value;
+  const start = rings => {
+    ANA.editType = type;
+    ANA.editRings = (rings||[]).map(ring => ring.map(([x,y])=>[x,y]));   // Arbeitskopie
+    ANA.editSel = null;
+    anaMapSetStatus("");
+    anaEl("anaMap").classList.add("editing");
+    anaEl("anaMapEditTools").style.display = "";
+    anaEl("anaMapEditBtn").style.display = "none";
+    anaEl("anaMapType").disabled = true;
+    drawAnaMap();
+  };
+  if(type === "rasen" && !ANA.rasen){
+    anaJson("/rasenmap").then(r=>{ ANA.rasen = r.rings||[]; start(ANA.rasen); })
+                         .catch(()=>start([]));
+  } else {
+    start(type === "rasen" ? ANA.rasen : ANA.noshot);
+  }
+}
+
+function anaMapEditExit(){
+  ANA.editType = null; ANA.editRings = null; ANA.editSel = null;
+  if(ANA.editPollTimer){ clearInterval(ANA.editPollTimer); ANA.editPollTimer = null; }
+  anaEl("anaMap").classList.remove("editing");
+  anaEl("anaMapEditTools").style.display = "none";
+  anaEl("anaMapEditBtn").style.display = "";
+  anaEl("anaMapType").disabled = false;
+  drawAnaMap();
+}
+
+function anaMapEditDiscard(){
+  const type = ANA.editType;
+  anaMapEditExit();
+  anaMapSetStatus("");
+  const url = type === "rasen" ? "/rasenmap" : "/noshot";
+  anaJson(url).then(r=>{
+    if(type === "rasen") ANA.rasen = r.rings||[]; else ANA.noshot = r.rings||[];
+    drawAnaMap();
+  }).catch(()=>{});
+}
+
+function anaMapEditAddRing(){
+  if(!ANA.editType) return;
+  const v = ANA.view, s = 800;   // halbe Kantenlänge (mm) - Start-Dreieck, danach Ecken selbst ziehen
+  ANA.editRings.push([[Math.round(v.cx), Math.round(v.cy+s)],
+                       [Math.round(v.cx-s), Math.round(v.cy-s)],
+                       [Math.round(v.cx+s), Math.round(v.cy-s)]]);
+  drawAnaMap();
+}
+
+function anaMapEditDelRing(){
+  if(!ANA.editSel) return;
+  const i = ANA.editRings.indexOf(ANA.editSel.ring);
+  if(i >= 0) ANA.editRings.splice(i, 1);
+  ANA.editSel = null;
+  drawAnaMap();
+}
+
+function anaMapEditDelPoint(){
+  if(!ANA.editSel) return;
+  const {ring, idx} = ANA.editSel;
+  if(ring.length <= 3){ anaMapSetStatus("Ring braucht mindestens 3 Punkte — erst \"Ring −\""); return; }
+  ring.splice(idx, 1);
+  ANA.editSel = null;
+  drawAnaMap();
+}
+
+async function anaMapEditSave(){
+  const rings = ANA.editRings || [];
+  if(!rings.length || rings.some(r => r.length < 3)){
+    anaMapSetStatus("jeder Ring braucht mindestens 3 Punkte");
+    return;
+  }
+  const type = ANA.editType;
+  try{
+    await anaJson(`/maps/${type}`, {method:"POST", headers:{"Content-Type":"application/json"},
+                                     body: JSON.stringify({rings})});
+  }catch(e){ anaMapSetStatus("Fehler: " + e.message); return; }
+  anaMapSetStatus("gespeichert — wartet auf Manager …");
+  if(ANA.editPollTimer) clearInterval(ANA.editPollTimer);
+  ANA.editPollTimer = setInterval(async ()=>{
+    let st;
+    try{ st = await anaJson(type === "rasen" ? "/rasenmap" : "/noshot"); }catch(e){ return; }
+    if(type === "rasen") ANA.rasen = st.rings||[]; else ANA.noshot = st.rings||[];
+    if(!st.pending){
+      clearInterval(ANA.editPollTimer); ANA.editPollTimer = null;
+      anaMapSetStatus("übernommen als v" + st.version);
+    }
+  }, 3000);
+}
+
+function anaMapEditBind(){
+  anaEl("anaMapEditBtn").onclick = anaMapEditStart;
+  anaEl("anaMapRingAdd").onclick = anaMapEditAddRing;
+  anaEl("anaMapRingDel").onclick = anaMapEditDelRing;
+  anaEl("anaMapPtDel").onclick = anaMapEditDelPoint;
+  anaEl("anaMapSave").onclick = anaMapEditSave;
+  anaEl("anaMapDiscard").onclick = anaMapEditDiscard;
 }
 
 // ------------------------------------------------------------- Panels
@@ -893,7 +1106,7 @@ let anaInit = false;
 async function anaShow(){
   if(!anaInit){
     anaInit = true;
-    tlBind(); mapBind();
+    tlBind(); mapBind(); anaMapEditBind();
     anaJson("/noshot").then(r=>{ ANA.noshot = r.rings||[]; drawAnaMap(); }).catch(()=>{});
     anaEl("anaB1").onclick = ()=>anaShift(-0.8);
     anaEl("anaB2").onclick = ()=>anaShift(-0.25);

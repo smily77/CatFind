@@ -532,15 +532,58 @@ Gemeinsame Prozeduren in `xComProc6_3.h`:
 | `acquireMap(mapType, path, mgrOctet, waitMs)` | Sensor | Komplettablauf: Cache laden, Version prüfen, ggf. Download |
 | `acquireNoShot(path, mgrOctet, waitMs)` | Sensor | Kurzform `acquireMap(mapNoShot, …)` |
 | `loadNoShot(path)` / `insideNoShot(x,y)` | Sensor | Polygon-Karte in RAM laden / Welt-Punkt-Test (generisch für No-Shot UND Rasen) |
+| `mapAnnounceOutdated(msg, mapType, path)` | Sensor | unaufgefordertes `mapInfo` (Announce) auswerten: weicht es von der lokalen Version/CRC ab? |
 
-Auf dem **Manager** werden beide Karten beim ersten Boot aus im Sketch
-eingebetteten Defaults ins LittleFS geschrieben (`ensureMaps()`), falls dort noch
-keine liegen. Die No-Shot-Karte entsteht mit dem Zeichen-Tool
-`Lidar_C1_Prog/Position_estimate/map_draw/`; das RasenKarten-Seed ist aus
-`Map/RasenKarte.csv` generiert (Meter → mm, ×1000 gerundet) — **bei
-Kartenänderung** Seed im Manager-Sketch neu erzeugen, Version im Header
-hochzählen und `/rasen.csv` im Manager-FS löschen (die Geräte laden bei
-Versions-/CRC-Abweichung automatisch neu).
+#### Karten-Quelle: VPS-Editor statt Firmware-Defaults
+
+Karten liegen **nicht** mehr im Firmware-Quellcode (siehe `MapConcept.md` im
+Repo-Root für das vollständige Konzept). Einziger regulärer Weg, eine Karte zu
+ändern, ist der VPS-Editor im Analyse-Tab; er läuft über den bestehenden
+`/commands`-Kanal (Pull statt Push, der VPS kann den Manager nicht direkt
+erreichen):
+
+```
+Editor speichert  ──►  VPS: Karte als "pending" ablegen
+                        │
+/commands-Poll (Manager, alle paar Sekunden)
+                        │  Kommando cmdMapFetch (info=mapType)
+                        ▼
+Manager: HTTP GET /maps/<typ>?pending=1 vom VPS
+                        │
+Annahme-Code (gwAcceptMap, gatewayProc.ino):
+  validieren (loadNoShot-Ringparser) → Version = alte+1, CRC neu,
+  Header schreiben → atomar ins LittleFS (Temp + Rename)
+                        │
+                        ├─► broadcastMsg(mapInfo, …)   Announce an alle Geräte
+                        └─► HTTP POST /mapsync (gwPushMap)  Bestätigung an den VPS
+                                                             → VPS-Spiegel + Git-Commit
+                                                               nach Map/<typ>.csv
+```
+
+- **Annahme-Code** (`gwAcceptMap` in `gatewayProc.ino`): Rohdaten (Ring-Punkte,
+  ohne gültigen Versions-Header — den vergibt ausschließlich der Manager)
+  werden über denselben Ring-Parser wie beim Laden validiert (`loadNoShot`
+  auf eine Temp-Datei). Bei Fehler: ablehnen, alte Karte bleibt unverändert
+  aktiv — es gibt keinen Zustand „kaputte Karte“.
+- **Announce statt Warten:** nach jeder angenommenen Karte broadcastet der
+  Manager unaufgefordert `mapInfo` (Multicast). Geräte vergleichen mit ihrer
+  lokalen Version/CRC (`mapAnnounceOutdated`) und rufen bei Abweichung ihr
+  `acquireMap()` zeitnah erneut auf, statt bis zum nächsten periodischen
+  Versuch zu warten.
+- **Fangnetz:** zusätzlich prüfen Radar (`Radar6_3_0.ino`, `serviceRasenMap`)
+  und LidarC1 (`hwProc.ino`, `serviceNoShotMap`) auch mit bereits geladener
+  Karte periodisch nach (`MAP_RECHECK_MS`, stündlich) — ein UDP-Announce kann
+  verlorengehen, es gibt kein Resend.
+- **Kartenstand-Spiegel:** der Manager meldet Version/CRC beider Karten
+  leichtgewichtig in jedem `/ingest`-Push mit (`"maps":[…]`, aus einem Cache,
+  kein LittleFS-Zugriff im Hot Path). Weicht der VPS-Spiegel ab (z. B. weil
+  jemand die Karte am Manager vorbei per Notweg geändert hat), stößt der VPS
+  per `cmdMapPush` einen Re-Sync an — der Manager postet dann die volle CSV an
+  `/mapsync`. Details, Endpunkte und Sicherheitsüberlegungen: `MapConcept.md`.
+- **Notweg ohne VPS:** `Map/noshot.csv` bzw. `Map/rasen.csv` im Repo von Hand
+  anpassen, Firmware/LittleFS-Image neu bauen und flashen. Bewusst kein
+  eigener Netzwerk-Upload-Endpunkt am Manager (kleinere Angriffsfläche für
+  die Schuss-Freigabezone im lokalen Netz).
 
 ---
 
@@ -573,10 +616,12 @@ Jedes Programm folgt demselben Grundgerüst:
   Manager dedupt über identische Payload, damit nur einmal geblinkt und einmal
   ins VPS-Debug geloggt wird.
 - Feste IP .180, OTA aktiv.
-- **Karten-Server:** hält die No-Shot-Karte im LittleFS (`/noshot.csv`) und
-  beantwortet `mapRequest` per `serveMap()` (siehe Kap. 4.2). Beim Boot wird die
-  Karte aus einer eingebetteten Default-Karte ins LittleFS geschrieben, falls dort
-  noch keine liegt.
+- **Karten-Server:** hält No-Shot- und RasenKarte im LittleFS (`/noshot.csv`,
+  `/rasen.csv`) und beantwortet `mapRequest` per `serveMap()` (siehe Kap. 4.2).
+  Keine eingebetteten Default-Karten mehr im Sketch — einzige Quelle ist der
+  VPS-Editor (`gwAcceptMap`/`gwFetchMap`/`gwPushMap`, `gatewayProc.ino`; Notweg
+  ohne VPS: Repo-CSV anpassen + neu flashen). Ohne Karte im LittleFS antwortet
+  der Manager auf `mapRequest` schlicht nicht.
 - **VPS-Gateway (Treffervisualisierung):** der Manager lauscht ohnehin auf dem
   Bus und leitet `catObserved`, `HB` und die Text-Debug-Meldungen gebündelt per
   HTTP-POST an das VPS-Dashboard weiter (`ipVPS:80/ingest`, ~alle 1,5 s,
