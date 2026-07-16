@@ -81,6 +81,9 @@ except Exception:                                            # noqa: BLE001
 XCOMDEF_URL  = os.environ.get(
     "XCOMDEF_URL",
     "https://raw.githubusercontent.com/smily77/CatFind/main/Controller/Manager6_3_0/xComDef6_3.h")
+NOSHOT_URL   = os.environ.get(
+    "NOSHOT_URL",
+    "https://raw.githubusercontent.com/smily77/CatFind/main/Controller/Manager6_3_0/Manager6_3_0.ino")
 
 # Fallback-Geräteverzeichnis (Name/Typ/Gruppe/Erfassungsbereich), falls
 # xComDef6_3.h nicht erreichbar ist. Führend ist IMMER die live geparste
@@ -342,6 +345,49 @@ def load_map():
             print("map loaded: %d points" % len(pts), flush=True)
 
 
+_noshot, _noshot_ts = None, 0.0
+_noshot_lock = threading.Lock()
+
+def load_noshot():
+    # No-Shot-Karte (erlaubte Schusszone, Welt-mm) fürs Karten-Overlay. Quelle =
+    # NOSHOT_DEFAULT-Seed im Manager-Quellcode (GitHub main, wie xComDef) — der
+    # Manager verteilt dieselbe Karte aus seinem LittleFS an die Aktoren
+    # (Kartenänderung = git push + Manager-Update). Mehrere Ringe durch
+    # Leerzeile getrennt.
+    global _noshot, _noshot_ts
+    with _noshot_lock:
+        if _noshot is not None and time.time() - _noshot_ts < 600:
+            return _noshot
+        rings = []
+        try:
+            with urllib.request.urlopen(NOSHOT_URL, timeout=10) as r:
+                src = r.read().decode("utf-8", "replace")
+            m = re.search(r'NOSHOT_DEFAULT\[\]\s*=\s*R"CSV\((.*?)\)CSV"', src, re.S)
+            ring = []
+            for line in (m.group(1) if m else "").splitlines():
+                line = line.strip()
+                if line.startswith("#"):
+                    continue
+                if not line:
+                    if len(ring) >= 3:
+                        rings.append(ring)
+                    ring = []
+                    continue
+                p = line.replace(";", ",").split(",")
+                try:
+                    ring.append([int(float(p[0])), int(float(p[1]))])
+                except (ValueError, IndexError):
+                    continue
+            if len(ring) >= 3:
+                rings.append(ring)
+        except Exception as e:                                  # noqa: BLE001
+            print("noshot fetch failed: %s" % e, flush=True)
+        if rings or _noshot is None:
+            _noshot = rings
+        _noshot_ts = time.time()
+        return _noshot
+
+
 app = Flask(__name__, static_folder="static")
 
 
@@ -535,6 +581,12 @@ def get_map():
     load_map()
     with _map_lock:
         return jsonify(points=_map)
+
+
+@app.get("/noshot")
+def get_noshot():
+    # No-Shot-Karte (erlaubte Schusszone) als Ringe in Welt-mm.
+    return jsonify(rings=load_noshot() or [])
 
 
 

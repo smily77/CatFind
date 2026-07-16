@@ -224,10 +224,12 @@ void loop() {
     if (mcMsg.header.msgCode == HB) {
       hbPayload hb;
       if (getHbPayload(mcMsg, hb)) {                                     // Gateway
-        // Radar-HBs (radarHbPayload, als einzige HB-Variante 9 Bytes) tragen die
-        // eingestellte Totzone - fuers Abdeckungs-Overlay an den VPS weiterreichen.
+        // HLK-Radare (Geraetetyp aus der device-DB, WER steht im Header) senden
+        // radarHbPayload mit der eingestellten Totzone - fuers Abdeckungs-Overlay
+        // an den VPS weiterreichen. getPayload prueft dabei nur noch die Groesse.
         radarHbPayload rhb; uint16_t dz = 0;
-        if (getPayload(mcMsg, rhb) && rhb.deadZoneDist > 0) dz = (uint16_t)rhb.deadZoneDist;
+        if (device[mcMsg.header.sender].type == HLK &&
+            getPayload(mcMsg, rhb) && rhb.deadZoneDist > 0) dz = (uint16_t)rhb.deadZoneDist;
         gwAddHb(mcMsg.header.sender, hb.ip, dz);
       }
       if (settingOn(stgHbLed)) {                                         // HB-Empfang-Anzeige schaltbar
