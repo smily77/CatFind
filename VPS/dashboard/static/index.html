@@ -85,6 +85,14 @@
   #anaMain { position:relative; flex:1; min-height:0; display:flex; }
   #anaMapWrap { flex:1; min-width:0; position:relative; }
   #anaMap { position:absolute; inset:0; width:100%; height:100%; cursor:grab; }
+  #anaMap.editing { cursor:crosshair; }
+  #anaMapEditBar { position:absolute; left:8px; top:8px; z-index:3; display:flex; gap:6px;
+                   align-items:center; background:#000a; border:1px solid #333; border-radius:6px;
+                   padding:6px 8px; font-size:12px; flex-wrap:wrap; max-width:calc(100% - 16px); }
+  #anaMapEditBar select, #anaMapEditBar button { background:#2a2a33; color:#ccc; border:1px solid #3a3a44;
+                   border-radius:5px; padding:3px 8px; cursor:pointer; font-size:12px; }
+  #anaMapEditBar button.act { background:#2d6cdf; color:#fff; border-color:#2d6cdf; }
+  #anaMapEditStatus { color:#9ab; }
   #anaSide { width:260px; min-width:260px; border-left:1px solid #333; overflow:auto; font-size:12px; }
   #anaSide h2 { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:#888; margin:0; padding:5px 8px; background:#16161b; border-bottom:1px solid #2a2a30; position:sticky; top:0; }
   .anaSens { display:flex; gap:5px; padding:3px 8px; align-items:center; cursor:pointer; }
@@ -228,7 +236,24 @@
       <div id="anaWinInfo"></div>
       <canvas id="anaTl" title="Die Leiste zeigt genau das gewählte Zeitfenster. Ziehen = verschieben · Rad = strecken/stauchen · Shift+Ziehen = Bereich für Label · grünes Band unten = aufgezeichnet · rote Punkte = CatDetected-Auslösung · gelbes Band = angeklickter Track"></canvas>
       <div id="anaMain">
-        <div id="anaMapWrap"><canvas id="anaMap" title="Ziehen = verschieben · Rad = zoomen · Doppelklick = einpassen"></canvas></div>
+        <div id="anaMapWrap">
+          <canvas id="anaMap" title="Ziehen = verschieben · Rad = zoomen · Doppelklick = einpassen"></canvas>
+          <div id="anaMapEditBar">
+            <select id="anaMapType" title="Kartentyp">
+              <option value="noshot">NoShot (Schusszone)</option>
+              <option value="rasen">Rasen (Relevanzfilter)</option>
+            </select>
+            <button id="anaMapEditBtn" title="Ringe werden Polygone mit greifbaren Eckpunkten: Punkt ziehen · Klick auf eine Kante fügt einen Punkt ein · Punkt markieren + Entf löscht ihn">Karte bearbeiten</button>
+            <span id="anaMapEditTools" style="display:none">
+              <button id="anaMapRingAdd" title="Neuen Ring (kleines Dreieck in der Kartenmitte) einfügen — danach Eckpunkte an Ort und Stelle ziehen">Ring +</button>
+              <button id="anaMapRingDel" title="Den Ring des markierten Punkts komplett löschen">Ring −</button>
+              <button id="anaMapPtDel" title="Markierten Punkt löschen (auch Entf-Taste)">Punkt −</button>
+              <button id="anaMapSave" class="act">Speichern</button>
+              <button id="anaMapDiscard">Verwerfen</button>
+            </span>
+            <span id="anaMapEditStatus"></span>
+          </div>
+        </div>
         <div id="anaSide">
           <h2>Sensoren (Fenster)</h2><div id="anaSensors"></div>
           <h2>Tracks (Modell)</h2><div id="anaTracks"></div>

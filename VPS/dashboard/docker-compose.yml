@@ -11,6 +11,10 @@ services:
       # Container-Neubauten und liegen NICHT in GitHub.
       - /opt/catfinder/data:/data
     environment:
-      MAP_URL: "https://raw.githubusercontent.com/smily77/CatFind/main/Map/RasenKarte.csv"
+      # Karten kommen jetzt vom Manager (/mapsync, siehe MapConcept.md), kein
+      # MAP_URL/GitHub-Fetch mehr. GITHUB_MAP_TOKEN optional setzen, um
+      # angenommene Karten automatisch nach Map/<typ>.csv zu committen (Deploy-
+      # Token, nur Schreibrecht auf Map/ - siehe dashboard.py _github_commit_map).
+      # GITHUB_MAP_TOKEN: "..."
       DB_PATH: "/data/catfinder.db"
       PARAMS_PATH: "/data/model_params.json"

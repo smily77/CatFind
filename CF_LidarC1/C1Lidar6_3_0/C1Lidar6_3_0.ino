@@ -47,6 +47,8 @@ uint8_t       lastHue        = 0;
 bool          noShotOK       = false;
 unsigned long lastHBms       = 0;
 unsigned long hbBlinkUntil   = 0;   // bis wann der gruene HB-Blitz leuchtet (0 = aus)
+unsigned long lastNoShotTry  = 0;   // letzter Beschaffungsversuch der No-Shot-Karte (0 = noch keiner)
+bool          mapRecheckNow  = false;   // per Announce (mapInfo) sofortiger Re-Check angefordert
 
 #define USE_VPS_LOCALIZE             // aktiviert vpsLocalize() (zieht HTTPClient) in xComProc
 #include <xComProc6_3.h>
@@ -99,9 +101,17 @@ void loop() {
   // Eingehende Steuer-/Einstellungsnachrichten generisch verarbeiten
   // (cmdSetSetting per Unicast, settingsRequest/poseRequest per Multicast).
   if (ucDataReceived) { xMsg um = lastUcMsg; ucDataReceived = false; handleCommonMsg(um); }
-  if (mcDataReceived) { xMsg cm = lastMcMsg; mcDataReceived = false; handleCommonMsg(cm); }
+  if (mcDataReceived) {
+    xMsg cm = lastMcMsg; mcDataReceived = false;
+    // Announce: Manager hat eine Karte angenommen (gwAcceptMap) - bei Abweichung
+    // sofortigen Re-Check anfordern statt bis MAP_RECHECK_MS zu warten (Fangnetz).
+    if (!handleCommonMsg(cm) && mapAnnounceOutdated(cm, mapNoShot, NOSHOT_PATH)) {
+      noShotOK = false; mapRecheckNow = true;
+    }
+  }
 
   updateLeds();                      // HB-Blitz (gruen) / Detektions-LEDs (nur PH_ACTIVE)
+  serviceNoShotMap();                 // Re-Check/Fangnetz nach der Erstbeschaffung in finishInit()
 
   // Motor an/aus (Lidar-Spezial-Setting): stop()/startScan() beim Umschalten.
   static bool motorRunning = true;
