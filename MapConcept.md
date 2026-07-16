@@ -174,9 +174,9 @@ Bewusst ohne zweiten grafischen Editor — der Notweg soll simpel und robust sei
 - WebServer auf dem Manager kostet etwas RAM/Loop-Zeit; `server.handleClient()`
   ist nicht-blockierend und der Endpunkt wird selten benutzt — mit der neuen
   MC-Queue unkritisch, aber beim Test auf 10-Hz-Bursts achten.
-- Der `F_corr`-Branch ist noch nicht gemerged — vor Firmware-Änderungen am
-  Manager (Stufen 1/4) das Merge-Thema klären, sonst baut das Konzept auf
-  einem Zwischenstand.
+- ~~Der `F_corr`-Branch ist noch nicht gemerged~~ — war veraltet: `F_corr`
+  (PR #12) ist seit 2026-07-12 in `main` gemergt (Commit `de5f55b`), vor
+  Firmware-Änderungen am Manager (Stufen 1/4) ist also nichts mehr zu klären.
 
 ## Umsetzung in Stufen (jede einzeln deploybar)
 
