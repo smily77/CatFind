@@ -288,6 +288,11 @@ static bool camInvokeImage(String& imgOut, uint32_t timeoutMs) {
 // Foto machen (invoke mit Bild) und als Base64 zum VPS hochladen (POST /photo).
 void takePhoto(const char* trig, int score, int32_t wx, int32_t wy) {
   if (!aiEnsure()) { sendUdpTextln("CatCam Foto: Vision-Modul nicht erreichbar"); return; }
+  // Das Modul liefert zum INVOKE den Frame der VORHERIGEN Aufnahme (Ein-Frame-
+  // Puffer). Lief laenger kein Invoke (stgCamAi aus), ist dieses Foto beliebig
+  // alt - beobachtet: 6 h altes Nachtbild als erstes Morgenfoto. Ein Wegwerf-
+  // Invoke ohne Bild schiebt vorab einen frischen Frame in den Puffer.
+  AI.invoke(1, true, false);
   String img;
   if (!camInvokeImage(img, 12000) || img.length() < 100) {
     sendUdpTextln("CatCam Foto: kein Bild vom Modul (" + String(img.length()) + " B)");
