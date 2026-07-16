@@ -49,9 +49,9 @@
   .picCard.picked { outline:3px solid #2d6cdf; outline-offset:-3px; }
   #picBlkOv { position:fixed; inset:0; background:#000c; display:flex; align-items:center; justify-content:center; z-index:9; }
   #picBlkBox { background:#1a1a22; border:1px solid #444; border-radius:8px; padding:14px; width:min(460px,92vw); max-height:88vh; overflow:auto; }
-  .picBlkRow { display:flex; align-items:center; gap:8px; margin:6px 0; }
+  .picBlkRow { display:flex; align-items:center; gap:8px; margin:6px 0; flex-wrap:wrap; }
   .picBlkRow input[type=time] { background:#111; color:#ddd; border:1px solid #444; border-radius:4px; padding:3px 5px; }
-  .picBlkRow input.note { flex:1; background:#111; color:#ddd; border:1px solid #444; border-radius:4px; padding:3px 6px; }
+  .picBlkRow input.note { flex:1 1 100px; min-width:0; background:#111; color:#ddd; border:1px solid #444; border-radius:4px; padding:3px 6px; }
   .picBlkRow button { background:#302; color:#f88; border:1px solid #a55; border-radius:4px; cursor:pointer; padding:2px 8px; }
   #picsOv { position:fixed; inset:0; background:#000c; display:flex; align-items:center; justify-content:center; z-index:9; }
   #picsBox { background:#1a1a22; border:1px solid #444; border-radius:8px; padding:10px; max-width:92vw; max-height:92vh; display:flex; flex-direction:column; gap:8px; }
@@ -332,7 +332,9 @@ async function loadPics(){
       };
       c.onclick = ()=>{
         picOpenId = id;
-        document.getElementById("picsBig").src = "/photo/"+id;
+        const big = document.getElementById("picsBig");
+        big.src = "";     // altes Bild sofort verwerfen - sonst zeigt es bis zum
+        big.src = "/photo/"+id;  // Laden des neuen Fotos noch das vorige (Beschriftung waere schon aktuell)
         document.getElementById("picsMeta").textContent = c.dataset.meta;
         document.getElementById("picsOv").style.display = "flex";
       };
@@ -370,7 +372,13 @@ let blkWins = [], blkTz = "";
 async function loadBlock(){
   try{
     const r = await (await fetch("/photo_block")).json();
-    blkWins = r.windows || [];
+    // Waehrend der Dialog offen ist, darf der periodische Hintergrund-Poll
+    // (alle 15s ueber loadPics) laufende Bearbeitungen (neue/geaenderte
+    // Zeilen) nicht ueberschreiben - sonst gehen unsichtbar Eingaben verloren,
+    // wenn das Ausfuellen (z. B. Zeit-Wahlrad am iPhone) laenger dauert.
+    if(document.getElementById("picBlkOv").style.display === "none"){
+      blkWins = r.windows || [];
+    }
     blkTz = r.tz || "";
     const el = document.getElementById("picBlkStatus");
     const list = blkWins.map(w=>`${w.start}–${w.end}`).join(", ");
