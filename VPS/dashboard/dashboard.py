@@ -382,7 +382,9 @@ def ingest():
             _debug.append({"t": now, "msg": str(m)[:200]})
         for h in data.get("hb", []):
             sid = int(h.get("sender", -1))
-            _devices[sid] = {"t": now, "ip": int(h.get("ip", 0))}
+            # dz = im Sensor eingestellte Totzone (mm, aus radarHbPayload; 0 = keine)
+            _devices[sid] = {"t": now, "ip": int(h.get("ip", 0)),
+                             "dz": float(h.get("dz", 0) or 0)}
         for s in data.get("settings", []):
             sid = int(s.get("sender", -1))
             _settings[sid] = {"sup": int(s.get("sup", 0)), "val": int(s.get("val", 0)),
@@ -929,6 +931,33 @@ def coverage_export_csv():
         lines.append(",".join(fields))
     return Response("\n".join(lines) + "\n", mimetype="text/plain; charset=utf-8")
 
+def _dead_zone_sectors():
+    # Totzonen der Radarsensoren (dz aus dem HB, via Manager) als Sektoren in
+    # Weltkoordinaten - fürs Karten-Overlay, damit man die eingestellte Totzone
+    # beim Justieren sieht. Bewusst NICHT aus den Coverage-Polygonen/-Zellen
+    # ausgestanzt (fürs Erkennungsmodell/CatIdent ohne Belang).
+    devices = load_devices()
+    with _lock:
+        poses = dict(_poses)
+        devs_rt = {sid: dict(d) for sid, d in _devices.items()}
+    out = {}
+    for sid, d in devs_rt.items():
+        dz = float(d.get("dz", 0) or 0)
+        if dz <= 0:
+            continue
+        pose = poses.get(sid) or poses.get(str(sid))
+        dev = devices.get(sid) or devices.get(str(sid))
+        if not pose or not pose.get("valid") or not dev:
+            continue
+        out[str(sid)] = {"x": float(pose["x"]), "y": float(pose["y"]),
+                         "head": float(pose.get("head", 0)),
+                         "mir": -1 if int(pose.get("mir", 1)) < 0 else 1,
+                         "left": float(dev.get("covL", -180)),
+                         "right": float(dev.get("covR", 180)),
+                         "range": dz}
+    return out
+
+
 @app.get("/acoverage")
 def acoverage():
     # Abdeckung fürs Karten-Overlay: Sektoren (geometrisch) + Zellmittelpunkte.
@@ -942,6 +971,7 @@ def acoverage():
                    sectors={str(k): v for k, v in cov.get("sectors", {}).items()},
                    polygons={str(k): v for k, v in cov.get("polygons", {}).items()},
                    polygon_sources=cov.get("polygon_sources", {}),
+                   dead_zones=_dead_zone_sectors(),
                    union_cells=len(cov["union"]),
                    edge_active=len(cov["union"]) >= p["cov_min_cells"])
 

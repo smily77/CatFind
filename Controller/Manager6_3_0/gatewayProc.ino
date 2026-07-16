@@ -20,7 +20,7 @@ struct GwEvent { uint8_t sender, sensor; int32_t wx, wy; uint8_t wv; int32_t x, 
 static GwEvent gwEvents[GW_MAX_EVENTS]; static int gwEventN = 0;
 static uint16_t gwDropped = 0;   // vom Burst-Schutz verworfene Events seit dem letzten Flush
 static String  gwDebug[GW_MAX_DEBUG];   static int gwDebugN = 0;
-struct GwHb { uint8_t sender, ip; };
+struct GwHb { uint8_t sender, ip; uint16_t dz; };   // dz = Totzone (mm) aus radarHbPayload, 0 = keine
 static GwHb    gwHb[GW_MAX_HB];         static int gwHbN = 0;
 static unsigned long gwLastFlush = 0;
 
@@ -90,9 +90,9 @@ void gwAddEvent(uint8_t sender, const posPayload& p) {
   e.ms = millis(); e.speed = p.targetSpeed;
 }
 void gwAddDebug(const String& s) { if (gwDebugN < GW_MAX_DEBUG) gwDebug[gwDebugN++] = s; }
-void gwAddHb(uint8_t sender, uint8_t ip) {
-  for (int i = 0; i < gwHbN; i++) if (gwHb[i].sender == sender) { gwHb[i].ip = ip; return; }
-  if (gwHbN < GW_MAX_HB) { gwHb[gwHbN].sender = sender; gwHb[gwHbN].ip = ip; gwHbN++; }
+void gwAddHb(uint8_t sender, uint8_t ip, uint16_t dz) {
+  for (int i = 0; i < gwHbN; i++) if (gwHb[i].sender == sender) { gwHb[i].ip = ip; gwHb[i].dz = dz; return; }
+  if (gwHbN < GW_MAX_HB) { gwHb[gwHbN].sender = sender; gwHb[gwHbN].ip = ip; gwHb[gwHbN].dz = dz; gwHbN++; }
 }
 
 void gwFlush() {
@@ -122,7 +122,7 @@ void gwFlush() {
   body += "],\"debug\":[";
   for (int i = 0; i < gwDebugN; i++) { if (i) body += ','; body += "\"" + jsonEsc(gwDebug[i]) + "\""; }
   body += "],\"hb\":[";
-  for (int i = 0; i < gwHbN; i++) { if (i) body += ','; body += "{\"sender\":" + String(gwHb[i].sender) + ",\"ip\":" + String(gwHb[i].ip) + "}"; }
+  for (int i = 0; i < gwHbN; i++) { if (i) body += ','; body += "{\"sender\":" + String(gwHb[i].sender) + ",\"ip\":" + String(gwHb[i].ip) + ",\"dz\":" + String(gwHb[i].dz) + "}"; }
   body += "],\"settings\":[";
   bool firstS = true;
   for (int i = 0; i < GW_MAX_SETTINGS; i++) if (gwSet[i].used) {
