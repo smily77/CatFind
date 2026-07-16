@@ -414,6 +414,32 @@ function drawAnaMap(){
       }
       ctx.globalAlpha = 1;
     }
+    // Totzonen der Radarsensoren (dz aus dem HB, via /acoverage): abgedunkelter
+    // Sektor mit gestrichelter Kontur direkt am Sensor - zeigt beim Justieren,
+    // wo der Sensor per Einstellung nichts meldet. Nur Darstellung: die
+    // Coverage-Polygone (Erkennungsmodell/CatIdent) bleiben ungeschnitten.
+    const dzs = ANA.coverage.dead_zones || {};
+    for(const [sid, sec] of Object.entries(dzs)){
+      const keys = senderKeys(sid);
+      if(keys.length && !keys.some(k=>!ANA.sensorOff.has(k))) continue;
+      const col = colorFor(+sid, 0);
+      ctx.beginPath();
+      const full = (sec.right - sec.left) >= 360;
+      if(!full) ctx.moveTo(X(sec.x), Y(sec.y));
+      const n = Math.max(16, Math.ceil((sec.right - sec.left) / 6));
+      for(let i=0; i<=n; i++){
+        const deg = sec.left + (sec.right - sec.left) * i / n;
+        const rad = deg * Math.PI/180;
+        const [wx, wy] = secToWorld(sec, Math.sin(rad)*sec.range, Math.cos(rad)*sec.range);
+        (i===0 && full) ? ctx.moveTo(X(wx), Y(wy)) : ctx.lineTo(X(wx), Y(wy));
+      }
+      ctx.closePath();
+      ctx.fillStyle = "#000"; ctx.globalAlpha = 0.30; ctx.fill();
+      ctx.setLineDash([5,4]);
+      ctx.globalAlpha = 0.85; ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
   }
   // RasenKarte
   if(mapPoints) { ctx.fillStyle="#556"; mapPoints.forEach(p=>ctx.fillRect(X(p[0]*1000)-1.5, Y(p[1]*1000)-1.5, 3, 3)); }

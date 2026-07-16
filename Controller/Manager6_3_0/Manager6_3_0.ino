@@ -184,7 +184,7 @@ void loop() {
   if (millis() - hbTimer >= periodeForHB) {
     hbPayload hb; hb.ip = getLastIpByte(); hb.HBperiode = periodeForHB;
     broadcastMsg(HB, hb);
-    gwAddHb(ID, hb.ip);
+    gwAddHb(ID, hb.ip, 0);
     hbTimer = millis();
   }
   if (udpTextReceived) {
@@ -223,7 +223,13 @@ void loop() {
 
     if (mcMsg.header.msgCode == HB) {
       hbPayload hb;
-      if (getHbPayload(mcMsg, hb)) gwAddHb(mcMsg.header.sender, hb.ip);   // Gateway
+      if (getHbPayload(mcMsg, hb)) {                                     // Gateway
+        // Radar-HBs (radarHbPayload, als einzige HB-Variante 9 Bytes) tragen die
+        // eingestellte Totzone - fuers Abdeckungs-Overlay an den VPS weiterreichen.
+        radarHbPayload rhb; uint16_t dz = 0;
+        if (getPayload(mcMsg, rhb) && rhb.deadZoneDist > 0) dz = (uint16_t)rhb.deadZoneDist;
+        gwAddHb(mcMsg.header.sender, hb.ip, dz);
+      }
       if (settingOn(stgHbLed)) {                                         // HB-Empfang-Anzeige schaltbar
         allPixel(0x00FF00);
         blinkOn = true;
