@@ -30,6 +30,7 @@ const ANA = {
   follow: false,
   showCov: false,       // Erfassungsbereiche (xComDef-Sektoren) einblenden
   coverage: null,       // /acoverage (Sektoren + Zellen)
+  noshot: null,         // /noshot: erlaubte Schusszone (Ringe, Welt-mm) — rote Punkte
   sensorOff: new Set(), // "sender.sensor" ausgeblendet
   view: null,           // Karten-Transform {cx,cy,s} (Welt-mm -> px)
   selKey: null,         // angeklickter Track (stabiler key) — gelb in Karte+Zeitleiste
@@ -443,6 +444,16 @@ function drawAnaMap(){
   }
   // RasenKarte
   if(mapPoints) { ctx.fillStyle="#556"; mapPoints.forEach(p=>ctx.fillRect(X(p[0]*1000)-1.5, Y(p[1]*1000)-1.5, 3, 3)); }
+  // No-Shot-Karte (erlaubte Schusszone): Eckpunkte rot, dazu eine feine rote
+  // Linie, damit der Zonenverlauf zwischen den (wenigen) Ecken erkennbar ist.
+  for(const ring of (ANA.noshot||[])){
+    ctx.strokeStyle = "#e33"; ctx.lineWidth = 1; ctx.globalAlpha = 0.4;
+    ctx.beginPath();
+    ring.forEach(([x,y],i)=> i ? ctx.lineTo(X(x),Y(y)) : ctx.moveTo(X(x),Y(y)));
+    ctx.closePath(); ctx.stroke();
+    ctx.globalAlpha = 1; ctx.fillStyle = "#e33";
+    ring.forEach(([x,y])=>ctx.fillRect(X(x)-1.5, Y(y)-1.5, 3, 3));
+  }
   // Events des Fensters (Alter im Fenster -> Helligkeit)
   const w = ANA.win, span = Math.max(w.t1-w.t0, 1e-6);
   for(const e of (ANA.data?.events||[])){
@@ -883,6 +894,7 @@ async function anaShow(){
   if(!anaInit){
     anaInit = true;
     tlBind(); mapBind();
+    anaJson("/noshot").then(r=>{ ANA.noshot = r.rings||[]; drawAnaMap(); }).catch(()=>{});
     anaEl("anaB1").onclick = ()=>anaShift(-0.8);
     anaEl("anaB2").onclick = ()=>anaShift(-0.25);
     anaEl("anaB3").onclick = ()=>anaShift(0.25);
