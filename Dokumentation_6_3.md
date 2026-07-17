@@ -556,8 +556,9 @@ Annahme-Code (gwAcceptMap, gatewayProc.ino):
                         │
                         ├─► broadcastMsg(mapInfo, …)   Announce an alle Geräte
                         └─► HTTP POST /mapsync (gwPushMap)  Bestätigung an den VPS
-                                                             → VPS-Spiegel + Git-Commit
-                                                               nach Map/<typ>.csv
+                                                             → VPS-Spiegel + Git-Commit nach
+                                                               Controller/Manager6_3_0/data/<typ>.csv
+                                                               (Source of Truth) + Map/backup/<typ>.csv
 ```
 
 - **Annahme-Code** (`gwAcceptMap` in `gatewayProc.ino`): Rohdaten (Ring-Punkte,
@@ -580,10 +581,26 @@ Annahme-Code (gwAcceptMap, gatewayProc.ino):
   jemand die Karte am Manager vorbei per Notweg geändert hat), stößt der VPS
   per `cmdMapPush` einen Re-Sync an — der Manager postet dann die volle CSV an
   `/mapsync`. Details, Endpunkte und Sicherheitsüberlegungen: `MapConcept.md`.
-- **Notweg ohne VPS:** `Map/noshot.csv` bzw. `Map/rasen.csv` im Repo von Hand
-  anpassen, Firmware/LittleFS-Image neu bauen und flashen. Bewusst kein
-  eigener Netzwerk-Upload-Endpunkt am Manager (kleinere Angriffsfläche für
-  die Schuss-Freigabezone im lokalen Netz).
+- **Notweg ohne VPS:** `Controller/Manager6_3_0/data/noshot.csv` bzw.
+  `.../data/rasen.csv` im Repo von Hand anpassen (das ist die Source of
+  Truth — genau der Ordner, aus dem das Arduino/ESP32-Tooling das
+  LittleFS-Image baut) und per USB oder OTA flashen. Bewusst kein eigener
+  Netzwerk-Upload-Endpunkt am Manager (kleinere Angriffsfläche für die
+  Schuss-Freigabezone im lokalen Netz). Nach dem Reboot annonciert der
+  Manager seinen Kartenstand sofort (`gwAnnounceMaps()` in `ensureMaps()`),
+  Sensoren laden also zeitnah nach, nicht erst nach dem stündlichen
+  Fangnetz. Ausführliche Schritt-für-Schritt-Anleitung (USB **und** OTA,
+  inkl. konkreter Befehle): `Controller/Manager6_3_0/KartenUpload.md`.
+
+**Welches Programm nutzt welche Karte** (Details/Troubleshooting in
+`KartenUpload.md`):
+
+| Programm | Karte | Wofür |
+|---|---|---|
+| Manager6_3_0 | beide (Master) | hält beide im LittleFS, verteilt per `mapRequest`/`mapInfo`/`mapChunk` |
+| C1Lidar6_3_0 (LidarC1) | NoShot | Fire-Gating (`insideNoShot` vor jedem `catObserved`) |
+| Radar6_3_0 (HLK-Radar) | Rasen | Relevanzfilter (Ziele außerhalb werden nicht gemeldet) |
+| LD06_6_3_0, alle übrigen Programme | keine | keine Polygon-Karte im Einsatz |
 
 ---
 

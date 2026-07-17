@@ -2,10 +2,12 @@
 # Rasen-Umriss: innerhalb = relevanter Bereich fuer die Katzendetektion.
 # x,y  (Welt, Millimeter, ganzzahlig)
 #
-# Referenzkopie des Kartenstands, den der Manager per /mapsync bestaetigt hat
-# (VPS committet sie automatisch - siehe MapConcept.md). NICHT die laufende
-# Wahrheit: die ist im LittleFS des Managers. Notweg ohne VPS: diese Datei von
-# Hand anpassen, Firmware/LittleFS-Image neu bauen und flashen.
+# NUR SICHERHEITSKOPIE - keine Quelle. Die Source of truth im Repo ist
+# Controller/Manager6_3_0/data/rasen.csv (siehe KartenUpload.md dort); der
+# VPS committet den vom Manager bestaetigten Stand automatisch HIERHIN UND
+# dorthin (/mapsync in dashboard.py). Diese Datei von Hand zu editieren
+# aendert NICHTS am Manager - dafuer immer Controller/Manager6_3_0/data/
+# verwenden.
 2,562
 -5,580
 -3,742

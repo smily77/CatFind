@@ -3,10 +3,12 @@
 # Mehrere Ringe durch Leerzeile getrennt (Loecher = No-Shot-Inseln).
 # x,y  (Welt, Millimeter, ganzzahlig)
 #
-# Referenzkopie des Kartenstands, den der Manager per /mapsync bestaetigt hat
-# (VPS committet sie automatisch - siehe MapConcept.md). NICHT die laufende
-# Wahrheit: die ist im LittleFS des Managers. Notweg ohne VPS: diese Datei von
-# Hand anpassen, Firmware/LittleFS-Image neu bauen und flashen.
+# NUR SICHERHEITSKOPIE - keine Quelle. Die Source of truth im Repo ist
+# Controller/Manager6_3_0/data/noshot.csv (siehe KartenUpload.md dort); der
+# VPS committet den vom Manager bestaetigten Stand automatisch HIERHIN UND
+# dorthin (/mapsync in dashboard.py). Diese Datei von Hand zu editieren
+# aendert NICHTS am Manager - dafuer immer Controller/Manager6_3_0/data/
+# verwenden.
 115,2
 132,1301
 1891,1376

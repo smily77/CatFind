@@ -92,9 +92,15 @@ XCOMDEF_URL  = os.environ.get(
 # nicht das, was zuletzt auf GitHub gepusht wurde. Ist der Spiegel leer (frischer
 # VPS, Manager noch nie verbunden), liefern /map und /noshot schlicht nichts.
 GITHUB_REPO      = os.environ.get("GITHUB_REPO", "smily77/CatFind")
-GITHUB_MAP_TOKEN = os.environ.get("GITHUB_MAP_TOKEN", "")   # Deploy-Token, nur Schreibrecht auf Map/
-MAP_REPO_PATH = {"noshot": "Map/noshot.csv", "rasen": "Map/rasen.csv"}
+GITHUB_MAP_TOKEN = os.environ.get("GITHUB_MAP_TOKEN", "")   # Deploy-Token, nur Schreibrecht auf die zwei Pfade unten
 MAP_TYPE_ID   = {"noshot": 1, "rasen": 2}      # == mapNoShot/mapRasen in xComDef6_3.h
+# Single Source of Truth im Repo: Controller/Manager6_3_0/data/<typ>.csv - GENAU
+# der Ordner, aus dem das Arduino/ESP32-Tooling das LittleFS-Image fuer USB-/OTA-
+# Upload baut (siehe Controller/Manager6_3_0/KartenUpload.md). Map/backup/<typ>.csv
+# ist NUR eine zusaetzliche Sicherheitskopie, nie die Quelle.
+MAP_SOURCE_PATH = {"noshot": "Controller/Manager6_3_0/data/noshot.csv",
+                    "rasen":  "Controller/Manager6_3_0/data/rasen.csv"}
+MAP_BACKUP_PATH = {"noshot": "Map/backup/noshot.csv", "rasen": "Map/backup/rasen.csv"}
 MAP_CMD_FETCH = 28   # == cmdMapFetch (xComDef6_3.h): Manager holt eine pending Karte ab
 MAP_CMD_PUSH  = 29   # == cmdMapPush  (xComDef6_3.h): Manager meldet die aktive Karte (Re-Sync)
 MANAGER_TARGET = 0   # == #define Manager 0 (xComDef6_3.h device-Index)
@@ -129,15 +135,13 @@ def _parse_map_csv(text):
     return rings
 
 
-def _github_commit_map(map_type, csv_text, version):
-    """Vom Manager bestaetigte Karte nach Map/<typ>.csv committen (GitHub Contents
-    API - kein lokaler Git-Client/Checkout im Container noetig). Best-effort: ohne
-    Token oder bei Fehlern nur geloggt, nie fatal - die Kartenverteilung selbst
-    haengt NICHT vom Repo-Spiegel ab (Leitplanke 1, MapConcept.md)."""
-    if not GITHUB_MAP_TOKEN:
-        return
-    path = MAP_REPO_PATH.get(map_type)
-    if not path:
+def _github_commit_map(map_type, csv_text, version, path):
+    """Vom Manager bestaetigte Karte nach `path` committen (GitHub Contents API -
+    kein lokaler Git-Client/Checkout im Container noetig). Wird zweimal aufgerufen
+    (Source of truth + Backup, siehe mapsync()). Best-effort: ohne Token oder bei
+    Fehlern nur geloggt, nie fatal - die Kartenverteilung selbst haengt NICHT vom
+    Repo-Spiegel ab (Leitplanke 1, MapConcept.md)."""
+    if not GITHUB_MAP_TOKEN or not path:
         return
     api = "https://api.github.com/repos/%s/contents/%s" % (GITHUB_REPO, path)
     headers = {"Authorization": "token " + GITHUB_MAP_TOKEN,
@@ -533,7 +537,7 @@ def ingest():
     # hoechstens alle 60s pro Kartentyp, sonst wuerde jeder gwFlush (1,5s) erneut anstossen.
     for mp in data.get("maps", []):
         typ = mp.get("type")
-        if typ not in MAP_REPO_PATH:
+        if typ not in MAP_TYPE_ID:
             continue
         version = int(mp.get("version", 0) or 0)
         if not version:
@@ -651,7 +655,7 @@ def maps_get(typ):
     # Regulaerer Weg: der Manager holt eine vom Editor gespeicherte pending Karte
     # ab (ausgeloest durch cmdMapFetch aus /commands). 204 = nichts pending -
     # das ist der Normalfall, kein Fehler.
-    if typ not in MAP_REPO_PATH:
+    if typ not in MAP_TYPE_ID:
         return "", 404
     with _map_pending_lock:
         p = _map_pending.get(typ)
@@ -665,7 +669,7 @@ def maps_post(typ):
     # Editor "Speichern": Ring-Rohdaten (OHNE Versions-Header - den vergibt
     # ausschliesslich der Manager) als pending ablegen und den Manager beim
     # naechsten /commands-Poll zum Abholen auffordern.
-    if typ not in MAP_REPO_PATH:
+    if typ not in MAP_TYPE_ID:
         return jsonify(error="unbekannter Kartentyp"), 404
     d = request.get_json(force=True, silent=True) or {}
     rings = d.get("rings") or []
@@ -692,7 +696,7 @@ def mapsync():
     # Notweg-Flash): Version/CRC in der Query, CSV-Text im Body. Der VPS
     # uebernimmt sie in den Spiegel und committet sie bei Abweichung ins Repo.
     typ = request.args.get("type", "")
-    if typ not in MAP_REPO_PATH:
+    if typ not in MAP_TYPE_ID:
         return jsonify(error="unbekannter Kartentyp"), 404
     version = request.args.get("version", type=int) or 0
     crc = request.args.get("crc", type=int) or 0
@@ -709,7 +713,13 @@ def mapsync():
     if was_pending:
         _sysmsg("Karte %s: uebernommen als v%d" % (typ, version))
     if changed:
-        threading.Thread(target=_github_commit_map, args=(typ, csv_text, version), daemon=True).start()
+        # Source of truth (Controller/Manager6_3_0/data/) UND Backup-Kopie
+        # (Map/backup/) committen - zwei separate Contents-API-Calls, da die
+        # GitHub-API immer nur eine Datei pro Aufruf schreibt.
+        threading.Thread(target=_github_commit_map,
+                          args=(typ, csv_text, version, MAP_SOURCE_PATH.get(typ)), daemon=True).start()
+        threading.Thread(target=_github_commit_map,
+                          args=(typ, csv_text, version, MAP_BACKUP_PATH.get(typ)), daemon=True).start()
     return jsonify(ok=True)
 
 
