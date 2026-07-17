@@ -1,15 +1,19 @@
 # Map/
 
-Rohdaten + laufend aktuelle Betriebskarten (siehe `MapConcept.md` im Repo-Root
-für den vollständigen Karten-Sync-Ablauf).
+Vermessungs-Rohdaten + Backup-Kopien der Betriebskarten. **Keine Source of
+truth** — die liegt bei `Controller/Manager6_3_0/data/` (siehe
+`Controller/Manager6_3_0/KartenUpload.md` und `MapConcept.md` im Repo-Root
+für den vollständigen Karten-Sync-Ablauf und den Single-Source-of-Truth-
+Gedanken dahinter).
 
-- `noshot.csv`, `rasen.csv` — Referenzkopien der Betriebskarten (Welt-mm, mit
-  Header). Werden vom VPS automatisch committet, sobald der Manager eine neue
-  Version übernommen hat (`/mapsync`). **Nicht die laufende Wahrheit** — die
-  ist im LittleFS des Managers; diese Dateien sind Backup + Notweg-Basis
-  (Repo-CSV von Hand anpassen, Firmware/LittleFS-Image neu flashen, wenn kein
-  VPS erreichbar ist).
+- `backup/noshot.csv`, `backup/rasen.csv` — **reine Sicherheitskopien** des
+  Kartenstands, den der Manager zuletzt per `/mapsync` bestätigt hat. Der VPS
+  committet sie automatisch mit, zusätzlich zum eigentlichen Ziel
+  `Controller/Manager6_3_0/data/`. Diese Dateien von Hand zu editieren hat
+  **keine Wirkung** auf den Manager — dafür immer
+  `Controller/Manager6_3_0/data/<typ>.csv` verwenden.
 - `RasenKarte.csv` — Vermessungs-Original des Rasen-Umrisses in **Metern**,
-  Quelle für den ersten `rasen.csv`-mm-Import und für den VPS-Localizer
-  (`VPS/localizer`, eigener Anwendungsfall, unabhängig vom Karten-Sync).
-- `karte_*.csv`, `Landmark.csv`, `All/` — Vermessungs-Rohdaten.
+  Quelle für den ursprünglichen `rasen.csv`-mm-Import und für den
+  VPS-Localizer (`VPS/localizer`, eigener Anwendungsfall, unabhängig vom
+  Karten-Sync).
+- `karte_*.csv`, `Landmark.csv`, `All/` — sonstige Vermessungs-Rohdaten.

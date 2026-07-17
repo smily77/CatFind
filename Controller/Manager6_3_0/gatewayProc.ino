@@ -135,6 +135,17 @@ static mapInfoPayload gwMapInfoFor(uint8_t mapType) {
   return info;
 }
 
+// Aus ensureMaps() (Boot) aufrufen: vorhandene Karten sofort annoncieren, statt
+// darauf zu warten, dass Sensoren sie zufaellig selbst anfordern oder bis zu
+// MAP_RECHECK_MS (Fangnetz, stuendlich) auf einen Re-Check warten. Wichtig fuer
+// den Notweg: nach einem manuellen LittleFS-Reflash + Reboot des Managers
+// bekommen Sensoren die neue Version so binnen Sekunden mit, nicht erst nach
+// bis zu einer Stunde (siehe Controller/Manager6_3_0/KartenUpload.md).
+void gwAnnounceMaps() {
+  if (gwMapVer[mapNoShot]) broadcastMsg(mapInfo, gwMapInfoFor(mapNoShot));
+  if (gwMapVer[mapRasen])  broadcastMsg(mapInfo, gwMapInfoFor(mapRasen));
+}
+
 // Annahme-Code: Rohdaten (Ring-Punkte je Zeile "x,y", Leerzeile = Ringende; eine
 // evtl. mitgeschickte erste Kommentarzeile wird verworfen - Version/Header vergibt
 // AUSSCHLIESSLICH der Manager) validieren, Version hochzaehlen, atomar ins LittleFS

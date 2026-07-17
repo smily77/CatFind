@@ -34,11 +34,13 @@ bool targetAlarm = false;
 // die einzige Quelle ist der VPS-Editor (Annahme-Code in gatewayProc.ino,
 // gwAcceptMap()/gwFetchMap()). Ohne Karte im LittleFS antwortet der Manager auf
 // mapRequest schlicht nicht (kein Seed-Sonderfall mehr, siehe serveMap()).
-// Notweg ohne VPS: Map/<typ>.csv im Repo anpassen, LittleFS-Image neu bauen
-// und flashen (MapConcept.md, Abschnitt "Notweg ohne VPS").
+// Notweg ohne VPS: Controller/Manager6_3_0/data/<typ>.csv im Repo anpassen
+// (Single Source of Truth), LittleFS-Image daraus neu bauen und per USB oder
+// OTA flashen - Schritt-fuer-Schritt-Anleitung in KartenUpload.md.
 
-// LittleFS mounten und den aktuellen Kartenstand (falls vorhanden) einlesen/loggen.
-// (Nur ein Funktionsaufruf hier - gwMapVer/gwMapCrc sind Variablen aus gatewayProc.ino,
+// LittleFS mounten und den aktuellen Kartenstand (falls vorhanden) einlesen/loggen
+// + annoncieren (gwAnnounceMaps - wichtig nach einem Notweg-Reflash, siehe oben).
+// (Nur Funktionsaufrufe hier - gwMapVer/gwMapCrc sind Variablen aus gatewayProc.ino,
 // das textuell NACH diesem Tab in den Sketch einfliesst; Arduino generiert automatische
 // Prototypen nur fuer Funktionen, nicht fuer Variablen, siehe gwRefreshMapStatus().)
 void ensureMaps() {
@@ -47,6 +49,7 @@ void ensureMaps() {
     return;
   }
   gwRefreshMapStatus();
+  gwAnnounceMaps();
 }
 
 void setup() {

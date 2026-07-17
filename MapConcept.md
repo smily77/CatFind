@@ -12,18 +12,26 @@ Stand: 2026-07-16 — Entwurf zur Diskussion
 2. **Karten gehören nicht dauerhaft in den Firmware-Quellcode.**
    `NOSHOT_DEFAULT` und `RASEN_DEFAULT` in `Manager6_3_0.ino` fliegen raus.
    Reguläre Kartenänderungen (über den VPS) bedeuten nie einen Flash. Der
-   Notweg ohne VPS (Repo-CSV von Hand anpassen, Firmware neu bauen und
-   flashen) ist bewusst die akzeptierte Ausnahme, kein Dauerzustand.
+   Notweg ohne VPS (`Controller/Manager6_3_0/data/<typ>.csv` von Hand
+   anpassen, daraus NUR das LittleFS-Image neu bauen und flashen — der
+   Sketch-Code selbst bleibt unverändert, siehe `KartenUpload.md`) ist
+   bewusst die akzeptierte Ausnahme, kein Dauerzustand.
 3. **Eine Karte, ein Format, eine Einheit.** Alles Betriebliche in Welt-mm mit dem
    bestehenden Header (`# <Typ> v<N> crc=… units=mm frame=world`, Ringe durch
    Leerzeilen). Der Meter/mm-Mix bei der RasenKarte verschwindet.
 4. **Version/CRC zählt nie mehr ein Mensch hoch.** Der Manager vergibt beide beim
    Annehmen einer Kartenänderung selbst.
-5. **Das Repo ist immer Abbild des aktiven Kartenstands.** Jede über den VPS
-   angenommene Kartenänderung wird automatisch nach `Map/noshot.csv` bzw.
-   `Map/rasen.csv` zurückcommittet — das Repo ist nicht mehr nur Backup/
-   Erstbefüllung, sondern laufender Spiegel dessen, was gerade auf dem
-   Manager aktiv ist. Kein manueller Schritt nötig.
+5. **Das Repo ist immer Abbild des aktiven Kartenstands — mit EINER Quelle.**
+   Jede über den VPS angenommene Kartenänderung wird automatisch nach
+   `Controller/Manager6_3_0/data/noshot.csv` bzw. `.../data/rasen.csv`
+   zurückcommittet (plus einer reinen Sicherheitskopie nach
+   `Map/backup/`). `Controller/Manager6_3_0/data/` ist bewusst die Single
+   Source of Truth im Repo: genau der Ordner, aus dem das Arduino/ESP32-
+   Tooling das LittleFS-Image für USB- **und** OTA-Upload baut — dieselbe
+   Datei, die auch für den Notweg editiert wird, es gibt keine zweite
+   „echte“ Kopie mehr, die auseinanderlaufen könnte. `Map/` bleibt
+   Vermessungs-Rohdaten + Backup, keine Quelle. Kein manueller
+   Commit-Schritt nötig.
 
 ## Ist-Zustand (was heute wo liegt)
 
@@ -59,11 +67,16 @@ nur die Quelle am Anfang der Kette ist falsch verankert.
                                      │
                                      │ VPS committet angenommene Karte
                                      ▼
-                          Git-Repo (Map/noshot.csv, Map/rasen.csv)
-                          — immer aktuelles Abbild, kein manueller Schritt
+              Git-Repo: Controller/Manager6_3_0/data/<typ>.csv  (SOURCE OF TRUTH -
+              genau der Ordner fürs LittleFS-Image, siehe KartenUpload.md)
+              + Map/backup/<typ>.csv (reine Sicherheitskopie)
+              — immer aktuelles Abbild, kein manueller Schritt
 
-  Notweg ohne VPS: Repo-CSV von Hand ändern → Firmware/LittleFS neu bauen
-  → Manager flashen (kein Editor-Komfort, aber funktioniert autark)
+  Notweg ohne VPS: Controller/Manager6_3_0/data/<typ>.csv von Hand ändern
+  → NUR das LittleFS-Image daraus neu bauen (Sketch bleibt unverändert)
+  → per USB oder OTA auf den Manager flashen (kein Editor-Komfort, aber
+  funktioniert autark) → Manager annonciert seinen Kartenstand nach dem
+  Reboot sofort (gwAnnounceMaps), Sensoren laden zeitnah nach
 ```
 
 Der Manager ist **einziger Master im Betrieb**. Es gibt genau einen
@@ -84,24 +97,35 @@ umgekehrt) — deshalb Pull statt Push, über den bestehenden Kanal:
 4. Annahme-Code im Manager (siehe unten): validieren, Version++, CRC,
    LittleFS schreiben, Announce, Kartenstand zurückmelden
 5. VPS markiert pending als übernommen, committet die angenommene CSV nach
-   `Map/<typ>.csv` im Git-Repo (siehe „VPS: vom Regex-Parser zum Spiegel“)
-   und der Editor zeigt „übernommen als v13“
+   `Controller/Manager6_3_0/data/<typ>.csv` (Source of Truth) und
+   `Map/backup/<typ>.csv` im Git-Repo (siehe „VPS: vom Regex-Parser zum
+   Spiegel“) und der Editor zeigt „übernommen als v13“
 
 ### Notweg ohne VPS (Ausnahme, kein Netzwerk-Endpunkt am Manager)
 
 Fällt der VPS aus oder soll eine Karte ganz ohne VPS geändert werden, gibt es
 bewusst **keinen** eigenen Upload-Endpunkt am Manager (kein WebServer nötig):
 
-1. `Map/<typ>.csv` im Repo von Hand anpassen
-2. Firmware (inkl. LittleFS-Image) neu bauen und auf den Manager flashen
+1. `Controller/Manager6_3_0/data/<typ>.csv` im Repo von Hand anpassen (das
+   ist die Source of Truth — derselbe Ordner, aus dem das Arduino/ESP32-
+   Tooling das LittleFS-Image baut, siehe unten)
+2. **Nur** das LittleFS-Image daraus neu bauen (der Sketch-Code/die
+   Firmware selbst bleibt unverändert — kein Neu-Kompilieren des Programms
+   nötig) und auf den Manager flashen — per USB **oder** OTA (der Manager
+   unterstützt beides bereits, `ArduinoOTA` unterscheidet Firmware- und
+   Filesystem-Updates). Ausführliche Schritt-für-Schritt-Anleitung inkl.
+   konkreter Befehle: `Controller/Manager6_3_0/KartenUpload.md`.
 3. Der laufende Betrieb (Sensoren mit der zuletzt geladenen Karte) läuft bis
    dahin unterbrechungsfrei weiter — es ist kein Ausfall im Sinne von
    „System steht“, sondern nur „Karte kann gerade nicht komfortabel
    geändert werden“
+4. Nach dem Reboot annonciert der Manager seinen (neuen) Kartenstand sofort
+   per Multicast (`gwAnnounceMaps()` in `ensureMaps()`) — Sensoren laden
+   binnen Sekunden nach, nicht erst nach dem stündlichen Fangnetz
 
-Der Aufwand (Compile + Flash) ist bewusst der Preis dafür, dass der Manager
-keinen zusätzlichen Netzwerk-Endpunkt braucht und keine Angriffsfläche für
-die Schuss-Freigabezone im lokalen Netz entsteht.
+Der Aufwand (Image bauen + Flash) ist bewusst der Preis dafür, dass der
+Manager keinen zusätzlichen Netzwerk-Endpunkt braucht und keine
+Angriffsfläche für die Schuss-Freigabezone im lokalen Netz entsteht.
 
 ### Annahme-Code im Manager
 
@@ -139,10 +163,13 @@ Bestehendes Chunk-Protokoll bleibt unverändert. Neu:
   Der VPS zeigt damit immer das, was **wirklich aktiv** ist — nicht das, was
   auf GitHub gepusht wurde.
 - Nimmt der VPS über `/mapsync` eine vom Manager bestätigte neue Kartenversion
-  entgegen, committet er sie automatisch nach `Map/<typ>.csv` im Git-Repo
-  (z. B. per GitHub-API mit einem eng gescopten Deploy-Token). Damit ist das
-  Repo immer aktuell, ohne dass jemand manuell CSVs hochladen oder committen
-  muss.
+  entgegen, committet er sie automatisch (GitHub Contents API, eng gescopter
+  Deploy-Token) nach **zwei** Stellen im Git-Repo: primär
+  `Controller/Manager6_3_0/data/<typ>.csv` (Source of Truth, siehe
+  Leitplanke 5) und zusätzlich `Map/backup/<typ>.csv` (reine
+  Sicherheitskopie). Damit ist das Repo immer aktuell, ohne dass jemand
+  manuell CSVs hochladen oder committen muss — und der Notweg (unten)
+  editiert exakt dieselbe Datei, die auch normal committet wird.
 - `/noshot` und `/map` (Weltkarten-Hintergrund) lesen aus dem Spiegel.
   Ist der Spiegel leer (frischer VPS, Manager noch nie verbunden), zeigt die
   Karte schlicht nichts an — kein GitHub-Fallback mehr.
@@ -177,16 +204,27 @@ der Notweg soll simpel bleiben.
   Editor-Speichern über den VPS. Bis dahin antwortet der Manager auf
   `mapRequest` schlicht nicht, Sensoren melden „Karte nicht verfügbar“ ins
   Debug-Fenster (Meldung existiert). Kein Seed-Sonderfall mehr im Code.
-- **Referenzkopien** der Betriebskarten an EINEM Ort im Repo:
-  `Map/noshot.csv` und `Map/rasen.csv` (Welt-mm, Betriebsformat) — vom VPS
-  automatisch aktuell gehalten, kein manueller Upload-/Commit-Schritt mehr.
-- `Controller/Manager6_3_0/noshot.csv` und `data/noshot.csv` **löschen**
-  (der FS-Upload-Weg entfällt).
+- **Source of Truth im Repo**: `Controller/Manager6_3_0/data/noshot.csv` und
+  `.../data/rasen.csv` (Welt-mm, Betriebsformat) — vom VPS automatisch
+  aktuell gehalten (`/mapsync`), kein manueller Upload-/Commit-Schritt
+  mehr. Bewusst **in diesem Ordner**, nicht in `Map/`: es ist genau der
+  Ordner, aus dem das Arduino/ESP32-Tooling das LittleFS-Image für
+  USB-/OTA-Upload baut (Notweg braucht sonst einen manuellen
+  Kopierschritt, der leicht vergessen wird) — siehe `KartenUpload.md`.
+- `Controller/Manager6_3_0/noshot.csv` (die alte Flach-Kopie ohne
+  `data/`-Unterordner, vom früheren FS-Upload-Weg) **gelöscht** —
+  `data/noshot.csv` bleibt, wird aber jetzt Source of Truth statt
+  Boot-Seed (der Boot-Seed-Automatismus selbst ist weg, siehe unten).
+- `Map/noshot.csv`/`Map/rasen.csv` nach `Map/backup/noshot.csv` bzw.
+  `Map/backup/rasen.csv` verschoben — reine Sicherheitskopie, vom VPS
+  zusätzlich committet, editieren wirkungslos.
 - `Map/RasenKarte.csv` (Meter) bleibt als Vermessungs-Original liegen;
-  `Map/` per README-Zeile als „Rohdaten + laufend aktuelle Betriebskarten“
-  deklarieren.
-- Doku (`Dokumentation_6_3.md`): Kapitel „Karten“ mit der Tabelle
-  Karte → Master → Konsument → Verteilweg.
+  `Map/README.md` erklärt den Unterschied Rohdaten/Backup vs. Source of
+  Truth.
+- Doku: `Dokumentation_6_3.md` Kapitel 4.2 aktualisiert (Ablauf, Pfade,
+  Tabelle „welches Programm nutzt welche Karte“) + neues
+  `Controller/Manager6_3_0/KartenUpload.md` mit der kompletten
+  USB-/OTA-Anleitung für den Notweg.
 - **Coverage bleibt unverändert** — dort ist der VPS als Master richtig
   (die Polygone entstehen aus VPS-Daten und der Hauptkonsument CatIdentifier
   holt sie schon per HTTP vom VPS). Sie wird nur in der Doku mit einsortiert.
@@ -200,16 +238,24 @@ der Notweg soll simpel bleiben.
   VPS-Schreibendpunkte (passt zum offenen Punkt „Review-Punkt 10“, der für
   die VPS-Schreibendpunkte ohnehin ansteht).
 - Der VPS braucht Schreibrechte auf das Git-Repo (Deploy-Token/GitHub-App),
-  um `Map/<typ>.csv` automatisch zu committen — Token so eng wie möglich
-  scopen (nur Schreibrecht auf `Map/`, kein Force-Push), damit ein
+  um `Controller/Manager6_3_0/data/<typ>.csv` und `Map/backup/<typ>.csv`
+  automatisch zu committen — Token so eng wie möglich scopen (nur
+  Schreibrecht auf genau diese zwei Pfade, kein Force-Push), damit ein
   kompromittierter VPS nicht das ganze Repo gefährdet.
+- **Kein OTA-Passwort am Manager** (`setUpOTA()` setzt keins) — jeder im
+  lokalen Netz kann per `espota.py` sowohl Firmware- als auch
+  Filesystem-OTA-Updates an den Manager schicken. Bekannter, bisher nicht
+  behobener Punkt (passt zu „Review-Punkt 10“), nicht neu durch dieses
+  Konzept, aber durch den dokumentierten OTA-Notweg (`KartenUpload.md`)
+  jetzt konkreter sichtbar. Empfehlung: `ArduinoOTA.setPassword(...)`
+  nachrüsten, sobald das Auth-Thema angegangen wird.
 
 ## Umsetzung in Stufen (jede einzeln deploybar)
 
 | Stufe | Inhalt | Deploy | Status |
 |---|---|---|---|
 | 1 | Manager: Karten aus dem Code raus; Annahme-Code (Validierung, Auto-Version, Announce) für die per VPS abgeholte Karte; Kartenstand-Push an VPS. Kein WebServer nötig — nur `/commands`-Poll (existiert) + `HTTP GET` vom VPS (`HTTPClient` existiert schon) | Manager-OTA | ✅ umgesetzt |
-| 2 | VPS: Spiegel statt GitHub-Regex, `/mapsync`, `/maps/<typ>`, pending-Mechanik im `/commands`-Kanal, automatischer Git-Commit der angenommenen Karte nach `Map/<typ>.csv` | VPS | ✅ umgesetzt |
+| 2 | VPS: Spiegel statt GitHub-Regex, `/mapsync`, `/maps/<typ>`, pending-Mechanik im `/commands`-Kanal, automatischer Git-Commit der angenommenen Karte nach `Controller/Manager6_3_0/data/<typ>.csv` (Source of Truth) + `Map/backup/<typ>.csv` | VPS | ✅ umgesetzt |
 | 3 | Analyse-Tab: Polygon-Editor mit Status-Rückmeldung | VPS | ✅ umgesetzt |
 | 4 | Lidar/Radar: `mapInfo`-Announce-Handler + stündlicher Re-Check | Sensor-OTA | ✅ umgesetzt |
 | 5 | Repo/Doku aufräumen (alte CSVs, README, Doku-Kapitel) | — | ✅ umgesetzt |
@@ -225,12 +271,29 @@ Stufen 3–4 sind Komfort (Editor, Live-Reload).
 Alle fünf Stufen sind im Code umgesetzt (Manager-Firmware, VPS-Backend,
 Analyse-Tab-Editor, Sensor-Firmware, Repo-Aufräumung). Geprüft wurde:
 
+- **Nachtrag Single-Source-of-Truth**: die erste Umsetzung hat
+  `Controller/Manager6_3_0/data/noshot.csv` beim Aufräumen gelöscht, weil
+  der alte Boot-Seed-Automatismus wegfiel — dabei übersehen, dass genau
+  dieser Ordner die einzige Möglichkeit ist, mit dem Arduino/ESP32-Tooling
+  ein LittleFS-Image für USB-/OTA-Upload zu bauen (LittleFS-Inhalte liegen
+  auf einer von der Sketch-Partition komplett getrennten Flash-Partition;
+  ein normaler Sketch-Compile+Upload/OTA fasst sie gar nicht an). Behoben:
+  `data/noshot.csv` + `data/rasen.csv` sind jetzt die Source of Truth im
+  Repo (der VPS committet dort hinein, der Notweg editiert dort), `Map/`
+  ist nur noch Rohdaten + Backup (`Map/backup/`). Zusätzlich ergänzt:
+  `gwAnnounceMaps()` broadcastet beim Boot den vorhandenen Kartenstand,
+  damit ein Notweg-Reflash zeitnah bei den Sensoren ankommt statt erst
+  nach bis zu einer Stunde Fangnetz-Wartezeit. Ausführliche
+  Schritt-für-Schritt-Anleitung (USB + OTA, konkrete Befehle,
+  Troubleshooting): `Controller/Manager6_3_0/KartenUpload.md`.
 - **VPS-Backend**: end-to-end per Flask-Testclient UND per echtem Browser
   (Playwright) durchgespielt — Editor speichert → `/maps/<typ>` pending →
   simulierter Manager holt ab (`GET /maps/<typ>?pending=1`) → bestätigt
-  (`POST /mapsync`) → Spiegel aktualisiert, `Map/<typ>.csv`-Commit ausgelöst
-  (ohne Token no-op, siehe unten) → Editor-Statuszeile pollt und zeigt
-  „übernommen als vN“. Alle Schritte funktionieren wie im Konzept beschrieben.
+  (`POST /mapsync`) → Spiegel aktualisiert, Commit nach `data/<typ>.csv` +
+  `Map/backup/<typ>.csv` ausgelöst (ohne Token no-op, siehe unten) →
+  Editor-Statuszeile pollt und zeigt „übernommen als vN“. Alle Schritte
+  funktionieren wie im Konzept beschrieben (erneut end-to-end getestet
+  nach der Pfad-Umstellung).
 - **Analyse-Tab-Editor**: Punkt ziehen, Klick-auf-Kante-fügt-Punkt-ein,
   Punkt löschen (Taste/Button), Ring hinzufügen/löschen im echten Browser
   geprüft (Playwright, Koordinaten aus dem Seiten-Kontext berechnet) —
