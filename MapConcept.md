@@ -24,8 +24,11 @@ Stand: 2026-07-16 — Entwurf zur Diskussion
 5. **Das Repo ist immer Abbild des aktiven Kartenstands — mit EINER Quelle.**
    Jede über den VPS angenommene Kartenänderung wird automatisch nach
    `Controller/Manager6_3_0/data/noshot.csv` bzw. `.../data/rasen.csv`
-   zurückcommittet (plus einer reinen Sicherheitskopie nach
-   `Map/backup/`). `Controller/Manager6_3_0/data/` ist bewusst die Single
+   zurückcommittet (plus einer reinen Sicherheitskopie nach `Map/backup/`
+   und einer unveränderlichen Verlaufsdatei je Version nach
+   `Map/backup/history/<typ>_v<N>.csv` — redundant zur ohnehin
+   vorhandenen Git-Commit-Historie, aber ohne Git-Kenntnisse
+   durchblätterbar). `Controller/Manager6_3_0/data/` ist bewusst die Single
    Source of Truth im Repo: genau der Ordner, aus dem das Arduino/ESP32-
    Tooling das LittleFS-Image für USB- **und** OTA-Upload baut — dieselbe
    Datei, die auch für den Notweg editiert wird, es gibt keine zweite
@@ -69,7 +72,8 @@ nur die Quelle am Anfang der Kette ist falsch verankert.
                                      ▼
               Git-Repo: Controller/Manager6_3_0/data/<typ>.csv  (SOURCE OF TRUTH -
               genau der Ordner fürs LittleFS-Image, siehe KartenUpload.md)
-              + Map/backup/<typ>.csv (reine Sicherheitskopie)
+              + Map/backup/<typ>.csv (reine Sicherheitskopie, wird überschrieben)
+              + Map/backup/history/<typ>_v<N>.csv (unveränderlich, eine je Version)
               — immer aktuelles Abbild, kein manueller Schritt
 
   Notweg ohne VPS: Controller/Manager6_3_0/data/<typ>.csv von Hand ändern
@@ -164,12 +168,16 @@ Bestehendes Chunk-Protokoll bleibt unverändert. Neu:
   auf GitHub gepusht wurde.
 - Nimmt der VPS über `/mapsync` eine vom Manager bestätigte neue Kartenversion
   entgegen, committet er sie automatisch (GitHub Contents API, eng gescopter
-  Deploy-Token) nach **zwei** Stellen im Git-Repo: primär
+  Deploy-Token) nach **drei** Stellen im Git-Repo: primär
   `Controller/Manager6_3_0/data/<typ>.csv` (Source of Truth, siehe
-  Leitplanke 5) und zusätzlich `Map/backup/<typ>.csv` (reine
-  Sicherheitskopie). Damit ist das Repo immer aktuell, ohne dass jemand
-  manuell CSVs hochladen oder committen muss — und der Notweg (unten)
-  editiert exakt dieselbe Datei, die auch normal committet wird.
+  Leitplanke 5), `Map/backup/<typ>.csv` (reine Sicherheitskopie, wird
+  überschrieben) und `Map/backup/history/<typ>_v<N>.csv` (unveränderlich,
+  eine Datei je Version — Kartenhistorie durchblätterbar ohne Git-
+  Kenntnisse; redundant zur Git-Commit-Historie auf den ersten beiden
+  Pfaden, aber bewusst so gewünscht). Damit ist das Repo immer aktuell,
+  ohne dass jemand manuell CSVs hochladen oder committen muss — und der
+  Notweg (unten) editiert exakt dieselbe Datei, die auch normal committet
+  wird.
 - `/noshot` und `/map` (Weltkarten-Hintergrund) lesen aus dem Spiegel.
   Ist der Spiegel leer (frischer VPS, Manager noch nie verbunden), zeigt die
   Karte schlicht nichts an — kein GitHub-Fallback mehr.
@@ -237,11 +245,16 @@ der Notweg soll simpel bleiben.
   im lokalen Netz, verlagert das Auth-Thema aber vollständig auf die
   VPS-Schreibendpunkte (passt zum offenen Punkt „Review-Punkt 10“, der für
   die VPS-Schreibendpunkte ohnehin ansteht).
-- Der VPS braucht Schreibrechte auf das Git-Repo (Deploy-Token/GitHub-App),
-  um `Controller/Manager6_3_0/data/<typ>.csv` und `Map/backup/<typ>.csv`
-  automatisch zu committen — Token so eng wie möglich scopen (nur
-  Schreibrecht auf genau diese zwei Pfade, kein Force-Push), damit ein
-  kompromittierter VPS nicht das ganze Repo gefährdet.
+- Der VPS braucht Schreibrechte auf das Git-Repo (Fine-grained Personal
+  Access Token, siehe `KartenUpload.md`), um `Controller/Manager6_3_0/data/<typ>.csv`,
+  `Map/backup/<typ>.csv` und `Map/backup/history/<typ>_v<N>.csv`
+  automatisch zu committen. GitHub-Tokens lassen sich nicht auf einzelne
+  Pfade *innerhalb* eines Repos beschränken — eng scopen heißt hier: nur
+  Zugriff auf **dieses eine Repo** (`Only select repositories` →
+  `CatFind`) und nur die Permission **Contents: Read and write**, sonst
+  nichts. Damit kann ein kompromittierter Token zwar überall im Repo
+  schreiben, aber nicht auf andere Repos zugreifen oder Repo-Einstellungen
+  ändern.
 - **Kein OTA-Passwort am Manager** (`setUpOTA()` setzt keins) — jeder im
   lokalen Netz kann per `espota.py` sowohl Firmware- als auch
   Filesystem-OTA-Updates an den Manager schicken. Bekannter, bisher nicht
@@ -255,7 +268,7 @@ der Notweg soll simpel bleiben.
 | Stufe | Inhalt | Deploy | Status |
 |---|---|---|---|
 | 1 | Manager: Karten aus dem Code raus; Annahme-Code (Validierung, Auto-Version, Announce) für die per VPS abgeholte Karte; Kartenstand-Push an VPS. Kein WebServer nötig — nur `/commands`-Poll (existiert) + `HTTP GET` vom VPS (`HTTPClient` existiert schon) | Manager-OTA | ✅ umgesetzt |
-| 2 | VPS: Spiegel statt GitHub-Regex, `/mapsync`, `/maps/<typ>`, pending-Mechanik im `/commands`-Kanal, automatischer Git-Commit der angenommenen Karte nach `Controller/Manager6_3_0/data/<typ>.csv` (Source of Truth) + `Map/backup/<typ>.csv` | VPS | ✅ umgesetzt |
+| 2 | VPS: Spiegel statt GitHub-Regex, `/mapsync`, `/maps/<typ>`, pending-Mechanik im `/commands`-Kanal, automatischer Git-Commit der angenommenen Karte nach `Controller/Manager6_3_0/data/<typ>.csv` (Source of Truth) + `Map/backup/<typ>.csv` + `Map/backup/history/<typ>_v<N>.csv` | VPS | ✅ umgesetzt |
 | 3 | Analyse-Tab: Polygon-Editor mit Status-Rückmeldung | VPS | ✅ umgesetzt |
 | 4 | Lidar/Radar: `mapInfo`-Announce-Handler + stündlicher Re-Check | Sensor-OTA | ✅ umgesetzt |
 | 5 | Repo/Doku aufräumen (alte CSVs, README, Doku-Kapitel) | — | ✅ umgesetzt |
@@ -290,7 +303,8 @@ Analyse-Tab-Editor, Sensor-Firmware, Repo-Aufräumung). Geprüft wurde:
   (Playwright) durchgespielt — Editor speichert → `/maps/<typ>` pending →
   simulierter Manager holt ab (`GET /maps/<typ>?pending=1`) → bestätigt
   (`POST /mapsync`) → Spiegel aktualisiert, Commit nach `data/<typ>.csv` +
-  `Map/backup/<typ>.csv` ausgelöst (ohne Token no-op, siehe unten) →
+  `Map/backup/<typ>.csv` + `Map/backup/history/<typ>_v<N>.csv` ausgelöst
+  (ohne Token no-op, siehe unten) →
   Editor-Statuszeile pollt und zeigt „übernommen als vN“. Alle Schritte
   funktionieren wie im Konzept beschrieben (erneut end-to-end getestet
   nach der Pfad-Umstellung).

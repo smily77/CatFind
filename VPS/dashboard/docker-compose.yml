@@ -13,8 +13,12 @@ services:
     environment:
       # Karten kommen jetzt vom Manager (/mapsync, siehe MapConcept.md), kein
       # MAP_URL/GitHub-Fetch mehr. GITHUB_MAP_TOKEN optional setzen, um
-      # angenommene Karten automatisch nach Map/<typ>.csv zu committen (Deploy-
-      # Token, nur Schreibrecht auf Map/ - siehe dashboard.py _github_commit_map).
-      # GITHUB_MAP_TOKEN: "..."
+      # angenommene Karten automatisch nach Controller/Manager6_3_0/data/<typ>.csv
+      # (Source of Truth) + Map/backup/<typ>.csv zu committen (Deploy-Token,
+      # Contents: Read&Write NUR auf dieses Repo - siehe KartenUpload.md
+      # "GITHUB_MAP_TOKEN einrichten" und dashboard.py _github_commit_map).
+      # Wert kommt aus .env (siehe .env.example daneben) - NIE hier direkt
+      # eintragen, sonst landet der Token im Git-Verlauf.
+      GITHUB_MAP_TOKEN: "${GITHUB_MAP_TOKEN:-}"
       DB_PATH: "/data/catfinder.db"
       PARAMS_PATH: "/data/model_params.json"
