@@ -101,6 +101,17 @@ MAP_TYPE_ID   = {"noshot": 1, "rasen": 2}      # == mapNoShot/mapRasen in xComDe
 MAP_SOURCE_PATH = {"noshot": "Controller/Manager6_3_0/data/noshot.csv",
                     "rasen":  "Controller/Manager6_3_0/data/rasen.csv"}
 MAP_BACKUP_PATH = {"noshot": "Map/backup/noshot.csv", "rasen": "Map/backup/rasen.csv"}
+# Zusaetzlich zur ueberschriebenen Backup-Kopie eine UNVERAENDERLICHE, pro
+# Version eigene Datei - durchblaetterbar (GitHub-Weboberflaeche/Datei-
+# Explorer) ohne Git-Kenntnisse. Git-Commit-Historie auf MAP_BACKUP_PATH/
+# MAP_SOURCE_PATH deckt dasselbe bereits ab (git log/show/checkout); dies
+# ist bewusst redundant dazu, auf Wunsch (siehe MapConcept.md). Waechst
+# unbegrenzt - kleine Text-Dateien, aber ohne Rotation/Aufraeumen bislang.
+MAP_HISTORY_DIR = "Map/backup/history"
+
+
+def _map_history_path(map_type, version):
+    return "%s/%s_v%05d.csv" % (MAP_HISTORY_DIR, map_type, int(version))
 MAP_CMD_FETCH = 28   # == cmdMapFetch (xComDef6_3.h): Manager holt eine pending Karte ab
 MAP_CMD_PUSH  = 29   # == cmdMapPush  (xComDef6_3.h): Manager meldet die aktive Karte (Re-Sync)
 MANAGER_TARGET = 0   # == #define Manager 0 (xComDef6_3.h device-Index)
@@ -713,13 +724,17 @@ def mapsync():
     if was_pending:
         _sysmsg("Karte %s: uebernommen als v%d" % (typ, version))
     if changed:
-        # Source of truth (Controller/Manager6_3_0/data/) UND Backup-Kopie
-        # (Map/backup/) committen - zwei separate Contents-API-Calls, da die
-        # GitHub-API immer nur eine Datei pro Aufruf schreibt.
+        # Source of truth (Controller/Manager6_3_0/data/), ueberschriebene
+        # Backup-Kopie (Map/backup/) UND eine unveraenderliche, pro Version
+        # eigene Verlaufsdatei (Map/backup/history/) committen - drei
+        # separate Contents-API-Calls, da die GitHub-API immer nur eine
+        # Datei pro Aufruf schreibt.
         threading.Thread(target=_github_commit_map,
                           args=(typ, csv_text, version, MAP_SOURCE_PATH.get(typ)), daemon=True).start()
         threading.Thread(target=_github_commit_map,
                           args=(typ, csv_text, version, MAP_BACKUP_PATH.get(typ)), daemon=True).start()
+        threading.Thread(target=_github_commit_map,
+                          args=(typ, csv_text, version, _map_history_path(typ, version)), daemon=True).start()
     return jsonify(ok=True)
 
 

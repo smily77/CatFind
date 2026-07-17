@@ -559,6 +559,7 @@ Annahme-Code (gwAcceptMap, gatewayProc.ino):
                                                              → VPS-Spiegel + Git-Commit nach
                                                                Controller/Manager6_3_0/data/<typ>.csv
                                                                (Source of Truth) + Map/backup/<typ>.csv
+                                                               + Map/backup/history/<typ>_v<N>.csv
 ```
 
 - **Annahme-Code** (`gwAcceptMap` in `gatewayProc.ino`): Rohdaten (Ring-Punkte,

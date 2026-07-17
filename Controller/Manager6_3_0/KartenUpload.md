@@ -11,7 +11,8 @@ Anleitung **nicht** nötig.
 |---|---|
 | **LittleFS des Managers** (`/noshot.csv`, `/rasen.csv`, auf dem Gerät) | Die tatsächlich **aktive** Karte im Betrieb. Alles andere ist nur ein Weg dorthin. |
 | **`Controller/Manager6_3_0/data/noshot.csv` und `.../data/rasen.csv`** (dieses Repo-Verzeichnis) | **Source of Truth im Repo.** Genau der Ordner, aus dem das Arduino/ESP32-Werkzeug das LittleFS-Image baut (USB *und* OTA, siehe unten). Der VPS committet den vom Manager bestätigten Kartenstand automatisch hierhin zurück (`/mapsync` in `dashboard.py`). Für den Notweg wird **ausschließlich diese Datei** editiert. |
-| `Map/backup/noshot.csv`, `Map/backup/rasen.csv` | Reine Sicherheitskopie (wird vom VPS zusätzlich committet). Éditieren hat **keine** Wirkung auf den Manager. |
+| `Map/backup/noshot.csv`, `Map/backup/rasen.csv` | Reine Sicherheitskopie des aktuellen Stands (wird bei jeder Änderung überschrieben, vom VPS automatisch committet). Editieren hat **keine** Wirkung auf den Manager. |
+| `Map/backup/history/<typ>_v<NNNNN>.csv` | Unveränderliche Kopie **pro Version** (nie überschrieben) — Kartenhistorie durchblätterbar ohne Git-Kenntnisse. Dieselbe Historie liefert auch `git log`/GitHub-„History“-Button auf den beiden Dateien oben; dieser Ordner ist bewusst redundant dazu. |
 | `Map/RasenKarte.csv`, `Map/karte_*.csv`, `Map/Landmark.csv` | Vermessungs-Rohdaten (Meter), Ursprungsquelle für die erste `rasen.csv`-Version bzw. Eingabe für den VPS-Localizer — nicht Teil des laufenden Karten-Sync.
 
 Merksatz: **„Ändern will ich → `Controller/Manager6_3_0/data/`. Alles andere ist Anzeige oder Backup.“**
@@ -174,6 +175,60 @@ fordert der VPS über die `/commands`-Queue einen Re-Sync an
 gesetztem `GITHUB_MAP_TOKEN`) automatisch zurück nach
 `Controller/Manager6_3_0/data/<typ>.csv` **und** `Map/backup/<typ>.csv` —
 der Notweg schließt sich also von selbst wieder mit dem Repo kurz.
+
+## GITHUB_MAP_TOKEN einrichten
+
+Ohne diesen Token läuft alles andere trotzdem (Verteilung an die Sensoren,
+VPS-Spiegel/Editor) — nur der automatische Rückcommit ins Repo entfällt
+(still übersprungen, `_github_commit_map` in `dashboard.py` loggt das nur).
+Für Leitplanke 5 („Repo ist immer Abbild“, `MapConcept.md`) sollte er aber
+gesetzt sein.
+
+### 1. Fine-grained Personal Access Token auf GitHub erzeugen
+
+1. GitHub → Profilbild (oben rechts) → **Settings**.
+2. Ganz unten in der linken Seitenleiste → **Developer settings**.
+3. **Personal access tokens** → **Fine-grained tokens** → **Generate new token**.
+4. **Token name**: z. B. `catfind-vps-map-sync`.
+5. **Expiration**: ein konkretes Datum wählen (z. B. 90 Tage) statt „No
+   expiration“ — dann rechtzeitig vor Ablauf erneuern (Kalendererinnerung).
+6. **Resource owner**: der Account/die Org, der/die das Repo gehört
+   (`smily77`).
+7. **Repository access**: „**Only select repositories**“ → `CatFind`
+   auswählen. **Kein** Zugriff auf andere Repos geben.
+8. **Permissions** → **Repository permissions** → **Contents** →
+   auf „**Read and write**“ stellen. Alle anderen Berechtigungen auf
+   „No access“ belassen — mehr braucht die GitHub Contents API (GET+PUT
+   auf zwei Dateipfade) nicht.
+9. **Generate token** → den angezeigten Wert (`github_pat_…`) **sofort
+   kopieren** (wird danach nicht mehr angezeigt).
+
+### 2. Token auf dem VPS hinterlegen (NIE ins Repo committen)
+
+```bash
+# auf dem VPS, im Ordner mit docker-compose.yml
+cd /opt/catfinder/dashboard/VPS/dashboard        # Pfad ggf. anpassen
+cp .env.example .env
+nano .env            # GITHUB_MAP_TOKEN=github_pat_... eintragen, speichern
+```
+
+`.env` steht im `.gitignore` — landet dadurch nie in einem Commit. Docker
+Compose liest `.env` automatisch (Variable `${GITHUB_MAP_TOKEN}` in
+`docker-compose.yml`).
+
+### 3. Neu starten und prüfen
+
+```bash
+docker compose up -d          # Container mit dem neuen Env-Var neu erstellen
+docker compose logs -f dashboard
+```
+
+Dann im Analyse-Tab-Editor eine Kleinigkeit speichern und im Log auf eine
+Zeile wie `map noshot: v14 nach Controller/Manager6_3_0/data/noshot.csv
+committet` warten (zwei Zeilen — einmal Source of Truth, einmal Backup).
+Bei Problemen steht dort stattdessen `Git-Commit fehlgeschlagen: …` mit der
+Fehlermeldung (häufigste Ursache: Token-Berechtigung/Repo-Auswahl aus
+Schritt 1 falsch, oder Token abgelaufen).
 
 ## Troubleshooting
 
