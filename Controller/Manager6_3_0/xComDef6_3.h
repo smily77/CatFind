@@ -290,7 +290,11 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
 #define stgLidarMotor   4   // Lidar: Motor an/aus (Default an, NICHT persistiert)
 #define stgCatDetLed    5   // catDetected-Anzeige an/aus (Manager: rotes Blinken beim EMPFANG) [persistiert]
 #define stgCamAi        6   // CatCam: KI-Erkennung (Katze -> catObserved+Foto) an/aus       [persistiert]
-#define STG_COUNT       7
+#define stgRadarFullRasen 7 // HLK-Radar: meldet volle RasenKarte statt NoShot-gefiltert
+                            // (mehr Randdaten fuers NoShot-Editieren, aber mehr Bus-/VPS-
+                            // Traffic) - Default AUS (NoShot-gefiltert), NICHT persistiert:
+                            // nach einem Reboot immer der ruhige Normalbetrieb.
+#define STG_COUNT       8
 
 // Ausloesbare Aktionen (Bit-Position in settingsPayload.actions).
 #define actCopyPose     0   // Welt-Pose jetzt aus der Gruppe kopieren  -> cmdCopyPose

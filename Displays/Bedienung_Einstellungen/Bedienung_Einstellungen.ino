@@ -42,7 +42,8 @@ DevState devSt[deviceCount];
 
 // Beschriftungen (Index = stg*/act* aus xComDef6_3.h)
 const char* stgLabel[STG_COUNT] = {
-  "HB-Anzeige", "Cat-Anzeige", "Auto Pose kop.", "Auto-Kalib.", "Lidar-Motor", "CatDet-Anzeige", "Kamera-KI"
+  "HB-Anzeige", "Cat-Anzeige", "Auto Pose kop.", "Auto-Kalib.", "Lidar-Motor", "CatDet-Anzeige", "Kamera-KI",
+  "Radar Vollmodus"
 };
 const char* actLabel[ACT_COUNT] = { "Pose kopieren", "Kalibrieren", "Pose loeschen", "Param. laden", "Foto jetzt" };
 const uint8_t actCmd[ACT_COUNT] = { cmdCopyPose,     cmdCalibrate, cmdClearPose, cmdReloadParams, cmdTakePhoto };

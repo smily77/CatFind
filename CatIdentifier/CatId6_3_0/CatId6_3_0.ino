@@ -31,6 +31,18 @@ boolean statusLightOn = false;
 #define PARAMS_FETCH_TIMEOUT_MS 8000
 #define POSE_REQ_BOOT_MS 8000        // kurz nach dem Boot einmal nach Welt-Posen fragen
 
+// No-Shot-Karte: catObserved ausserhalb der erlaubten Schusszone wird gar nicht erst
+// ins Modell gefuettert (Radar/Nachbargrundstueck-Rauschen betrifft die Feuer-
+// Entscheidung ohnehin nie) - siehe MapConcept.md. insideNoShot() faellt ohne
+// geladene Karte offen (alles durchlassen), Filterung startet erst, sobald sie da ist.
+#define NOSHOT_PATH        "/noshot.csv"
+#define MAP_WAIT_MS        6000
+#define MAP_RETRY_MS      60000
+#define MAP_RECHECK_MS  3600000UL
+bool          noShotOK       = false;
+unsigned long lastNoShotTry  = 0;
+bool          mapRecheckNow  = false;
+
 unsigned long detLedOffMs = 0;       // CatDetected-LED wieder aus
 unsigned long bootPoseReqMs = 0;     // 0 = poseRequest noch nicht gesendet
 
@@ -106,6 +118,7 @@ void loop() {
   if (ucDataReceived) { ucDataReceived = false; handleCommand(lastUcMsg); }
   if (mcDataReceived) { mcDataReceived = false; handleBusMsg(lastMcMsg); }
   ctTick();                          // abgelaufene Tracks/Sturm-Slots aufraeumen
+  serviceNoShotMap();                // Erstbezug + stuendliches Fangnetz (hwProc.ino)
   // einmalig kurz nach dem Boot die Welt-Posen der Sensoren erfragen (danach
   // haelt der 5-min-poseRequest des Managers sie aktuell - wir hoeren nur mit)
   if (bootPoseReqMs == 0 && millis() > POSE_REQ_BOOT_MS) {
@@ -136,10 +149,18 @@ void handleCommand(const xMsg& m) {
 // Multicast vom Bus: catObserved fuettert das Modell, poseReport die Sektoren.
 void handleBusMsg(const xMsg& m) {
   if (handleCommonMsg(m)) return;
+  if (m.header.msgCode == mapInfo) {   // Announce: Manager hat eine neue Karte angenommen
+    if (mapAnnounceOutdated(m, mapNoShot, NOSHOT_PATH)) { noShotOK = false; mapRecheckNow = true; }
+    return;
+  }
   if (m.header.msgCode == catObserved && m.header.sender != ID) {
     posPayload obs;
     if (!getPayload(m, obs) || !obs.worldValid) return;   // Modell arbeitet in Welt-mm
     if (m.header.sender >= deviceCount) return;
+    // Ausserhalb der erlaubten Schusszone ist fuer die Feuer-Entscheidung irrelevant
+    // (spart RAM/Rechenzeit und haelt das Modell auf das beschraenkt, was zaehlt -
+    // insideNoShot() faellt ohne geladene Karte offen: alles durchlassen).
+    if (!insideNoShot(obs.worldX, obs.worldY)) return;
     ctFeed(m.header.sender, obs.worldX, obs.worldY);
   }
   else if (m.header.msgCode == poseReport && m.header.sender != ID) {

@@ -71,9 +71,12 @@
 // Anzeige: HB-Blitz und Target-LED ein-/ausschaltbar. Automatik: Welt-Pose aus der Gruppe
 // uebernehmen und (Radar-Spezialfall) automatische Co-Observation-Kalibrierung.
 // Aktionen: Pose jetzt kopieren, Kalibrierung jetzt ausloesen.
-#define STG_SUPPORTED ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCopyPose)|(1u<<stgAutoCalib))
+// stgRadarFullRasen NICHT in STG_DEFAULT/STG_PERSIST: Default AUS (NoShot-gefiltert,
+// ruhiger Bus) und nicht persistiert - nach jedem Reboot wieder der ruhige Normalbetrieb,
+// unabhaengig davon, was vor dem letzten Neustart eingestellt war (s. Radar6_3_0.ino).
+#define STG_SUPPORTED ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCopyPose)|(1u<<stgAutoCalib)|(1u<<stgRadarFullRasen))
 #define STG_DEFAULT   ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCalib))   // Auto-Kalib default an
-#define STG_PERSIST   STG_SUPPORTED                                         // alle im NVS
+#define STG_PERSIST   ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCopyPose)|(1u<<stgAutoCalib))
 #define STG_ACTIONS   ((1u<<actCopyPose)|(1u<<actCalibrate)|(1u<<actClearPose))
 
 byte radarBuffer[30];

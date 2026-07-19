@@ -246,8 +246,9 @@ Schritt 1 falsch, oder Token abgelaufen).
 |---|---|---|---|
 | `Controller/Manager6_3_0` (Manager) | **beide** (Master) | hält beide Karten im LittleFS, verteilt sie per `mapRequest`/`mapInfo`/`mapChunk` | `/noshot.csv`, `/rasen.csv` |
 | `CF_LidarC1/C1Lidar6_3_0` (LidarC1) | **NoShot** | Fire-Gating: ein Ziel wird nur als `catObserved` gemeldet, wenn `insideNoShot()` true liefert (`hwProc.ino`: `serviceNoShotMap`/`finishInit`) | `/noshot.csv` |
-| `Radar_HKL/Radar6_3_0` (HLK-Radar) | **Rasen** | Relevanzfilter: Ziele außerhalb des Rasens (Nachbargrundstück/Straße) werden nicht gemeldet (`serviceRasenMap`) | `/rasen.csv` |
+| `Radar_HKL/Radar6_3_0` (HLK-Radar) | **NoShot** (Default) oder **Rasen** (umschaltbar) | Relevanzfilter: Ziele außerhalb der jeweils aktiven Karte werden nicht gemeldet (`serviceFilterMaps`/`processTargets`). Default = NoShot (ruhiger Bus/VPS-Traffic); per Einstellung „Radar: volle RasenKarte melden“ (`stgRadarFullRasen`, VPS-Steuerung-Tab oder Display) temporär auf die volle RasenKarte umschaltbar — z.B. für eine NoShot-Editier-Session, in der man auch die Randbereiche sehen will. Nicht persistiert: nach jedem Reboot wieder NoShot-gefiltert. | `/noshot.csv`, `/rasen.csv` |
+| `CatIdentifier/CatId6_3_0` | **NoShot** | Modellfilter: `catObserved` außerhalb der NoShot-Karte wird gar nicht erst ins Erkennungsmodell gefüttert (`handleBusMsg`/`serviceNoShotMap` in `hwProc.ino`) — Analyse zeigte, dass das den Anteil kohärent bewegter (glaubwürdiger) Punkte massiv erhöht (siehe `VPS/dashboard/analyze_noshot_filter.py`) | `/noshot.csv` |
 | `CF3_LD06_Lidar/LD06_6_3_0` | keine | reiner 360°-Bewegungssensor ohne Welt-Pose-Filterung | — |
-| alle anderen (`PowerActor*`, `Displays/*`, `LaserMarker`, `CatIdentifier`, `CatCam`, `Button`, `Simulator`) | keine | konsumieren keine Polygon-Karte direkt | — |
+| alle anderen (`PowerActor*`, `Displays/*`, `LaserMarker`, `CatCam`, `Button`, `Simulator`) | keine | konsumieren keine Polygon-Karte direkt | — |
 
 Quelle/Details: `Dokumentation_6_3.md`, Kapitel 4.2 „Karten-Verteilung“.

@@ -329,6 +329,27 @@ Analyse-Tab-Editor, Sensor-Firmware, Repo-Aufräumung). Geprüft wurde:
   Kompilieren und auf dem Simulator/einem Testgerät verifizieren.**
 - **Sensoren (Radar/LidarC1)**: dieselbe Einschränkung — kein Compiler
   verfügbar, nur Code-Review + Cross-Tab-Sichtbarkeitsprüfung.
+- **Nachtrag NoShot-Filterstrategie (Juli 2026)**: eine Analyse echter
+  `catObserved`-Daten (`VPS/dashboard/analyze_noshot_filter.py`, zwei reale
+  Tage mit Mäherbetrieb, korrekt in Europe/Zurich statt UTC ausgewertet)
+  zeigte, dass reines Filtern auf „innerhalb der NoShot-Karte" den Anteil
+  kohärent bewegter (glaubwürdiger) Punkte massiv erhöht (~20 % → ~90 %+
+  bestätigt), deutlich mehr als ein Rasen-Filter oder ein Mäher-Zeitfenster-
+  Ausschluss allein (das Modell verwirft lange Mäher-Spuren ohnehin über
+  `max_path_mm`). Umgesetzt: der **CatIdentifier filtert jetzt intern mit
+  NoShot** statt nur mit `worldValid` (`CatId6_3_0.ino`/`hwProc.ino`,
+  `serviceNoShotMap`), und der **Radar meldet standardmäßig NoShot-gefiltert
+  statt voller RasenKarte**, mit einem Umschalter für NoShot-Editier-Sessions
+  (`stgRadarFullRasen`, Bit 7, NICHT persistiert — Default nach jedem Reboot
+  ist NoShot-gefiltert). Der Radar hält dafür zwei unabhängige Karten-Slots
+  (NoShot + Rasen, `Radar6_3_0.ino`: `serviceFilterMaps`/`MapSlot`) und
+  erzwingt nach jedem Slot-Refresh erneut, welche der beiden Karten laut
+  aktueller Einstellung im gemeinsamen RAM-Puffer (`insideNoShot`) aktiv
+  sein soll — `acquireMap()` überschreibt diesen Puffer bei jedem Refresh,
+  unabhängig davon, welcher Kartentyp gerade nachgeladen wurde. Wie oben:
+  nicht kompiliert (keine Arduino-Toolchain in dieser Umgebung), nur
+  Klammernbalance und Cross-Tab-Sichtbarkeit geprüft — **vor dem Flashen auf
+  echte Hardware verifizieren.**
 
 Offene Punkte / bewusste Vereinfachungen:
 
