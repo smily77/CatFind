@@ -1122,6 +1122,19 @@ Ordner `CatIdentifier/CatId6_3_0/`. Hardware: **Seeed XIAO ESP32-S3**, feste IP
   bewertet; hier muss entschieden werden, **während** die Katze noch im Feld ist.
   Darum fließen nur die zum Zeitpunkt bekannten Merkmale ein (kein Austritts-Term),
   und die Bestätigung feuert, sobald der Score die Schwelle erreicht.
+- **NoShot-Zeit (Mäher-Ruhefenster):** im lokalen Tagesfenster
+  `quiet_t0_min`–`quiet_t1_min` (Modell-Parameter, Minuten seit Mitternacht,
+  Default 900–990 = 15:00–16:30, Werte gleichsetzen = aus, t0 > t1 läuft über
+  Mitternacht) wird das Modell nicht gefüttert **und** `announceCat` zusätzlich
+  hart gesperrt — Mäher- und Katzen-Tracks sind sich zu ähnlich, und ein
+  Fehlschuss auf den Mäher wäre teuer (sein Regensensor ließe ihn die Arbeit
+  einstellen), eine im Fenster verpasste Katze nicht (Katzen meiden den
+  laufenden Mäher ohnehin). Änderbar ohne Neuflash über den Analyse-Tab
+  „Parameter…" + Aktion „Parameter laden". Die Uhrzeit kommt per NTP
+  (`time_zone` = CET/CEST); solange die Uhr nach einem Boot noch nie gestellt
+  wurde, ist das Fenster wirkungslos (fail-open — sonst wäre das Gerät bis zum
+  ersten NTP-Erfolg dauerhaft blind). Die retrospektive VPS-Analyse wendet das
+  Fenster bewusst NICHT an, damit der Analyse-Tab zeigt, was der Mäher erzeugt.
 - **Ausgang:** bei Bestätigung wird `catDetected` **doppelt** gebroadcastet
   (UDP-Verlustschutz) — der Manager blinkt rot, die Cat Cam fotografiert.
 - **Modell-Parameter** kommen vom VPS (`GET /aparams.csv`, flache `key=value`-Liste

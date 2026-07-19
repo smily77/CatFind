@@ -18,6 +18,7 @@ struct CatParams {
   float stationary_end_s, stationary_radius_mm;
   float storm_window_s, storm_rate_evts_s; int storm_min_events; float storm_scatter_mm;
   float fusion_distance_mm; float fusion_time_s;
+  int   quiet_t0_min, quiet_t1_min;   // NoShot-Zeit (Maeher-Ruhefenster), lokale Minuten
 };
 
 // Sturm-Erkennung: 0,5-s-Zeitscheiben je Sensor (Rate + raeumliche Streuung)
