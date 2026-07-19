@@ -146,6 +146,32 @@ def _parse_map_csv(text):
     return rings
 
 
+def _map_plausible(text):
+    """EXAKT die Annahme-Regel des Managers (loadNoShot in xComProc6_3.h): mindestens
+    1 Ring und insgesamt >= 3 Punkte, wobei wie dort JEDE Nicht-Kommentar-Zeile mit
+    Komma als Punkt zaehlt (toInt() auf dem ESP32 macht aus Nicht-Zahlen eine 0,
+    verwirft die Zeile aber nicht). Bewusst NICHT strenger: waere der VPS strenger
+    als der Manager, koennte der Manager eine Karte melden, die der VPS ablehnt -
+    der /ingest-Kartenstand-Abgleich wuerde dann endlos cmdMapPush anstossen.
+    Schuetzt Spiegel und Repo-Commit vor komplett unplausiblen /mapsync-Bodies
+    (der Endpunkt ist unauthentifiziert, siehe MapConcept.md Review-Punkt 10)."""
+    rings = pts = cur = 0
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            if cur:
+                rings += 1
+                cur = 0
+            continue
+        if line.startswith("#") or "," not in line:
+            continue
+        pts += 1
+        cur += 1
+    if cur:
+        rings += 1
+    return rings >= 1 and pts >= 3
+
+
 def _github_commit_map(map_type, csv_text, version, path):
     """Vom Manager bestaetigte Karte nach `path` committen (GitHub Contents API -
     kein lokaler Git-Client/Checkout im Container noetig). Wird zweimal aufgerufen
@@ -712,6 +738,11 @@ def mapsync():
     version = request.args.get("version", type=int) or 0
     crc = request.args.get("crc", type=int) or 0
     csv_text = request.get_data(as_text=True) or ""
+    if not _map_plausible(csv_text):
+        # Spiegel/Repo unveraendert lassen - eine Karte, die nicht mal die
+        # Manager-Annahmeregel erfuellt, kann nicht vom Manager stammen.
+        _sysmsg("Karte %s: /mapsync mit unplausibler CSV abgelehnt" % typ)
+        return jsonify(error="unplausible Karte (mind. 1 Ring, 3 Punkte)"), 400
     rings = _parse_map_csv(csv_text)
 
     with _map_mirror_lock:

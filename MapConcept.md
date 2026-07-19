@@ -350,6 +350,21 @@ Analyse-Tab-Editor, Sensor-Firmware, Repo-Aufräumung). Geprüft wurde:
   nicht kompiliert (keine Arduino-Toolchain in dieser Umgebung), nur
   Klammernbalance und Cross-Tab-Sichtbarkeit geprüft — **vor dem Flashen auf
   echte Hardware verifizieren.**
+- **Abschluss-Review des gesamten Branches vor dem Hardware-Test (zwei Funde,
+  beide behoben)**: (1) `struct MapSlot` lag zunächst im Radar-Sketch selbst,
+  wurde aber als Referenz-Parameter von `serviceMapSlot()` verwendet — der
+  Arduino-Builder setzt Auto-Prototypen VOR den Sketch-Code, der Typ wäre dort
+  unbekannt gewesen (Compile-Fehler; exakt die Falle, wegen der
+  `catTrackDef.h` beim Cat Identifier existiert). Behoben: Struct nach
+  `Radar_HKL/Radar6_3_0/hwDef.h` verschoben. (2) `POST /mapsync` übernahm
+  beliebige Bodies ungeprüft in Spiegel UND Repo-Commit (der Endpunkt ist
+  unauthentifiziert, s.u.). Behoben: `_map_plausible()` bildet EXAKT die
+  Manager-Annahmeregel nach (≥ 1 Ring, insgesamt ≥ 3 Punkte, jede Komma-Zeile
+  zählt wie bei `toInt()`) — bewusst nicht strenger, sonst könnte der Manager
+  eine Karte melden, die der VPS ablehnt, und der `/ingest`-Abgleich würde
+  endlos `cmdMapPush` anstoßen. Karten-Flow danach erneut end-to-end per
+  Flask-Testclient verifiziert (regulärer Weg, Müll-Ablehnung, degenerierte
+  Manager-akzeptable Karte, Kartenstand-Abgleich mit/ohne Abweichung).
 
 Offene Punkte / bewusste Vereinfachungen:
 
