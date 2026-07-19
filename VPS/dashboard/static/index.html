@@ -295,7 +295,7 @@ function fmtTime(t){ return new Date(t*1000).toLocaleTimeString(); }
 function minMaxArr(a){ let lo=Infinity, hi=-Infinity; for(const v of a){ if(v<lo)lo=v; if(v>hi)hi=v; } return [lo,hi]; }
 
 // Einstellungen/Aktionen (Bit-Index = stg*/act* aus xComDef6_3.h)
-const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor","CatDetected-Anzeige","Kamera-KI"];
+const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor","CatDetected-Anzeige","Kamera-KI","Radar: volle RasenKarte melden"];
 const ACT=[{l:"Pose kopieren",cmd:21,info:0},{l:"Kalibrieren",cmd:18,info:45000},{l:"Pose löschen",cmd:19,info:0},{l:"Parameter laden",cmd:22,info:0},{l:"Foto jetzt",cmd:23,info:0}];
 const CMD_SET_SETTING=20;
 

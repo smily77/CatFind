@@ -572,9 +572,11 @@ Annahme-Code (gwAcceptMap, gatewayProc.ino):
   lokalen Version/CRC (`mapAnnounceOutdated`) und rufen bei Abweichung ihr
   `acquireMap()` zeitnah erneut auf, statt bis zum nächsten periodischen
   Versuch zu warten.
-- **Fangnetz:** zusätzlich prüfen Radar (`Radar6_3_0.ino`, `serviceRasenMap`)
-  und LidarC1 (`hwProc.ino`, `serviceNoShotMap`) auch mit bereits geladener
-  Karte periodisch nach (`MAP_RECHECK_MS`, stündlich) — ein UDP-Announce kann
+- **Fangnetz:** zusätzlich prüfen Radar (`Radar6_3_0.ino`, `serviceFilterMaps`
+  — hält NoShot **und** Rasen unabhängig in zwei `MapSlot`s aktuell, siehe
+  unten), LidarC1 (`hwProc.ino`, `serviceNoShotMap`) und CatIdentifier
+  (`hwProc.ino`, `serviceNoShotMap`) auch mit bereits geladener Karte
+  periodisch nach (`MAP_RECHECK_MS`, stündlich) — ein UDP-Announce kann
   verlorengehen, es gibt kein Resend.
 - **Kartenstand-Spiegel:** der Manager meldet Version/CRC beider Karten
   leichtgewichtig in jedem `/ingest`-Push mit (`"maps":[…]`, aus einem Cache,
@@ -600,8 +602,21 @@ Annahme-Code (gwAcceptMap, gatewayProc.ino):
 |---|---|---|
 | Manager6_3_0 | beide (Master) | hält beide im LittleFS, verteilt per `mapRequest`/`mapInfo`/`mapChunk` |
 | C1Lidar6_3_0 (LidarC1) | NoShot | Fire-Gating (`insideNoShot` vor jedem `catObserved`) |
-| Radar6_3_0 (HLK-Radar) | Rasen | Relevanzfilter (Ziele außerhalb werden nicht gemeldet) |
+| Radar6_3_0 (HLK-Radar) | NoShot (Default) / Rasen (umschaltbar) | Relevanzfilter (Ziele außerhalb werden nicht gemeldet); Umschalter `stgRadarFullRasen` — Default NoShot-gefiltert (ruhig), für Editier-Sessions temporär volle RasenKarte, nicht persistiert |
+| CatId6_3_0 (CatIdentifier) | NoShot | Modellfilter: nur `catObserved` innerhalb NoShot füttert das Erkennungsmodell |
 | LD06_6_3_0, alle übrigen Programme | keine | keine Polygon-Karte im Einsatz |
+
+**Strategie-Hintergrund (NoShot-Filterung deutlich effektiver als gedacht):**
+Eine Analyse der realen `catObserved`-Daten (`VPS/dashboard/analyze_noshot_filter.py`,
+Juli 2026) zeigte, dass der Anteil kohärent bewegter (glaubwürdiger) Punkte
+durch reines Filtern auf „innerhalb NoShot“ von ca. 20 % auf über 90 % steigt
+— deutlich mehr, als ein reiner Mäher-Zeitfenster-Ausschluss bringt (das
+Modell verwirft lange Mäher-Spuren ohnehin über `max_path_mm`). Deshalb
+filtert seit dieser Iteration auch der CatIdentifier intern mit NoShot statt
+nur mit der (größeren) RasenKarte, und der Radar meldet standardmäßig
+NoShot-gefiltert statt voller RasenKarte — mit einer Umschaltoption für
+NoShot-Editier-Sessions, in denen man auch die Randbereiche außerhalb der
+Schusszone sehen möchte.
 
 ---
 
@@ -703,16 +718,29 @@ beide Bahnen und liefert die Transformation (Details: GesamtKonzeptCatFinder.md,
   Verwerfung dauerhaft bestehen.
 - **Nach Kalibrierung:** eigene `catObserved` tragen zusätzlich `worldX/worldY`
   (`worldValid=1`) via `localToWorld`.
-- **RasenKarte-Gating:** sobald eine gültige Welt-Pose vorliegt, bezieht das Radar die
-  **RasenKarte** vom Manager (`mapRasen`, gechunktes UDP wie die No-Shot-Karte, LittleFS-
-  Cache mit Versions-/CRC-Abgleich, Retry alle 60 s) und meldet nur noch Ziele **innerhalb
-  des Rasens** — Nachbargrundstück/Straße im 7-m-Radarkegel erzeugen sonst Dauer-
-  Störungen. Kalibrier-Sammlung und Health-Check arbeiten weiter mit allen Zielen. Ohne
-  Karte oder ohne Pose wird ungefiltert gemeldet (fail-open). Die **No-Shot-Karte** lädt
-  das Radar bewusst nicht — es schießt nicht; No-Shot prüft der Aktor.
-- **Einstellungen (Kap. 5.12):** HB-/Target-Anzeige schaltbar, Auto-Kalibrierung und
-  Auto-Pose-Übernahme schaltbar (NVS); Aktionen „Kalibrieren", „Pose kopieren" und
-  „Pose löschen" (`cmdClearPose`, verwirft die gespeicherte Welt-Pose, siehe 5.11).
+- **Filterkarten-Gating (umschaltbar, `serviceFilterMaps`):** sobald eine gültige
+  Welt-Pose vorliegt, hält das Radar **beide** Karten (NoShot und Rasen, je ein
+  eigener `MapSlot` mit Versions-/CRC-Abgleich, Retry alle 60 s, stündliches
+  Fangnetz) unabhängig aktuell und meldet nur noch Ziele **innerhalb der gerade
+  aktiven Karte**. **Default: NoShot** (dieselbe kleinere, „schießbare" Fläche
+  wie beim Aktor/CatIdentifier) — eine Analyse realer Daten zeigte, dass reines
+  NoShot-Filtern den Anteil kohärent bewegter (glaubwürdiger) Punkte massiv
+  erhöht, weit über das hinaus, was ein Rasen-Filter allein bringt
+  (`VPS/dashboard/analyze_noshot_filter.py`). Per Einstellung **„Radar: volle
+  RasenKarte melden"** (`stgRadarFullRasen`, Kap. 5.12/VPS-Steuerung) lässt sich
+  temporär auf die größere RasenKarte umschalten — praktisch für eine
+  NoShot-Editier-Session im Analyse-Tab, in der man auch die Randbereiche
+  außerhalb der Schusszone sehen will. Diese Einstellung ist **nicht
+  persistiert**: nach jedem Reboot startet das Radar wieder im ruhigen
+  NoShot-gefilterten Normalbetrieb. Kalibrier-Sammlung und Health-Check
+  arbeiten immer mit allen Zielen (ungefiltert) — nur das gemeldete
+  `catObserved` wird gegated. Ohne Karte oder ohne Pose wird ungefiltert
+  gemeldet (fail-open).
+- **Einstellungen (Kap. 5.12):** HB-/Target-Anzeige schaltbar, Auto-Kalibrierung,
+  Auto-Pose-Übernahme und „volle RasenKarte melden" schaltbar (letztere NICHT
+  im NVS persistiert, alle anderen schon); Aktionen „Kalibrieren", „Pose
+  kopieren" und „Pose löschen" (`cmdClearPose`, verwirft die gespeicherte
+  Welt-Pose, siehe 5.11).
 
 ### 5.3 LD06_6_3_0 — Lidar-Sensor
 
@@ -1077,10 +1105,16 @@ die Erkennung, die bisher offline im Analyse-Tab lief, live auf einem ESP32.
 Ordner `CatIdentifier/CatId6_3_0/`. Hardware: **Seeed XIAO ESP32-S3**, feste IP
 .184.
 
-- **Eingang:** hört alle `catObserved` mit `worldValid=1` vom Bus und füttert sie
-  ins Modell (`catTrack.ino`): Track-Bildung (Gate + Stitching), kohärente
-  Bewegungsphase als Pflicht, Score 0..100, Sturm-/Burst-Unterdrückung je Sensor,
-  Mäher-K.o. über die Weglänge (`max_path_mm`). Der Erfassungsrand wird
+- **Eingang:** hört alle `catObserved` mit `worldValid=1` vom Bus, filtert sie
+  intern auf **innerhalb der NoShot-Karte** (`insideNoShot`, Karte per
+  `serviceNoShotMap`/`acquireNoShot` bezogen, fail-open ohne geladene Karte) und
+  füttert erst dann ins Modell (`catTrack.ino`): Track-Bildung (Gate +
+  Stitching), kohärente Bewegungsphase als Pflicht, Score 0..100, Sturm-/Burst-
+  Unterdrückung je Sensor, Mäher-K.o. über die Weglänge (`max_path_mm`). Die
+  NoShot-Filterung wurde eingeführt, nachdem eine Analyse realer Daten zeigte,
+  dass sie den Anteil kohärent bewegter (glaubwürdiger) Punkte deutlich erhöht
+  (`VPS/dashboard/analyze_noshot_filter.py`) — Punkte außerhalb der Schusszone
+  sind für die Feuer-Entscheidung ohnehin irrelevant. Der Erfassungsrand wird
   **geometrisch** aus den Sektoren der device dB (`covLeft/covRight/covRange`) und
   den per `poseReport` mitgehörten Welt-Posen berechnet (wie `build_coverage_geo`
   auf dem VPS) — beim Boot fragt CatIdent einmal per `poseRequest` nach.
