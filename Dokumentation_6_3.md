@@ -243,7 +243,9 @@ wenn `worldValid==1`:
 **settingsPayload** (6 Bytes) — Einstellungen & Aktionen eines Geräts (Antwort auf
 `settingsRequest`). Bit-Indizes: `stgHbLed(0)`, `stgCatLed(1)`, `stgAutoCopyPose(2)`,
 `stgAutoCalib(3)`, `stgLidarMotor(4)`, `stgCatDetLed(5)` (Manager: rotes Blinken beim
-catDetected-Empfang), `stgCamAi(6)` (Cat Cam: Vision-KI-Erkennung an/aus); Aktionen
+catDetected-Empfang), `stgCamAi(6)` (Cat Cam: Vision-KI-Erkennung an/aus),
+`stgRadarFullRasen(7)` (HLK-Radar: volle RasenKarte statt NoShot-gefiltert melden,
+nicht persistiert — siehe Kap. 5.2); Aktionen
 `actCopyPose(0)`, `actCalibrate(1)`, `actClearPose(2)`, `actReloadParams(3)` (CatIdent:
 Modell-Parameter neu vom VPS), `actPhoto(4)` (CatCam: Foto jetzt):
 
@@ -1068,10 +1070,10 @@ aller aktiven Geräte per Touch bedienen lassen (siehe GesamtKonzeptCatFinder.md
 - **Bedienmodell:** Jedes Gerät führt eine Bitmaske `mySettings` (`deviceSettings`):
   `supported`/`values`/`actions`. WELCHE Bits ein Gerät hat, legt seine `hwDef.h` über
   `STG_SUPPORTED`/`STG_DEFAULT`/`STG_PERSIST`/`STG_ACTIONS` fest. `initSettings()` lädt die
-  persistierten Bits aus dem NVS-Namespace `"devcfg"`; nicht persistierte Bits (Lidar-Motor)
-  starten auf Default. Setting-Indizes `stgHbLed/stgCatLed/stgAutoCopyPose/stgAutoCalib/
-  stgLidarMotor/stgCatDetLed/stgCamAi`, Aktionen `actCopyPose/actCalibrate/actClearPose/
-  actReloadParams/actPhoto`.
+  persistierten Bits aus dem NVS-Namespace `"devcfg"`; nicht persistierte Bits (Lidar-Motor,
+  Radar-Vollmodus) starten auf Default. Setting-Indizes `stgHbLed/stgCatLed/stgAutoCopyPose/
+  stgAutoCalib/stgLidarMotor/stgCatDetLed/stgCamAi/stgRadarFullRasen`, Aktionen
+  `actCopyPose/actCalibrate/actClearPose/actReloadParams/actPhoto`.
 - **Seite 1 (Geräteauswahl):** listet die Geräte, die per `settingsReport` ihre
   Fähigkeiten gemeldet haben (Broadcast `settingsRequest` beim Start und periodisch). Touch
   wählt ein Gerät → Seite 2.

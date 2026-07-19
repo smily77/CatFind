@@ -92,3 +92,14 @@ struct targetData {
 };
 targetData target[3];
 boolean newDataReady = false;
+
+// Verwaltungszustand je Filterkarte (NoShot/Rasen, siehe serviceFilterMaps in
+// Radar6_3_0.ino). MUSS hier im Header stehen, nicht im .ino: der Arduino-Builder
+// setzt Auto-Prototypen (serviceMapSlot nimmt MapSlot&) VOR den Sketch-Code -
+// ein im .ino definierter Struct waere dort noch unbekannt (gleiches Muster wie
+// catTrackDef.h beim Cat Identifier).
+struct MapSlot {
+  bool          loaded    = false;   // dieser Slot beim letzten Versuch erfolgreich geladen?
+  unsigned long lastTry   = 0;       // letzter Beschaffungsversuch (0 = noch keiner)
+  bool          recheckNow = false;  // per Announce (mapInfo) sofortiger Re-Check angefordert
+};

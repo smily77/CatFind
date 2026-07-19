@@ -52,15 +52,11 @@ unsigned long lastTargetMs = 0;              // wann zuletzt ein Radar-Target ak
 unsigned long lastWorldObsMs = 0;            // wann zuletzt eine welt-valide catObserved kam
 unsigned long autoArmMs = 0;                 // seit wann Co-Observation anliegt (0 = nicht)
 
-// Zwei unabhaengig gepflegte Karten-Slots (NoShot/Rasen); insideNoShot() wirkt aber immer nur
-// auf EINEN im RAM geladenen Puffer (acquireMap endet intern mit loadNoShot). Deshalb nach
-// jedem Slot-Refresh in serviceFilterMaps() immer neu durchsetzen, welche Karte laut aktuellem
+// Zwei unabhaengig gepflegte Karten-Slots (NoShot/Rasen, struct MapSlot in hwDef.h -
+// Auto-Prototypen!); insideNoShot() wirkt aber immer nur auf EINEN im RAM geladenen
+// Puffer (acquireMap endet intern mit loadNoShot). Deshalb nach jedem Slot-Refresh in
+// serviceFilterMaps() immer neu durchsetzen, welche Karte laut aktuellem
 // stgRadarFullRasen gerade aktiv sein soll - unabhaengig davon, welcher Slot zuletzt lud.
-struct MapSlot {
-  bool          loaded    = false;   // dieser Slot beim letzten Versuch erfolgreich geladen?
-  unsigned long lastTry   = 0;       // letzter Beschaffungsversuch (0 = noch keiner)
-  bool          recheckNow = false;  // per Announce (mapInfo) sofortiger Re-Check angefordert
-};
 MapSlot noshotSlot, rasenSlot;
 bool filterMapActive = false;   // insgesamt EINE Karte aktiv nutzbar (insideNoShot sinnvoll)?
 bool activeIsRasen   = false;   // welche der beiden zuletzt in den RAM-Puffer geladen wurde
