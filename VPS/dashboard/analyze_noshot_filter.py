@@ -19,6 +19,13 @@ liegen und die SQLite-DB unter DB_PATH erreichbar ist):
       --mower-t0 "2026-07-19 15:00" --mower-t1 "2026-07-19 16:30" \
       --noshot ../../Controller/Manager6_3_0/data/noshot.csv
 
+--t0/--t1/--mower-t0/--mower-t1 werden als LOKALE Zeit in --tz (Default
+Europe/Zurich, wie LOCAL_TZ in dashboard.py) interpretiert, nicht UTC -
+die DB speichert reine Unix-Timestamps (zeitzonen-neutral), das Dashboard
+im Browser zeigt automatisch lokale Zeit; dieses Skript muss die Umrechnung
+darum selbst machen (frueher ein Bug hier: naive UTC-Interpretation liess
+das Maeher-Fenster 2h daneben liegen).
+
 Ohne --db: erzeugt einen synthetischen Testdatensatz (--demo), NUR um das
 Skript selbst zu pruefen - keine echten Zahlen.
 """
@@ -27,6 +34,9 @@ import random
 import sqlite3
 import sys
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+DEFAULT_TZ = "Europe/Zurich"
 
 import catmodel
 
@@ -55,8 +65,18 @@ def inside_any_ring(x, y, rings):
     return any(catmodel.point_in_poly(x, y, ring) for ring in rings)
 
 
-def parse_dt(s):
-    return datetime.strptime(s, "%Y-%m-%d %H:%M").timestamp()
+def parse_dt(s, tz=DEFAULT_TZ):
+    """'YYYY-MM-DD HH:MM' als LOKALE Zeit in tz (Default Europe/Zurich) ->
+    Unix-Timestamp. Die DB speichert UTC-Unix-Timestamps; ohne explizite
+    Zeitzone wuerde Python die lokale Zeit der ausfuehrenden Maschine annehmen
+    (hier: UTC-Sandbox) - das fuehrte zuvor zu einem 2h-Versatz (Sommerzeit)."""
+    naive = datetime.strptime(s, "%Y-%m-%d %H:%M")
+    return naive.replace(tzinfo=ZoneInfo(tz)).timestamp()
+
+
+def fmt_local(ts, tz=DEFAULT_TZ):
+    """Unix-Timestamp -> lesbare lokale Zeit in tz (fuers Ausgeben/Debuggen)."""
+    return datetime.fromtimestamp(ts, tz=ZoneInfo(tz)).strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
 def load_events_from_db(db_path, t0, t1):
@@ -138,27 +158,35 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--db")
-    ap.add_argument("--t0")
-    ap.add_argument("--t1")
+    ap.add_argument("--t0", help="'YYYY-MM-DD HH:MM', lokale Zeit in --tz")
+    ap.add_argument("--t1", help="'YYYY-MM-DD HH:MM', lokale Zeit in --tz")
+    ap.add_argument("--day", help="Bequemlichkeit statt --t0/--t1: EIN Kalendertag 'YYYY-MM-DD' in --tz")
     ap.add_argument("--mower-t0")
     ap.add_argument("--mower-t1")
+    ap.add_argument("--tz", default=DEFAULT_TZ,
+                     help="Zeitzone fuer --t0/--t1/--day/--mower-t0/--mower-t1 (Default %(default)s)")
     ap.add_argument("--noshot")
     ap.add_argument("--demo", action="store_true",
                      help="synthetischer Testlauf statt echter DB (Default, wenn --db fehlt)")
     args = ap.parse_args()
 
     if args.db:
-        if not (args.t0 and args.t1):
-            sys.exit("--t0/--t1 noetig mit --db")
-        t0, t1 = parse_dt(args.t0), parse_dt(args.t1)
+        if args.day:
+            t0 = parse_dt(args.day + " 00:00", args.tz)
+            t1 = parse_dt(args.day + " 00:00", args.tz) + 86400
+        elif args.t0 and args.t1:
+            t0, t1 = parse_dt(args.t0, args.tz), parse_dt(args.t1, args.tz)
+        else:
+            sys.exit("--t0/--t1 oder --day noetig mit --db")
+        print("Zeitfenster: %s bis %s (%s)\n" % (fmt_local(t0, args.tz), fmt_local(t1, args.tz), args.tz))
         events = load_events_from_db(args.db, t0, t1)
         rings = load_noshot_rings(args.noshot) if args.noshot else None
         mode = "ECHTE DATEN (%s)" % args.db
     else:
         print("Kein --db angegeben -> synthetischer Selbsttest (KEINE echten Zahlen!)\n")
-        t0 = parse_dt("2026-07-19 00:00")
-        mower_t0 = parse_dt("2026-07-19 15:00")
-        mower_t1 = parse_dt("2026-07-19 16:30")
+        t0 = parse_dt("2026-07-19 00:00", args.tz)
+        mower_t0 = parse_dt("2026-07-19 15:00", args.tz)
+        mower_t1 = parse_dt("2026-07-19 16:30", args.tz)
         events = make_demo_events(t0, mower_t0, mower_t1)
         rings = DEMO_NOSHOT
         args.mower_t0, args.mower_t1 = "2026-07-19 15:00", "2026-07-19 16:30"
@@ -173,7 +201,7 @@ def main():
     # B) gefiltert: Maeher-Fenster raus + nur innerhalb NoShot
     filtered = events
     if args.mower_t0 and args.mower_t1:
-        mt0, mt1 = parse_dt(args.mower_t0), parse_dt(args.mower_t1)
+        mt0, mt1 = parse_dt(args.mower_t0, args.tz), parse_dt(args.mower_t1, args.tz)
         filtered = [e for e in filtered if not (mt0 <= e["t"] <= mt1)]
     if rings:
         filtered = [e for e in filtered if inside_any_ring(e["wx"], e["wy"], rings)]
