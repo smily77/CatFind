@@ -72,6 +72,15 @@ DEFAULT_PARAMS = {
     # Weg-Obergrenze: RoboMäher/Personen laufen in EINEM Track hunderte Meter
     # zusammenhängend ab — eine Katze nicht. Längerer Pfad => keine Katze. 0 = aus.
     "max_path_mm": 40000,
+    # --- NoShot-Zeit (Mäher-Ruhefenster): lokale Minuten seit Mitternacht.
+    # Im Fenster feuert der CatIdentifier NIE (Modell pausiert) — ein Fehlschuss
+    # auf den Mäher wäre teuer (Regensensor -> er stellt die Arbeit ein), eine
+    # im Fenster verpasste Katze nicht (Katzen meiden den laufenden Mäher ohnehin).
+    # t0 == t1 = deaktiviert; t0 > t1 läuft über Mitternacht. Wird NUR vom
+    # CatIdentifier (Echtzeit) angewendet — die retrospektive VPS-Analyse bleibt
+    # bewusst ungefiltert, damit man im Analyse-Tab sieht, was der Mäher erzeugt.
+    "quiet_t0_min": 900,            # 15:00 lokale Zeit (Mäherstart)
+    "quiet_t1_min": 990,            # 16:30 (Mäher lädt spätestens dann wieder)
     # --- Erfassungsgrenzen (empirische Abdeckung)
     "edge_dist_mm": 900,            # "nahe am Rand" der Gesamtabdeckung
     "cov_cell_mm": 300,             # Rasterzelle der Abdeckung

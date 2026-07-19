@@ -119,6 +119,14 @@ void loop() {
   if (mcDataReceived) { mcDataReceived = false; handleBusMsg(lastMcMsg); }
   ctTick();                          // abgelaufene Tracks/Sturm-Slots aufraeumen
   serviceNoShotMap();                // Erstbezug + stuendliches Fangnetz (hwProc.ino)
+  // Fensterwechsel der NoShot-Zeit einmalig melden (Debug-Sichtbarkeit im VPS)
+  static bool quietWas = false;
+  bool quietNow = ctInQuietWindow();
+  if (quietNow != quietWas) {
+    quietWas = quietNow;
+    sendUdpTextln(quietNow ? "NoShot-Zeit AKTIV (" + ctQuietStr() + ") - Modell pausiert"
+                           : "NoShot-Zeit beendet - Modell wieder aktiv");
+  }
   // einmalig kurz nach dem Boot die Welt-Posen der Sensoren erfragen (danach
   // haelt der 5-min-poseRequest des Managers sie aktuell - wir hoeren nur mit)
   if (bootPoseReqMs == 0 && millis() > POSE_REQ_BOOT_MS) {
@@ -161,6 +169,7 @@ void handleBusMsg(const xMsg& m) {
     // (spart RAM/Rechenzeit und haelt das Modell auf das beschraenkt, was zaehlt -
     // insideNoShot() faellt ohne geladene Karte offen: alles durchlassen).
     if (!insideNoShot(obs.worldX, obs.worldY)) return;
+    if (ctInQuietWindow()) return;     // NoShot-Zeit (Maeherfenster): Modell pausiert
     ctFeed(m.header.sender, obs.worldX, obs.worldY);
   }
   else if (m.header.msgCode == poseReport && m.header.sender != ID) {
@@ -175,6 +184,9 @@ void handleBusMsg(const xMsg& m) {
 // Paket wuerde die Detektion verschlucken. Empfaenger (Manager, spaeter Aktoren)
 // dedupen ueber identische Payload innerhalb ~1,5 s.
 void announceCat(const catDetectedPayload& cd) {
+  // Doppelte Absicherung zur Feed-Sperre in handleBusMsg: waehrend der NoShot-Zeit
+  // darf unter keinen Umstaenden ein catDetected raus (Fehlschuss auf den Maeher).
+  if (ctInQuietWindow()) return;
   broadcastMsg(catDetected, cd);
   delay(40);
   broadcastMsg(catDetected, cd);
