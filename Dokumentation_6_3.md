@@ -978,7 +978,24 @@ gespeichert; **Lidar-Motor** an/aus (`lidar.stop()`/`startScan()`), Default an u
 > GitHub). UI: Die **Zeitleiste zeigt genau das gewählte Zeitfenster**
 > (Ereignisdichte je Sender, Zeit-Gitter, Aufnahme-Band, Labels, rote
 > CatDetected-Punkte); Ziehen = verschieben, Mausrad = strecken/stauchen,
-> „Alles" = ganze Aufnahme, Shift+Ziehen = Bereich für Label. Welt-Karte mit
+> „Alles" = ganze Aufnahme, Shift+Ziehen = Bereich für Label.
+> **Sensor-Spuren (WLAN-Verfügbarkeit):** unter der Dichte je Sensor ein
+> Farbband mit der **HB-Empfangsquote** — der Manager reicht jeden
+> empfangenen Heartbeat per `/ingest` weiter, der VPS zählt sie je
+> Minute+Sender in der Tabelle `hb_minute` (rein additiv, alte Daten bleiben
+> unberührt) und `/hbstats` liefert daraus die Quote empfangen/erwartet je
+> Zeit-Bin (HB-Perioden je Typ: HLK 5 s, Lidar/Kamera 10 s,
+> `HB_SENSOR_PERIOD_S` in `dashboard.py` — neue Sensortypen dort ergänzen).
+> **Grün** = alle erwarteten HBs kamen an, über gelb/orange nach **rot** =
+> keine; **grau** = keine Daten (Zeit vor der Einführung oder VPS/Manager
+> down). Bewusst eine Quote statt an/aus: einzelne fehlende HBs sind
+> normale UDP-Verluste, aber eine sinkende Quote zeigt ein schwächelndes
+> WLAN — und damit auch verlorene `catObserved` — lange bevor der Sensor
+> ganz verschwindet. Die Erwartung bezieht sich je Bin nur auf die
+> tatsächlich abgedeckten Minuten, damit grobe Zoomstufen an den Rändern
+> der Aufzeichnung die Quote nicht verwässern. Hinweis: der LD06 sendet
+> Stand heute keinen HB (siehe `CF3_LD06_Lidar/LD06_6_3_0/REVIEW_6_3.md`) —
+> seine Spur bleibt grau, bis die Firmware einen bekommt. Welt-Karte mit
 > Pan/Zoom, Sensoren einzeln ausblendbar, Labels (Katze/Störungsarten)
 > persistent. **Erfassungsbereiche**: die Sensoren tragen ihren nominellen
 > Bereich in `xComDef6_3.h` (`covLeftDeg/covRightDeg/covRangeMm`; HLK-Radar

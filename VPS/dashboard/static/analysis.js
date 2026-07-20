@@ -22,6 +22,7 @@ const LBL_COLORS = {
 const ANA = {
   win: null,            // {t0,t1} betrachtetes Fenster = gesamte Zeitleiste
   dens: null,           // /density des Fensters (beim Pannen kurz veraltet, wird nachgeladen)
+  hb: null,             // /hbstats des Fensters: Sensor-Spuren (HB-Empfangsquote je Bin)
   data: null,           // /adata des Fensters
   model: null,          // /amodel des Fensters (inkl. marks = manuelle Bewertungen)
   labels: [],
@@ -140,6 +141,7 @@ async function anaFetchWindow(){
   if(!ANA.win) return;
   const q = `t0=${ANA.win.t0}&t1=${ANA.win.t1}`;
   try{ ANA.dens = await anaJson(`/density?${q}&bins=700`); }catch(e){ ANA.dens = null; }
+  try{ ANA.hb = await anaJson(`/hbstats?${q}&bins=700`); }catch(e){ ANA.hb = null; }
   updateSenderSelect();
   try{ ANA.data = await anaJson(`/adata?${q}`); }catch(e){ ANA.data = {events:[],total:0,stride:1}; }
   if(ANA.modelOn){
@@ -212,7 +214,10 @@ function drawTimeline(){
   ctx.fillStyle = "#0c0c10"; ctx.fillRect(0,0,W,H);
   const w = ANA.win;
   if(!w){ ctx.fillStyle="#555"; ctx.fillText("kein Zeitfenster", 10, 20); return; }
-  const densH = H - 21;                       // darunter: Aufnahme-Band + Label-Band
+  // Sensor-Spuren (HB-Empfangsquote, /hbstats) zwischen Dichte und Aufnahme-Band
+  const hb = ANA.hb, hbLanes = (hb && hb.senders) ? hb.senders : [];
+  const laneH = 7, lanesH = hbLanes.length ? hbLanes.length*laneH + 3 : 0;
+  const densH = H - 21 - lanesH;              // darunter: Spuren + Aufnahme-/Label-Band
 
   // Zeit-Gitter
   const {step, ticks} = tlTicks(w.t0, w.t1);
@@ -263,6 +268,32 @@ function drawTimeline(){
     }
   } else {
     ctx.fillStyle="#555"; ctx.fillText("keine Aufnahme-Daten im Fenster", 10, 24);
+  }
+
+  // Sensor-Spuren: HB-Empfangsquote je Sensor als Farbband (grün = alle erwarteten
+  // HBs kamen an, über gelb/orange nach rot = keine; grau = keine Daten, z.B. Zeit
+  // vor der Einführung oder VPS/Manager down). Viele fehlende HBs = schwaches WiFi
+  // = auch viele verlorene catObserved — deshalb Quote statt an/aus.
+  if(hbLanes.length && hb.t1 > hb.t0){
+    const hbt = (hb.t1 - hb.t0) / hb.bins;             // Bin-Breite in Sekunden
+    const hbw = Math.max(hbt / (w.t1 - w.t0) * W, 1);  // ... in Pixeln
+    hbLanes.forEach((s, k) => {
+      const y = densH + 2 + k*laneH;
+      for(let i=0;i<hb.bins;i++){
+        const x = tlX(hb.t0 + i*hbt, W);
+        if(x + hbw < 0 || x > W) continue;
+        const q = s.q[i];
+        ctx.fillStyle = (q==null) ? "#1d1d24"
+                                  : `hsl(${Math.round(120*q)},72%,${Math.round(28+16*q)}%)`;
+        ctx.fillRect(x, y, hbw+0.5, laneH-1);
+      }
+      ctx.save();                                       // Sensorname lesbar über die Farben
+      ctx.font = "8px system-ui"; ctx.textBaseline = "alphabetic";
+      ctx.shadowColor = "#000"; ctx.shadowBlur = 2;
+      ctx.fillStyle = "#dde3ee";
+      ctx.fillText(s.name, 3, y + laneH - 1.5);
+      ctx.restore();
+    });
   }
 
   // Labels als Bänder unten
