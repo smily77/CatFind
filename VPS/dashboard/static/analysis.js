@@ -613,6 +613,28 @@ function anaMapHitEdge(T, px, py){
   return best;
 }
 
+// Track unter dem Cursor (naechstgelegene Track-Polylinie, gleiche Sichtbarkeits-
+// Regel wie beim Zeichnen in drawAnaMap) - fuer Klick-Auswahl direkt auf der Karte.
+const TRACK_HIT_PX = 9;
+function anaMapHitTrack(T, px, py){
+  let best = null;
+  for(const tr of (ANA.model?.tracks || [])){
+    if(tr.pts.length < 2 && !tr.confirmed) continue;
+    let d = Infinity;
+    if(tr.pts.length < 2){
+      const p = tr.pts[0];
+      if(p) d = Math.hypot(T.X(p[1])-px, T.Y(p[2])-py);
+    } else {
+      for(let i=1; i<tr.pts.length; i++){
+        const a = tr.pts[i-1], b = tr.pts[i];
+        d = Math.min(d, distToSeg(px,py, T.X(a[1]),T.Y(a[2]), T.X(b[1]),T.Y(b[2])));
+      }
+    }
+    if(d <= TRACK_HIT_PX && (!best || d < best.d)) best = {key: tr.key, d};
+  }
+  return best;
+}
+
 function mapBind(){
   const cv = anaEl("anaMap");
   let drag = null, dragPt = null, moved = false, lastPos = null;
@@ -655,6 +677,17 @@ function mapBind(){
         ANA.editSel = null;
       }
       drawAnaMap();
+    }
+    // Klick (kein Pan) im Normalmodus: Track direkt auf der Karte an-/abwählen —
+    // wie ein Klick in der Trackliste, nur ohne Recentern (man schaut ja schon hin).
+    // Klick ins Leere = Auswahl aufheben. Die Liste scrollt zum gewählten Track,
+    // dort lassen sich dann Bewertung/Details wie gewohnt bedienen.
+    else if(drag && !moved && !ANA.editType && lastPos){
+      const hit = anaMapHitTrack(mapTransform(cv), lastPos.x, lastPos.y);
+      ANA.selKey = (hit && ANA.selKey !== hit.key) ? hit.key : null;
+      renderTracks(); drawAnaMap(); drawTimeline();
+      const row = document.querySelector(".anaTrack.sel");
+      if(row) row.scrollIntoView({block:"nearest"});
     }
     drag = null;
   });

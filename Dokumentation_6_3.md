@@ -1021,8 +1021,13 @@ gespeichert; **Lidar-Motor** an/aus (`lidar.stop()`/`startScan()`), Default an u
 > „✕ Störung"/„🚫 sicher keine Katze" (persistent; keine Markierung =
 > einverstanden; alles außer Katze zählt als „keine Katze"), oben die
 > **Übereinstimmung Modell↔Mensch**; Modell-Flags als Chips. Der angeklickte
-> Track wird **gelb** in Karte und Zeitleiste hervorgehoben; mehrere Tracks
-> lassen sich **zusammenkleben** (gehören zum selben Tier). Knopf
+> Track wird **gelb** in Karte und Zeitleiste hervorgehoben; Tracks lassen
+> sich **sowohl in der Liste als auch direkt auf der Karte anklicken**
+> (nächstgelegene Track-Linie im Klickradius; nochmal klicken oder Klick ins
+> Leere = abwählen; die Liste scrollt zum gewählten Track — praktisch beim
+> Kategorisieren: Track auf der Karte anklicken, Bewertung in der Liste
+> setzen). Mehrere Tracks lassen sich **zusammenkleben** (gehören zum selben
+> Tier). Knopf
 > **„Modell-Check"** (`/avalidate`) prüft das Modell gegen alle bewerteten
 > Tracks; die Trackliste ist als **CSV** exportierbar (`/atracks.csv`).
 > **RoboMäher**: Label „Mäher" = Analyse-Ausschlussfenster (aufgezeichnet
