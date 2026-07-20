@@ -37,6 +37,8 @@ Analyse (Aufgabe "VPS-Modellierung der Katzenerkennung", GesamtKonzeptCatFinder.
   ms-genaue Serverzeiten gerechnet (die Push-Zeit allein hätte 1,5-s-Raster).
   GET/POST /rec         Aufnahme-Status / Aufnahme ein-aus (Pause/Append)
   GET  /density         Ereignisdichte je Sender für die Zeitleiste (?t0&t1&bins)
+  GET  /hbstats         Sensor-Verfügbarkeit (HB-Empfangsquote 0..1 je Bin+Sensor,
+                        null = keine Daten) für die Sensor-Spuren der Zeitleiste
   GET  /adata           Events eines Zeitfensters (?t0&t1, ausgedünnt auf max_pts)
   GET  /amodel          Tracks eines Zeitfensters aus der Analysierer-DB lesen
                         (die ERKENNUNG läuft kontinuierlich im Hintergrund-Thread,
@@ -286,6 +288,14 @@ def dev_group(sid):
     d = _devtab.get(sid)
     return d["group"] if d else 0
 
+# --- Sensor-Verfuegbarkeit (HB-Quote je Minute, Spuren in der Analyse-Zeitleiste) ------
+# Typ (stationDefinitions in xComDef6_3.h) -> HB-Periode in Sekunden. Nur diese Typen
+# bekommen eine Spur; kuenftige Sensortypen hier ergaenzen. Hinweis: LD06 sendet Stand
+# heute gar keinen HB (CF3_LD06_Lidar/LD06_6_3_0/REVIEW_6_3.md) - seine Spur bleibt
+# grau ("keine Daten"), bis die Firmware einen HB bekommt.
+HB_SENSOR_PERIOD_S = {"HLK": 5, "Lidar": 10, "Kamera": 10}
+_hb_zero_minute = [0]            # zuletzt mit 0-Zeilen angelegte Minute (Liste = mutabel)
+
 _lock = threading.Lock()
 _debug = deque(maxlen=80)        # {t, msg}
 _devices = {}                    # sender -> {t, ip}
@@ -372,6 +382,13 @@ def init_db():
         pose_head REAL, pose_mir INT, pose_hash TEXT, polygon_json TEXT,
         point_count INT, source_t0 REAL, source_t1 REAL, quality REAL,
         created REAL, note TEXT)""")
+    # Sensor-Verfuegbarkeit: empfangene Heartbeats je Minute+Sender (Spuren in der
+    # Analyse-Zeitleiste, /hbstats). Rein additiv - bestehende Tabellen/Daten bleiben
+    # unberuehrt; Minuten VOR der Einfuehrung haben schlicht keine Zeilen (Anzeige:
+    # grau = keine Daten). Zeile mit cnt=0 = Manager hat gepusht, Sensor schwieg (rot).
+    _db.execute("""CREATE TABLE IF NOT EXISTS hb_minute(
+        minute INTEGER NOT NULL, sender INTEGER NOT NULL,
+        cnt INTEGER NOT NULL, PRIMARY KEY(minute, sender))""")
     _db.commit()
     row = _db.execute("SELECT v FROM meta WHERE k='rec'").fetchone()
     _rec_on = (row is None) or (row[0] == "1")   # Default: Aufnahme AN
@@ -489,11 +506,14 @@ def ingest():
     with _lock:
         for m in data.get("debug", []):
             _debug.append({"t": now, "msg": str(m)[:200]})
+        hb_counts = {}                   # sender -> HBs in diesem Push (fuer hb_minute)
         for h in data.get("hb", []):
             sid = int(h.get("sender", -1))
             # dz = im Sensor eingestellte Totzone (mm, aus radarHbPayload; 0 = keine)
             _devices[sid] = {"t": now, "ip": int(h.get("ip", 0)),
                              "dz": float(h.get("dz", 0) or 0)}
+            if sid >= 0:
+                hb_counts[sid] = hb_counts.get(sid, 0) + 1
         for s in data.get("settings", []):
             sid = int(s.get("sender", -1))
             _settings[sid] = {"sup": int(s.get("sup", 0)), "val": int(s.get("val", 0)),
@@ -538,6 +558,29 @@ def ingest():
             global _events_base
             _events_base += cut
     dropped = int(data.get("dropped", 0) or 0)
+    # HB-Zaehlung je Minute+Sender (Sensor-Spuren der Analyse-Zeitleiste, /hbstats).
+    # Beim Minutenwechsel 0-Zeilen fuer ALLE Spur-Sensoren anlegen: so bleibt "Zeile
+    # mit 0" (Manager pusht, Sensor schweigt -> rot) unterscheidbar von "keine Zeile"
+    # (VPS/Manager down bzw. Zeit vor der Einfuehrung -> grau). Laeuft unabhaengig
+    # von der Aufnahme (_rec_on) - die Diagnose braucht man gerade dann, wenn etwas
+    # nicht laeuft.
+    hb_minute = int(now // 60)
+    hb_wrote = False
+    with _db_lock:
+        if hb_minute != _hb_zero_minute[0]:
+            _hb_zero_minute[0] = hb_minute
+            for hsid, hd in load_devices().items():
+                if hd["type"] in HB_SENSOR_PERIOD_S:
+                    _db.execute("INSERT OR IGNORE INTO hb_minute(minute,sender,cnt) "
+                                "VALUES(?,?,0)", (hb_minute, hsid))
+                    hb_wrote = True
+        for hsid, n in hb_counts.items():
+            _db.execute("INSERT INTO hb_minute(minute,sender,cnt) VALUES(?,?,?) "
+                        "ON CONFLICT(minute,sender) DO UPDATE SET cnt=cnt+excluded.cnt",
+                        (hb_minute, hsid, n))
+            hb_wrote = True
+        if hb_wrote:
+            _db.commit()
     if pose_rows or invalid_pose_sids:
         with _db_lock:
             if pose_rows:
@@ -918,6 +961,69 @@ def density():
                             "ORDER BY t0", (t0, t1)).fetchall()
     return jsonify(t0=t0, t1=t1, bins=bins, per_sender=per, drops=drops,
                    spans=[[a, b] for a, b in spans])
+
+
+@app.get("/hbstats")
+def hbstats():
+    # Sensor-Verfuegbarkeit fuer die Spuren der Analyse-Zeitleiste: je Bin und
+    # Sensor die HB-Empfangsquote 0..1 (empfangene / erwartete Heartbeats laut
+    # HB_SENSOR_PERIOD_S), null = keine Daten (Zeit vor der Einfuehrung oder
+    # VPS/Manager down). Quelle: hb_minute (jeder vom Manager weitergereichte HB
+    # wird beim /ingest je Minute+Sender gezaehlt). Viele fehlende HBs = schwaches
+    # WiFi = auch viele verlorene catObserved - deshalb Quote statt an/aus.
+    t0, t1 = _win_args(default_all=True)
+    bins = min(max(int(request.args.get("bins", "600")), 10), 2000)
+    if t0 is None or t1 is None or t1 <= t0:
+        return jsonify(t0=t0, t1=t1, bins=0, bin_s=0, senders=[])
+    with _db_lock:
+        rows = _db.execute("SELECT minute,sender,cnt FROM hb_minute "
+                           "WHERE minute>=? AND minute<=?",
+                           (int(t0 // 60), int(t1 // 60))).fetchall()
+    devtab = load_devices()
+    lanes = [(sid, d) for sid, d in sorted(devtab.items())
+             if d["type"] in HB_SENSOR_PERIOD_S]
+    bt = (t1 - t0) / bins
+    now = time.time()
+
+    # Abdeckung je Bin: Sekunden, in denen die Zaehlung ueberhaupt lief (irgendeine
+    # hb_minute-Zeile vorhanden; die angebrochene aktuelle Minute nur bis "jetzt").
+    # Die ERWARTUNG bezieht sich auf diese Abdeckung, nicht auf die volle Bin-Breite -
+    # sonst wuerde ein grober Bin, der Daten-Minuten UND datenlose Zeit (vor der
+    # Einfuehrung / VPS down) mischt, die Quote faelschlich verwaessern (rot zeigen,
+    # obwohl der Sensor in der abgedeckten Zeit sauber lief).
+    def spread(a, b, weight, arr):
+        """Intervall [a,b] anteilig (weight je Sekunde) auf die Bins verteilen."""
+        i0, i1 = int((a - t0) / bt), int((b - t0) / bt)
+        for i in range(max(i0, 0), min(i1, bins - 1) + 1):
+            ov = min(b, t0 + (i + 1) * bt) - max(a, t0 + i * bt)
+            if ov > 0:
+                arr[i] += ov * weight
+
+    cov = [0.0] * bins
+    for minute in {r[0] for r in rows}:
+        a = minute * 60.0
+        b = min(a + 60.0, now)
+        if b > a:
+            spread(a, b, 1.0, cov)
+    got = {sid: [0.0] * bins for sid, _ in lanes}
+    for minute, sender, cnt in rows:
+        arr = got.get(sender)
+        if arr is None or not cnt:
+            continue
+        a = minute * 60.0
+        b = min(a + 60.0, now)           # HBs fielen in den bereits vergangenen Teil
+        if b > a:
+            spread(a, b, cnt / (b - a), arr)
+
+    senders = []
+    for sid, d in lanes:
+        period = HB_SENSOR_PERIOD_S[d["type"]]
+        q = [None if cov[i] <= 0
+             else round(min(got[sid][i] / (cov[i] / period), 1.0), 3)
+             for i in range(bins)]
+        senders.append({"id": sid, "name": d["name"], "type": d["type"],
+                        "period_s": period, "q": q})
+    return jsonify(t0=t0, t1=t1, bins=bins, bin_s=bt, senders=senders)
 
 
 @app.get("/adata")

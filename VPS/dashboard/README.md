@@ -42,6 +42,7 @@ Erreichbar unter **`http://<VPS-IP>/`** (Port 80).
 | `POST` | `/coverage_learn` `/coverage_delete` | Polygon aus Mäherperiode lernen / gelerntes Polygon deaktivieren |
 | `GET/POST` | `/rec` | Aufnahme-Status / Pause-Append |
 | `GET`  | `/density /adata /amodel /alabels /acoverage` | Analyse-Tab (Fenster-Daten, Tracks aus der Analysierer-DB, Abdeckungs-Sektoren) |
+| `GET`  | `/hbstats` | Sensor-Spuren der Zeitleiste: HB-Empfangsquote 0..1 je Bin+Sensor (aus `hb_minute`, null = keine Daten) |
 | `POST` | `/alabel /alabel_del /amark` | Labels + manuelle Track-Bewertung (Katze/Person/Vogel/Mäher/Insekt/Sturm/Störung/sicher keine Katze) |
 | `POST` | `/amerge /aunmerge` | Tracks zusammenkleben (gehören zum selben Tier) / Klebung lösen |
 | `GET`  | `/atracks` `/atracks.csv` | komplette Trackliste inkl. Bewertungen+Klebungen (JSON/CSV, separat verwendbar) |
