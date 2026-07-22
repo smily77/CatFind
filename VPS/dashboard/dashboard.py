@@ -174,21 +174,13 @@ def _map_plausible(text):
     return rings >= 1 and pts >= 3
 
 
-_gh_commit_locks = {}                     # ein Lock je Repo-Pfad
-_gh_commit_locks_guard = threading.Lock()
-
-
-def _gh_path_lock(path):
-    """Serialisiert Commits auf DENSELBEN Pfad. Beim VPS-Neustart schickt der
-    Manager die Karten mehrfach quasi gleichzeitig -> ohne das wuerden mehrere
-    Threads dieselbe Datei parallel anlegen (GitHub Contents API: erster gewinnt,
-    Rest 409). Mit dem Lock committen sie nacheinander, jeder mit frischem sha."""
-    with _gh_commit_locks_guard:
-        lk = _gh_commit_locks.get(path)
-        if lk is None:
-            lk = threading.Lock()
-            _gh_commit_locks[path] = lk
-        return lk
+# ALLE Repo-Commits serialisieren. Die GitHub Contents API baut jeden Commit auf
+# den aktuellen Branch-HEAD; zwei gleichzeitige Commits (auch auf VERSCHIEDENE
+# Dateien) forken vom selben Parent -> der zweite kollidiert (HTTP 409). Beim
+# VPS-Neustart schickt der Manager beide Karten quasi gleichzeitig, was genau
+# diesen Sturm ausloest. Nacheinander committen (je frischer HEAD) loest es;
+# Commits sind selten (nur bei Kartenaenderung) und wenige Dateien -> unkritisch.
+_gh_commit_lock = threading.Lock()
 
 
 def _github_commit_map(map_type, csv_text, version, path):
@@ -204,10 +196,9 @@ def _github_commit_map(map_type, csv_text, version, path):
                "Accept": "application/vnd.github+json",
                "User-Agent": "CatFind-VPS"}
     content_b64 = base64.b64encode(csv_text.encode("utf-8")).decode("ascii")
-    # Commits auf DENSELBEN Pfad serialisieren (Same-Path-Race beim Neustart
-    # verhindern); der 409-Retry bleibt als Netz fuer verbleibende Races (anderer
-    # Pfad-Client, GitHub-Eventual-Consistency): sha frisch holen, erneut schreiben.
-    with _gh_path_lock(path):
+    # Global serialisieren (s.o.); der 409-Retry bleibt als Netz fuer Rest-Races
+    # (fremde Pushes, GitHub-Eventual-Consistency): sha frisch holen, neu schreiben.
+    with _gh_commit_lock:
       for attempt in range(3):
         try:
             sha = None
