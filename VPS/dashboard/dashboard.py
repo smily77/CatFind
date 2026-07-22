@@ -174,6 +174,23 @@ def _map_plausible(text):
     return rings >= 1 and pts >= 3
 
 
+_gh_commit_locks = {}                     # ein Lock je Repo-Pfad
+_gh_commit_locks_guard = threading.Lock()
+
+
+def _gh_path_lock(path):
+    """Serialisiert Commits auf DENSELBEN Pfad. Beim VPS-Neustart schickt der
+    Manager die Karten mehrfach quasi gleichzeitig -> ohne das wuerden mehrere
+    Threads dieselbe Datei parallel anlegen (GitHub Contents API: erster gewinnt,
+    Rest 409). Mit dem Lock committen sie nacheinander, jeder mit frischem sha."""
+    with _gh_commit_locks_guard:
+        lk = _gh_commit_locks.get(path)
+        if lk is None:
+            lk = threading.Lock()
+            _gh_commit_locks[path] = lk
+        return lk
+
+
 def _github_commit_map(map_type, csv_text, version, path):
     """Vom Manager bestaetigte Karte nach `path` committen (GitHub Contents API -
     kein lokaler Git-Client/Checkout im Container noetig). Wird zweimal aufgerufen
@@ -187,11 +204,11 @@ def _github_commit_map(map_type, csv_text, version, path):
                "Accept": "application/vnd.github+json",
                "User-Agent": "CatFind-VPS"}
     content_b64 = base64.b64encode(csv_text.encode("utf-8")).decode("ascii")
-    # Bis zu 3 Versuche: ein 409 (Conflict) heisst, ein NEBENLAEUFIGER Commit war
-    # schneller (z.B. beim VPS-Neustart schickt der Manager beide Karten quasi
-    # gleichzeitig -> mehrere Threads legen dieselbe neue Datei an). Dann den sha
-    # frisch holen und erneut schreiben, sonst bliebe die Source of Truth stehen.
-    for attempt in range(3):
+    # Commits auf DENSELBEN Pfad serialisieren (Same-Path-Race beim Neustart
+    # verhindern); der 409-Retry bleibt als Netz fuer verbleibende Races (anderer
+    # Pfad-Client, GitHub-Eventual-Consistency): sha frisch holen, erneut schreiben.
+    with _gh_path_lock(path):
+      for attempt in range(3):
         try:
             sha = None
             try:
