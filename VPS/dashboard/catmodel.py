@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CatFinder Erkennungsmodell v2 (Offline/Analyse auf dem VPS).
+CatFinder Erkennungsmodell v2 (Analyse auf dem VPS).
 
 Bewertet Tracks aus catObserved-Events als SCORE (0..100, "Katzen-
 Wahrscheinlichkeit") statt mit starren Regeln. Kernideen (GesamtKonzept,
 Aufgabe "VPS-Modellierung der Katzenerkennung"):
+
+  - IDENTISCH zum CatIdentifier (catTrack.ino): das VPS spielt jeden Track
+    KAUSAL Punkt für Punkt durch (score_track) und bestätigt in genau dem
+    Moment, in dem der laufende Score confirm_score erreicht (t_confirm) — mit
+    ausschliesslich den bis dahin bekannten Merkmalen, wie das Gerät im Feld.
+    Deshalb gibt es KEINEN Austritts-Bonus/-Malus und keinen Sprung-Malus (die
+    setzten den fertigen Track voraus). So zeigt der Analyse-Tab exakt, was der
+    CatIdentifier entscheiden würde, und das gemeinsame Modell lässt sich daran
+    justieren. Die Ruhefenster-Sperre (quiet_t0/t1) bleibt bewusst NUR auf dem
+    Gerät — das VPS analysiert auch die Mäherzeit, damit man sie tunen kann.
 
   - Sensor-Gewichte je GERÄTETYP (HLK-Radar hoch, Lidar niedrig), die
     Typen kommen dynamisch aus der Gerätedatenbank xComDef6_3.h — neue
@@ -32,8 +42,8 @@ Aufgabe "VPS-Modellierung der Katzenerkennung"):
     Sturm zählen nicht als Evidenz.
 
 Bewusst frei von Flask/DB — reine Funktion (Events, Parameter, Geräte,
-Abdeckung) -> (Tracks mit Score-Aufschlüsselung), als spätere Referenz
-für die ESP32-Implementierung.
+Abdeckung) -> (Tracks mit Score-Aufschlüsselung); die maßgebliche Referenz für
+die ESP32-Implementierung (catTrack.ino spiegelt score_track 1:1).
 """
 import math
 
@@ -54,18 +64,19 @@ DEFAULT_PARAMS = {
     "min_confirm_weight": 0.9,      # Typ-Gewichtssumme in der Bewegungsphase
     "type_weight": {"HLK": 1.0, "Lidar": 0.3, "default": 0.6},
     # --- Score (Bestätigung ab confirm_score, Bewegungsphase vorausgesetzt)
+    # KAUSAL wie der CatIdentifier: nur Merkmale, die WÄHREND des Tracks schon
+    # feststehen. Ein Austritts-Bonus/-Malus (score_exit/penalty_mid_death) und
+    # der Sprung-Malus (penalty_jumpy) gibt es bewusst NICHT — das Gerät kann den
+    # Track-Tod nicht abwarten und das VPS soll dieselbe Entscheidung treffen.
     "confirm_score": 60,
     "score_move": 50,               # kohärente Bewegung gefunden
     "score_entry": 18,              # Geburt nahe Rand der Gesamtabdeckung
-    "score_exit": 12,               # Tod nahe Rand der Gesamtabdeckung
     "score_fusion": 25,             # >=2 Sender sehen dasselbe Objekt
     "score_crossing": 12,           # grosse Netto-Verschiebung (>= crossing_net_mm)
     "score_long": 8,                # langer Track (>= long_track_points saubere Punkte)
-    "score_stationary": 8,          # sitzt am Ende stabil (koten!) nach Bewegung
+    "score_stationary": 8,          # sitzt stabil (koten!) nach Bewegung
     "penalty_mid_birth": 12,        # mitten in der Abdeckung aufgetaucht (weich)
-    "penalty_mid_death": 8,         # mitten in der Abdeckung verschwunden (weich)
     "penalty_short": 10,            # sehr kurzer Track (Vogel/Zufall)
-    "penalty_jumpy": 10,            # viele unphysikalische Sprünge
     "crossing_net_mm": 800,
     "long_track_points": 10,
     "short_track_ms": 800,
@@ -77,8 +88,9 @@ DEFAULT_PARAMS = {
     # auf den Mäher wäre teuer (Regensensor -> er stellt die Arbeit ein), eine
     # im Fenster verpasste Katze nicht (Katzen meiden den laufenden Mäher ohnehin).
     # t0 == t1 = deaktiviert; t0 > t1 läuft über Mitternacht. Wird NUR vom
-    # CatIdentifier (Echtzeit) angewendet — die retrospektive VPS-Analyse bleibt
-    # bewusst ungefiltert, damit man im Analyse-Tab sieht, was der Mäher erzeugt.
+    # CatIdentifier (Echtzeit) als Feuer-Sperre angewendet — die VPS-Analyse rechnet
+    # bewusst auch die Mäherzeit durch, damit man im Analyse-Tab sieht, was das (sonst
+    # identische) Modell dort erkennen würde, und die Katze/Mäher-Trennung tunen kann.
     "quiet_t0_min": 900,            # 15:00 lokale Zeit (Mäherstart)
     "quiet_t1_min": 990,            # 16:30 (Mäher lädt spätestens dann wieder)
     # --- Erfassungsgrenzen (empirische Abdeckung)
@@ -581,10 +593,47 @@ def _stationary_end(pts, p):
                for pt in tail)
 
 
+def _stationary_now(pts, k, p):
+    """Sitzt der Track im Moment von Punkt k stabil? Kausale Variante von
+    _stationary_end (Tail = Punkte innerhalb stationary_end_s VOR/bis k)."""
+    t_end = pts[k][0]
+    lo = k
+    while lo > 0 and t_end - pts[lo - 1][0] <= p["stationary_end_s"]:
+        lo -= 1
+    tail = pts[lo:k + 1]
+    if len(tail) < 3 or t_end - tail[0][0] < p["stationary_end_s"] * 0.6:
+        return False
+    cx = sum(pt[1] for pt in tail) / len(tail)
+    cy = sum(pt[2] for pt in tail) / len(tail)
+    return all(math.hypot(pt[1] - cx, pt[2] - cy) <= p["stationary_radius_mm"]
+               for pt in tail)
+
+
+def _signed_edge(cov, x, y):
+    """Signierte Grenzdistanz wie ctUnionBorderDist auf dem ESP32: >0 = drinnen
+    (Tiefe bis zum Rand), <0 = draussen (Abstand zum Rand), None = keine
+    Abdeckung. Aus der Raster-Abdeckung der VPS (Boundary-Zellen + Union)."""
+    ed = _edge_dist(cov, x, y)
+    if ed is None:
+        return None
+    return ed if _in_union(cov, x, y) else -ed
+
+
 def score_track(pts, storms, cov, devices, p, tid, w_t0, w_t1):
-    """Score 0..100 mit Aufschlüsselung. w_t0/w_t1 = Analysefenster (damit an
-    den Fensterrändern kein falscher Eintritts-/Austritts-Malus entsteht)."""
+    """KAUSALE Bewertung — treuer Nachbau der Echtzeit-Erkennung des
+    CatIdentifier (catTrack.ino, ctFeed/ctEvaluate). Statt den fertigen Track als
+    Ganzes zu bewerten (retrospektiv), wird er Punkt für Punkt durchgespielt und
+    die Bestätigung fällt GENAU in dem Moment, in dem der laufende Score zum
+    ersten Mal confirm_score erreicht (t_confirm) — mit ausschliesslich den bis
+    dahin bekannten Merkmalen. Damit fehlt (wie auf dem Gerät) jeder Austritts-
+    Bonus/-Malus und der Sprung-Malus; so zeigt der Analyse-Tab genau das, was
+    das Gerät im Feld entscheiden würde, und das Modell lässt sich daran justieren.
+
+    w_t0 wird nicht mehr gebraucht (das Gerät hat immer eine echte Geburt);
+    w_t1 markiert nur noch einen am Fensterende offenen Track als OFFEN."""
     gap = p["track_gap_ms"] / 1000.0
+    # Sturmpunkte fallen VOR dem Tracking weg (ctFeed kehrt bei Sturm sofort um) —
+    # der Durchlauf sieht nur die sturmbereinigten Punkte, wie auf dem Gerät.
     clean = [pt for pt in pts if not in_storm(storms, pt[3], pt[0])]
     vs_all = _speeds(pts)
     feats = {
@@ -602,91 +651,116 @@ def score_track(pts, storms, cov, devices, p, tid, w_t0, w_t1):
         "storm_ratio": round(1 - len(clean) / len(pts), 2),
         "flags": [],
     }
-    detail = []            # [label, +/-punkte]
-    score = 0
-
-    def add(label, points):
-        nonlocal score
-        score += points
-        detail.append([label, points])
-
-    move = _find_move(clean, devices, p) if clean else None
-    t_confirm = None
-    if move:
-        t_confirm = move[0]
-        add("kohärente Bewegung", p["score_move"])
-        dur = feats["t1"] - feats["t0"]
-        if feats["net_mm"] >= p["crossing_net_mm"]:
-            add("durchquert das Feld", p["score_crossing"])
-        if len(clean) >= p["long_track_points"]:
-            add("langer Track", p["score_long"])
-        if dur * 1000 < p["short_track_ms"]:
-            add("sehr kurzer Track", -p["penalty_short"])
-    else:
-        detail.append(["keine kohärente Bewegung (Pflicht)", 0])
-
-    if clean and _has_fusion(clean, storms, p):
-        add("mehrere Sensoren sehen dasselbe", p["score_fusion"])
-        feats["flags"].append("FUSION")
-
-    # Erfassungsgrenzen: nur wenn genug empirische Abdeckung vorhanden ist.
     edge_active = bool(cov) and len(cov.get("union", ())) >= p["cov_min_cells"]
     feats["edge_active"] = edge_active
-    if edge_active and clean:
-        b, d = clean[0], clean[-1]
-        # Fensterrand-Schutz: Track schon am Anfang aktiv / am Ende noch offen?
-        birth_cut = b[0] <= w_t0 + 2 * gap
-        death_open = d[0] >= w_t1 - 2 * gap
-        if not birth_cut:
-            ed = _edge_dist(cov, b[1], b[2])
-            if ed is not None and ed <= p["edge_dist_mm"]:
-                add("Eintritt am Rand der Abdeckung", p["score_entry"])
-                feats["flags"].append("EINTRITT")
-            elif _in_union(cov, b[1], b[2]):
-                add("mitten in der Abdeckung aufgetaucht", -p["penalty_mid_birth"])
-        if death_open:
-            feats["flags"].append("OFFEN")       # läuft noch — kein Austritts-Urteil
-        else:
-            ed = _edge_dist(cov, d[1], d[2])
-            if ed is not None and ed <= p["edge_dist_mm"]:
-                add("Austritt am Rand der Abdeckung", p["score_exit"])
-                feats["flags"].append("AUSTRITT")
-            elif _in_union(cov, d[1], d[2]) and not _stationary_end(pts, p):
-                add("mitten in der Abdeckung verschwunden", -p["penalty_mid_death"])
+
+    # Geburt: Randlogik einmalig am ersten (sturmbereinigten) Punkt festhalten,
+    # so wie das Gerät birthValid/birthDist bei der Track-Geburt einfriert.
+    birth_signed = None
+    if clean and edge_active:
+        birth_signed = _signed_edge(cov, clean[0][1], clean[0][2])
+    if birth_signed is not None and abs(birth_signed) <= p["edge_dist_mm"]:
+        feats["flags"].append("EINTRITT")         # nahe am Rand geboren (hereingelaufen)
+
+    # move wird sticky, sobald irgendein Fenster (endend am jeweils neusten Punkt)
+    # eine kohärente Bewegung zeigt — _find_move liefert genau diesen Zeitpunkt.
+    move = _find_move(clean, devices, p) if clean else None
+    move_t = move[0] if move else None
+
+    st = p["confirm_score"]                        # Bestätigungsschwelle
+    stat_gate = st - p["score_stationary"]         # ab hier kann Sitzen kippen/zählen
+    reported = False
+    dead_far = False
+    fusion = False
+    lo_fus = 0
+    path = 0.0
+    x0, y0, t0c = (clean[0][1], clean[0][2], clean[0][0]) if clean else (0, 0, 0.0)
+    t_confirm = None
+    conf_score, conf_detail = 0, None
+    best_score, best_detail = -1, None
+    fus_dist = p["fusion_distance_mm"]
+    fus_win = p["fusion_time_ms"] / 1000.0
+
+    for k in range(len(clean)):
+        t, x, y, snd = clean[k][0], clean[k][1], clean[k][2], clean[k][3]
+        if k > 0:
+            path += math.hypot(x - clean[k - 1][1], y - clean[k - 1][2])
+        # Fusion (sticky): anderer Sender sah fast gleichzeitig fast denselben Ort
+        if not fusion:
+            while clean[lo_fus][0] < t - fus_win:
+                lo_fus += 1
+            for j in range(lo_fus, k):
+                if clean[j][3] != snd and \
+                   math.hypot(x - clean[j][1], y - clean[j][2]) <= fus_dist:
+                    fusion = True
+                    break
+        if reported:
+            continue                               # ctEvaluate kehrt nach dem Melden sofort um
+        # Mäher/Person: hartes K.o., BEVOR ein Score entsteht (wie ctEvaluate)
+        if p["max_path_mm"] > 0 and path > p["max_path_mm"]:
+            dead_far = True
+            break
+        if move_t is None or t < move_t:
+            continue                               # Pflicht: kohärente Bewegung gefunden
+        # ---- laufender Score mit ausschliesslich kausalen Merkmalen ----
+        detail = [["kohärente Bewegung", p["score_move"]]]
+        score = p["score_move"]
+        if math.hypot(x - x0, y - y0) >= p["crossing_net_mm"]:
+            score += p["score_crossing"]
+            detail.append(["durchquert das Feld", p["score_crossing"]])
+        if (k + 1) >= p["long_track_points"]:
+            score += p["score_long"]
+            detail.append(["langer Track", p["score_long"]])
+        if t - t0c < p["short_track_ms"] / 1000.0:
+            score -= p["penalty_short"]
+            detail.append(["sehr kurzer Track", -p["penalty_short"]])
+        if fusion:
+            score += p["score_fusion"]
+            detail.append(["mehrere Sensoren sehen dasselbe", p["score_fusion"]])
+        if birth_signed is not None:
+            if abs(birth_signed) <= p["edge_dist_mm"]:
+                score += p["score_entry"]
+                detail.append(["Eintritt am Rand der Abdeckung", p["score_entry"]])
+            elif birth_signed > p["edge_dist_mm"]:
+                score -= p["penalty_mid_birth"]
+                detail.append(["mitten in der Abdeckung aufgetaucht",
+                               -p["penalty_mid_birth"]])
+        # Sitzen nur prüfen, wenn es das Ergebnis noch kippen könnte (spart O(n²))
+        if score >= stat_gate and _stationary_now(clean, k, p):
+            score += p["score_stationary"]
+            detail.append(["sitzt stabil (koten?)", p["score_stationary"]])
+        score = max(0, min(100, score))
+        if score > best_score:
+            best_score, best_detail = score, detail
+        if score >= st:
+            reported = True
+            t_confirm, conf_score, conf_detail = t, score, detail
 
     if _stationary_end(pts, p):
-        feats["flags"].append("STATIONAER")      # sitzt — koten? Ziel nicht verlieren!
-        if move:
-            add("sitzt nach Bewegung stabil (koten?)", p["score_stationary"])
+        feats["flags"].append("STATIONAER")        # sitzt — koten? Ziel nicht verlieren!
+    if fusion:
+        feats["flags"].append("FUSION")
+    if clean and clean[-1][0] >= w_t1 - 2 * gap:
+        feats["flags"].append("OFFEN")             # läuft am Fensterende evtl. noch
 
-    if vs_all:
-        jumpy = sum(1 for v in vs_all if v > p["speed_max_mm_s"] * 1.5)
-        if jumpy / len(vs_all) > 0.2:
-            add("unphysikalische Sprünge", -p["penalty_jumpy"])
-
-    # RoboMäher/Person: ein einzelner kohärenter Track mit sehr langem Weg ist
-    # keine Katze (Mäher mäht systematisch, Personen gehen Runden). Hartes K.o.
-    too_far = p["max_path_mm"] > 0 and feats["path_mm"] > p["max_path_mm"]
-    if too_far:
-        add("Weg zu lang (%d m) - Mäher/Person?" % round(feats["path_mm"] / 1000), -100)
-
-    score = max(0, min(100, score))
-    confirmed = bool(move) and score >= p["confirm_score"] and not too_far
-    feats["score"] = score
-    feats["score_detail"] = detail
-    feats["confirmed"] = confirmed
-    feats["t_confirm"] = t_confirm if confirmed else None
-    if confirmed:
+    feats["confirmed"] = reported
+    feats["t_confirm"] = t_confirm if reported else None
+    if reported:
+        feats["score"] = conf_score
+        feats["score_detail"] = conf_detail
         feats["reject"] = None
-    elif not clean:
-        feats["reject"] = "Sturm/Burst"
-    elif too_far:
-        feats["reject"] = "Weg zu lang (Mäher/Person?)"
-    elif not move:
-        feats["reject"] = ("Einzelereignis" if feats["n"] == 1 else
-                           "keine kohärente Bewegung")
     else:
-        feats["reject"] = "Score zu tief (%d < %d)" % (score, p["confirm_score"])
+        feats["score"] = max(0, best_score)
+        feats["score_detail"] = best_detail or [["keine kohärente Bewegung (Pflicht)", 0]]
+        if not clean:
+            feats["reject"] = "Sturm/Burst"
+        elif dead_far:
+            feats["reject"] = "Weg zu lang (Mäher/Person?)"
+        elif move_t is None:
+            feats["reject"] = ("Einzelereignis" if feats["n"] == 1 else
+                               "keine kohärente Bewegung")
+        else:
+            feats["reject"] = "Score zu tief (%d < %d)" % (max(0, best_score), st)
     # Punkte fürs UI (grosse Tracks ausdünnen, Anfang/Ende behalten)
     out = pts
     if len(pts) > 800:
