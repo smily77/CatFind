@@ -186,27 +186,41 @@ def _github_commit_map(map_type, csv_text, version, path):
     headers = {"Authorization": "token " + GITHUB_MAP_TOKEN,
                "Accept": "application/vnd.github+json",
                "User-Agent": "CatFind-VPS"}
-    try:
-        sha = None
+    content_b64 = base64.b64encode(csv_text.encode("utf-8")).decode("ascii")
+    # Bis zu 3 Versuche: ein 409 (Conflict) heisst, ein NEBENLAEUFIGER Commit war
+    # schneller (z.B. beim VPS-Neustart schickt der Manager beide Karten quasi
+    # gleichzeitig -> mehrere Threads legen dieselbe neue Datei an). Dann den sha
+    # frisch holen und erneut schreiben, sonst bliebe die Source of Truth stehen.
+    for attempt in range(3):
         try:
-            with urllib.request.urlopen(urllib.request.Request(api, headers=headers), timeout=10) as r:
-                sha = json.load(r).get("sha")
+            sha = None
+            try:
+                with urllib.request.urlopen(urllib.request.Request(api, headers=headers), timeout=10) as r:
+                    sha = json.load(r).get("sha")
+            except urllib.error.HTTPError as e:
+                if e.code != 404:        # 404 = Datei existiert noch nicht -> sha bleibt None (Neuanlage)
+                    raise
+            payload = {
+                "message": "Karte %s: v%s vom Manager uebernommen (VPS-Editor)" % (map_type, version),
+                "content": content_b64,
+            }
+            if sha:
+                payload["sha"] = sha
+            req = urllib.request.Request(api, data=json.dumps(payload).encode("utf-8"),
+                                          headers=headers, method="PUT")
+            with urllib.request.urlopen(req, timeout=15) as r:
+                r.read()
+            print("map %s: v%s nach %s committet" % (map_type, version, path), flush=True)
+            return
         except urllib.error.HTTPError as e:
-            if e.code != 404:        # 404 = Datei existiert noch nicht -> sha bleibt None (Neuanlage)
-                raise
-        payload = {
-            "message": "Karte %s: v%s vom Manager uebernommen (VPS-Editor)" % (map_type, version),
-            "content": base64.b64encode(csv_text.encode("utf-8")).decode("ascii"),
-        }
-        if sha:
-            payload["sha"] = sha
-        req = urllib.request.Request(api, data=json.dumps(payload).encode("utf-8"),
-                                      headers=headers, method="PUT")
-        with urllib.request.urlopen(req, timeout=15) as r:
-            r.read()
-        print("map %s: v%s nach %s committet" % (map_type, version, path), flush=True)
-    except Exception as e:                                        # noqa: BLE001
-        print("map %s: Git-Commit fehlgeschlagen: %s" % (map_type, e), flush=True)
+            if e.code == 409 and attempt < 2:
+                time.sleep(0.5 * (attempt + 1))   # kurz warten, dann sha neu holen
+                continue
+            print("map %s: Git-Commit fehlgeschlagen: %s" % (map_type, e), flush=True)
+            return
+        except Exception as e:                                    # noqa: BLE001
+            print("map %s: Git-Commit fehlgeschlagen: %s" % (map_type, e), flush=True)
+            return
 
 # Fallback-Geräteverzeichnis (Name/Typ/Gruppe/Erfassungsbereich), falls
 # xComDef6_3.h nicht erreichbar ist. Führend ist IMMER die live geparste
