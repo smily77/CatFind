@@ -1,11 +1,9 @@
-# NoShotZone v1  crc=0x6F9CF64F  units=mm  frame=world
-# Polygon(e) der ERLAUBTEN Schusszone: innerhalb = Feuern erlaubt, ausserhalb = No-Shot.
-# Mehrere Ringe durch Leerzeile getrennt (Loecher = No-Shot-Inseln).
-# x,y  (Welt, Millimeter, ganzzahlig)
+# NoShotZone v2  crc=0x61fa9f20  units=mm  frame=world
 115,2
 132,1301
-1891,1376
-2922,2558
+1146,1318
+1919,2113
+2388,2805
 3475,4946
 4078,7485
 4631,9998
