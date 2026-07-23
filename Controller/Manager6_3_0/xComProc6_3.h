@@ -227,6 +227,28 @@ bool mcQueuePop(xMsg& out) {
 uint16_t mcQueueDropped() { uint16_t d = mcQDropped; mcQDropped = 0; return d; }
 #endif
 
+// Karten-Anfragen (Unicast) ebenfalls queuen statt in den EINEN lastUcMsg-Puffer zu
+// legen (nur der Manager definiert MAP_REQ_QUEUE_LEN - Sensoren brauchen den Puffer
+// unveraendert fuer waitForUc/acquireMap). Nach jedem mapInfo-Announce fragen ALLE
+// Sensoren praktisch gleichzeitig an; der Callback ueberschrieb lastUcMsg dann mehrmals,
+// bevor loop() ihn einmal las -> alle bis auf einen bekamen kein mapInfo und liefen auf
+// der alten Karte weiter ("Karte N: kein mapInfo von .X -> lokale Karte").
+#ifdef MAP_REQ_QUEUE_LEN
+struct mapReqQEntry { uint8_t mapType; uint8_t octet; };
+static mapReqQEntry mapReqQueue[MAP_REQ_QUEUE_LEN];
+static volatile uint8_t  mapReqQHead = 0, mapReqQTail = 0;
+static volatile uint16_t mapReqQDropped = 0;
+
+bool mapReqQueuePop(uint8_t& mapType, uint8_t& octet) {
+  if (mapReqQTail == mapReqQHead) return false;
+  mapType = mapReqQueue[mapReqQTail].mapType;
+  octet   = mapReqQueue[mapReqQTail].octet;
+  mapReqQTail = (uint8_t)((mapReqQTail + 1) % MAP_REQ_QUEUE_LEN);
+  return true;
+}
+uint16_t mapReqQueueDropped() { uint16_t d = mapReqQDropped; mapReqQDropped = 0; return d; }
+#endif
+
 //Udp
 void initMcUdp() {
   writelnComment("init UdP MC");
@@ -276,6 +298,21 @@ void initUnicast() {
     udpUc.onPacket([](AsyncUDPPacket packet) {
       xMsg m;
       if (!parseXMsg(packet, m)) return;
+      #ifdef MAP_REQ_QUEUE_LEN
+        // Karten-Anfragen kommen im Pulk (nach einem Announce) - in die eigene Queue,
+        // damit sie sich nicht gegenseitig aus lastUcMsg draengen.
+        if (m.header.msgCode == mapRequest) {
+          mapReqPayload req;
+          if (getPayload(m, req)) {
+            uint8_t nh = (uint8_t)((mapReqQHead + 1) % MAP_REQ_QUEUE_LEN);
+            if (nh == mapReqQTail) { mapReqQDropped++; return; }   // Queue voll
+            mapReqQueue[mapReqQHead].mapType = req.mapType;
+            mapReqQueue[mapReqQHead].octet   = packet.remoteIP()[3];
+            mapReqQHead = nh;
+          }
+          return;
+        }
+      #endif
       lastUcMsg = m;
       lastUcSenderOctet = packet.remoteIP()[3];  // fuer gezielte Antwort
       ucDataReceived = true;  // Flag setzen
@@ -1017,7 +1054,16 @@ static bool waitForUc(uint8_t codeWanted, xMsg& out, unsigned long budget) {
   return false;
 }
 
+// Ergebnis des letzten acquireMap(): true = mit dem Manager ABGEGLICHEN (lokale Karte
+// nachweislich aktuell oder frisch heruntergeladen), false = Rueckfall auf die lokale
+// Karte, ohne zu wissen ob sie aktuell ist. Der Rueckgabewert von acquireMap sagt nur
+// "irgendeine Karte ist geladen" und taugt fuer die Retry-Frage nicht: nach einem
+// verlorenen mapInfo galt das Geraet als versorgt und probierte erst nach dem
+// stuendlichen Fangnetz wieder - so lange filterte es mit der ALTEN Karte.
+bool mapLastSynced = false;
+
 bool acquireMap(uint8_t mapType, const char* path, uint8_t managerOctet, unsigned long waitMs) {
+  mapLastSynced = false;
   bool haveLocal = loadNoShot(path);
   uint16_t lv = 0; uint32_t lcrc = 0, llen = 0;
   bool haveLocalInfo = mapFileInfo(path, lv, lcrc, llen);
@@ -1036,6 +1082,7 @@ bool acquireMap(uint8_t mapType, const char* path, uint8_t managerOctet, unsigne
   }
   if (haveLocalInfo && info.version == lv && info.fileCrc == lcrc) {
     sendUdpTextln("Karte " + String(mapType) + ": lokale Karte aktuell (v" + String(lv) + ")");
+    mapLastSynced = haveLocal;
     return haveLocal;
   }
   sendUdpTextln("Karte " + String(mapType) + ": lade vom Manager (v" + String(info.version) +
@@ -1057,7 +1104,9 @@ bool acquireMap(uint8_t mapType, const char* path, uint8_t managerOctet, unsigne
   sendUdpTextln(result == 1 ? "Karte " + String(mapType) + ": Download OK"
                             : "Karte " + String(mapType) + ": Download unvollstaendig (Chunk " +
                               String(rx.nextIndex) + "/" + String(rx.chunkCount) + ") -> alte Karte");
-  return loadNoShot(path);
+  bool loaded = loadNoShot(path);
+  mapLastSynced = (result == 1) && loaded;
+  return loaded;
 }
 
 bool acquireNoShot(const char* path, uint8_t managerOctet, unsigned long waitMs) {

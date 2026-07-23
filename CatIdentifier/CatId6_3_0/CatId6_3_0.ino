@@ -39,9 +39,13 @@ boolean statusLightOn = false;
 #define MAP_WAIT_MS        6000
 #define MAP_RETRY_MS      60000
 #define MAP_RECHECK_MS  3600000UL
+#define MAP_ANNOUNCE_SLOT_MS 300     // Versatz je Geraet nach einem Announce (ID % 10 * diesen Wert -
+                                     // real vergebene IDs 0-3/17-19 ergeben so verschiedene Slots)
 bool          noShotOK       = false;
+bool          noShotSynced   = false;  // Karte beim letzten Versuch mit dem Manager abgeglichen?
 unsigned long lastNoShotTry  = 0;
 bool          mapRecheckNow  = false;
+unsigned long mapRecheckAt   = 0;      // fruehester Zeitpunkt fuer den Announce-Re-Check
 
 unsigned long detLedOffMs = 0;       // CatDetected-LED wieder aus
 unsigned long bootPoseReqMs = 0;     // 0 = poseRequest noch nicht gesendet
@@ -158,7 +162,11 @@ void handleCommand(const xMsg& m) {
 void handleBusMsg(const xMsg& m) {
   if (handleCommonMsg(m)) return;
   if (m.header.msgCode == mapInfo) {   // Announce: Manager hat eine neue Karte angenommen
-    if (mapAnnounceOutdated(m, mapNoShot, NOSHOT_PATH)) { noShotOK = false; mapRecheckNow = true; }
+    if (mapAnnounceOutdated(m, mapNoShot, NOSHOT_PATH)) {
+      noShotOK = false; noShotSynced = false; mapRecheckNow = true;
+      // Versatz je Geraet: sonst fragen nach dem Announce alle Sensoren gleichzeitig an.
+      mapRecheckAt = millis() + MAP_ANNOUNCE_SLOT_MS * (unsigned long)(ID % 10);
+    }
     return;
   }
   if (m.header.msgCode == catObserved && m.header.sender != ID) {

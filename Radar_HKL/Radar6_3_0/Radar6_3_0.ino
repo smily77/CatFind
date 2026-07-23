@@ -46,6 +46,9 @@ posPayload obsData;
 #define MAP_RETRY_MS      60000   // Karte nicht bekommen -> so lange bis zum naechsten Versuch
 #define MAP_RECHECK_MS  3600000UL // Fangnetz: auch mit geladener Karte stuendlich neu pruefen
                                   // (ein mapInfo-Announce kann per UDP verlorengehen - kein Resend)
+#define MAP_ANNOUNCE_SLOT_MS 300  // Versatz je Geraet nach einem Announce (ID % 10 * diesen Wert:
+                                  // die real vergebenen IDs 0-3/17-19 liefern so lauter
+                                  // verschiedene Slots, serveMap braucht je Karte ~0,1 s)
 
 int32_t  lastTargetX = 0, lastTargetY = 0;   // juengste eigene Detektion (fuer Health-Check)
 unsigned long lastTargetMs = 0;              // wann zuletzt ein Radar-Target aktiv war
@@ -136,8 +139,17 @@ void handleCommand(const xMsg& m) {
 void handleObservation(const xMsg& m) {
   if (handleCommonMsg(m)) return;    // settingsRequest/poseRequest (Broadcast) generisch
   if (m.header.msgCode == mapInfo) {  // Announce: Manager hat eine Karte angenommen (gwAcceptMap)
-    if (mapAnnounceOutdated(m, mapNoShot, NOSHOT_PATH)) { noshotSlot.loaded = false; noshotSlot.recheckNow = true; }
-    if (mapAnnounceOutdated(m, mapRasen,  RASEN_PATH))  { rasenSlot.loaded  = false; rasenSlot.recheckNow  = true; }
+    // Versatz je Geraet (aus der eigenen ID): sonst fragen nach dem Announce alle
+    // Sensoren im selben Moment an und der Manager kann nur einen bedienen.
+    unsigned long due = millis() + MAP_ANNOUNCE_SLOT_MS * (unsigned long)(ID % 10);
+    if (mapAnnounceOutdated(m, mapNoShot, NOSHOT_PATH)) {
+      noshotSlot.loaded = false; noshotSlot.synced = false;
+      noshotSlot.recheckNow = true; noshotSlot.recheckAt = due;
+    }
+    if (mapAnnounceOutdated(m, mapRasen,  RASEN_PATH)) {
+      rasenSlot.loaded = false; rasenSlot.synced = false;
+      rasenSlot.recheckNow = true; rasenSlot.recheckAt = due + MAP_ANNOUNCE_SLOT_MS * 10;
+    }
     return;
   }
   if (m.header.msgCode != catObserved || m.header.sender == ID) return;
@@ -200,11 +212,19 @@ void processTargets() {
 // wenn tatsaechlich ein Beschaffungsversuch stattfand (der RAM-Puffer also frisch ueberschrieben
 // wurde und die aktive Karte ggf. neu durchgesetzt werden muss).
 bool serviceMapSlot(MapSlot& slot, uint8_t mapType, const char* path) {
-  unsigned long dueMs = slot.loaded ? MAP_RECHECK_MS : MAP_RETRY_MS;
-  if (!slot.recheckNow && slot.lastTry != 0 && millis() - slot.lastTry < dueMs) return false;
+  if (slot.recheckNow) {
+    if ((long)(millis() - slot.recheckAt) < 0) return false;   // Announce-Versatz laeuft noch
+  } else {
+    // Nur eine ABGEGLICHENE Karte darf bis zum stuendlichen Fangnetz warten. Ohne
+    // Abgleich (kein mapInfo/Download abgebrochen) laeuft der Filter womoeglich mit
+    // einer veralteten Karte -> in MAP_RETRY_MS erneut versuchen.
+    unsigned long dueMs = (slot.loaded && slot.synced) ? MAP_RECHECK_MS : MAP_RETRY_MS;
+    if (slot.lastTry != 0 && millis() - slot.lastTry < dueMs) return false;
+  }
   slot.lastTry = millis();
   slot.recheckNow = false;
   slot.loaded = acquireMap(mapType, path, device[Manager].IP, MAP_WAIT_MS);
+  slot.synced = mapLastSynced;
   return true;
 }
 
