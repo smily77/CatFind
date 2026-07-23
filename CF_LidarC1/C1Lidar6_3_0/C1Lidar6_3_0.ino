@@ -48,7 +48,9 @@ bool          noShotOK       = false;
 unsigned long lastHBms       = 0;
 unsigned long hbBlinkUntil   = 0;   // bis wann der gruene HB-Blitz leuchtet (0 = aus)
 unsigned long lastNoShotTry  = 0;   // letzter Beschaffungsversuch der No-Shot-Karte (0 = noch keiner)
+bool          noShotSynced   = false;   // dabei mit dem Manager abgeglichen? (sonst frueher erneut versuchen)
 bool          mapRecheckNow  = false;   // per Announce (mapInfo) sofortiger Re-Check angefordert
+unsigned long mapRecheckAt   = 0;       // fruehester Zeitpunkt dafuer (Announce-Versatz je Geraet)
 
 #define USE_VPS_LOCALIZE             // aktiviert vpsLocalize() (zieht HTTPClient) in xComProc
 #include <xComProc6_3.h>
@@ -106,7 +108,9 @@ void loop() {
     // Announce: Manager hat eine Karte angenommen (gwAcceptMap) - bei Abweichung
     // sofortigen Re-Check anfordern statt bis MAP_RECHECK_MS zu warten (Fangnetz).
     if (!handleCommonMsg(cm) && mapAnnounceOutdated(cm, mapNoShot, NOSHOT_PATH)) {
-      noShotOK = false; mapRecheckNow = true;
+      noShotOK = false; noShotSynced = false; mapRecheckNow = true;
+      // Versatz je Geraet: sonst fragen nach dem Announce alle Sensoren gleichzeitig an.
+      mapRecheckAt = millis() + MAP_ANNOUNCE_SLOT_MS * (unsigned long)(ID % 10);
     }
   }
 

@@ -23,11 +23,18 @@ void heardBeat() {
 // MAP_RECHECK_MS (Fangnetz, stuendlich) neu pruefen, plus sofort bei passendem
 // mapInfo-Announce (mapRecheckNow, siehe handleBusMsg in CatId6_3_0.ino).
 void serviceNoShotMap() {
-  unsigned long dueMs = noShotOK ? MAP_RECHECK_MS : MAP_RETRY_MS;
-  if (!mapRecheckNow && lastNoShotTry != 0 && millis() - lastNoShotTry < dueMs) return;
+  if (mapRecheckNow) {
+    if ((long)(millis() - mapRecheckAt) < 0) return;   // Announce-Versatz laeuft noch
+  } else {
+    // Nur eine ABGEGLICHENE Karte darf bis zum stuendlichen Fangnetz warten - sonst
+    // filtert das Modell womoeglich eine Stunde lang mit einer veralteten Karte.
+    unsigned long dueMs = (noShotOK && noShotSynced) ? MAP_RECHECK_MS : MAP_RETRY_MS;
+    if (lastNoShotTry != 0 && millis() - lastNoShotTry < dueMs) return;
+  }
   lastNoShotTry = millis();
   mapRecheckNow = false;
   noShotOK = acquireNoShot(NOSHOT_PATH, device[Manager].IP, MAP_WAIT_MS);
+  noShotSynced = mapLastSynced;
   sendUdpTextln(noShotOK ? "No-Shot-Karte aktuell (Modellfilter aktiv)"
                          : "No-Shot-Karte nicht verfuegbar (Modell ungefiltert)");
 }

@@ -24,6 +24,12 @@ bool targetAlarm = false;
 // vorher gingen dabei ~50% der Events bei 10-Hz-Radar-Bursts verloren.
 #define MC_QUEUE_LEN 24
 
+// Dasselbe fuer Karten-Anfragen: nach jedem mapInfo-Announce fragen alle Sensoren
+// gleichzeitig an. Im Single-Buffer (lastUcMsg) ueberlebte davon nur eine Anfrage,
+// die uebrigen Geraete liefen still auf der ALTEN Karte weiter (bis zu 1 h, siehe
+// serviceMapSlot im Radar). 8 Plaetze = mehr als es Sensoren gibt.
+#define MAP_REQ_QUEUE_LEN 8
+
 #include <xComProc6_3.h>
 
 // Bus-Verkehr seriell mitdrucken? Bei 10 Hz kostet jede Zeile ~9 ms auf der
@@ -84,24 +90,24 @@ void loop() {
     Serial.println(udpTextMsg);
     gwAddDebug(udpTextMsg);            // Gateway: Debug-Zeile an den VPS
   }
-  // Karten-Anfragen (Unicast) bedienen: Sensor fordert No-Shot- oder RasenKarte an
   if (ucDataReceived) {
     xMsg uc = lastUcMsg;
-    uint8_t reqOctet = lastUcSenderOctet;
     ucDataReceived = false;
-    if (handleCommonMsg(uc)) {         // settingsRequest/cmdSetSetting (eigene Anzeige-Settings)
-      // erledigt
+    handleCommonMsg(uc);               // settingsRequest/cmdSetSetting (eigene Anzeige-Settings)
+  }
+  // Karten-Anfragen (Unicast) bedienen: Sensor fordert No-Shot- oder RasenKarte an.
+  // Sie kommen aus der eigenen Queue (siehe MAP_REQ_QUEUE_LEN) und werden hier der
+  // Reihe nach beantwortet - serveMap() blockiert je Karte ~0,1 s, in dieser Zeit
+  // sammelt der AsyncUDP-Task die uebrigen Anfragen weiter ein.
+  {
+    uint8_t reqType, reqOctet;
+    while (mapReqQueuePop(reqType, reqOctet)) {
+      Serial << "mapRequest type=" << reqType << " from ." << reqOctet << endl;
+      if (reqType == mapNoShot)      serveMap(mapNoShot, NOSHOT_PATH, reqOctet);
+      else if (reqType == mapRasen)  serveMap(mapRasen,  RASEN_PATH,  reqOctet);
     }
-    else if (uc.header.msgCode == mapRequest) {
-      mapReqPayload req;
-      if (getPayload(uc, req)) {
-        Serial << "mapRequest type=" << req.mapType << " from ." << reqOctet << endl;
-        if (req.mapType == mapNoShot)
-          serveMap(mapNoShot, NOSHOT_PATH, reqOctet);
-        else if (req.mapType == mapRasen)
-          serveMap(mapRasen, RASEN_PATH, reqOctet);
-      }
-    }
+    uint16_t rd = mapReqQueueDropped();
+    if (rd) gwAddDebug("Karten-Anfragen verworfen: " + String(rd));
   }
   {
     uint16_t qd = mcQueueDropped();    // Queue lief ueber (extremer Burst) -> sichtbar machen

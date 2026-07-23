@@ -100,6 +100,10 @@ boolean newDataReady = false;
 // catTrackDef.h beim Cat Identifier).
 struct MapSlot {
   bool          loaded    = false;   // dieser Slot beim letzten Versuch erfolgreich geladen?
+  bool          synced    = false;   // ... UND dabei mit dem Manager abgeglichen (mapLastSynced).
+                                     // Nur dann darf bis zum stuendlichen Fangnetz gewartet werden -
+                                     // sonst faellt eine verlorene Anfrage erst nach 1 h auf.
   unsigned long lastTry   = 0;       // letzter Beschaffungsversuch (0 = noch keiner)
   bool          recheckNow = false;  // per Announce (mapInfo) sofortiger Re-Check angefordert
+  unsigned long recheckAt  = 0;      // fruehester Zeitpunkt dafuer (Announce-Versatz je Geraet)
 };
