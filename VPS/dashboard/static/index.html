@@ -243,13 +243,13 @@
               <option value="noshot">NoShot (Schusszone)</option>
               <option value="rasen">Rasen (Relevanzfilter)</option>
             </select>
-            <button id="anaMapEditBtn" title="Ringe werden Polygone mit greifbaren Eckpunkten: Punkt ziehen · Klick auf eine Kante fügt einen Punkt ein · Punkt markieren + Entf löscht ihn">Karte bearbeiten</button>
+            <button id="anaMapEditBtn" title="Ringe werden Polygone mit greifbaren Eckpunkten: Punkt ziehen · Klick auf eine Kante fügt einen Punkt ein · Punkt markieren + Entf löscht ihn · Esc beendet das Bearbeiten">Karte bearbeiten</button>
             <span id="anaMapEditTools" style="display:none">
               <button id="anaMapRingAdd" title="Neuen Ring (kleines Dreieck in der Kartenmitte) einfügen — danach Eckpunkte an Ort und Stelle ziehen">Ring +</button>
               <button id="anaMapRingDel" title="Den Ring des markierten Punkts komplett löschen">Ring −</button>
               <button id="anaMapPtDel" title="Markierten Punkt löschen (auch Entf-Taste)">Punkt −</button>
-              <button id="anaMapSave" class="act">Speichern</button>
-              <button id="anaMapDiscard">Verwerfen</button>
+              <button id="anaMapSave" class="act" title="Karte speichern und Bearbeiten beenden — der Manager übernimmt sie beim nächsten Poll">Speichern</button>
+              <button id="anaMapDiscard" title="Bearbeiten beenden, ohne zu speichern (auch Esc-Taste) — Änderungen gehen verloren">Bearbeiten beenden</button>
             </span>
             <span id="anaMapEditStatus"></span>
           </div>

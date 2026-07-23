@@ -45,6 +45,7 @@ const ANA = {
   editType: null,       // null | "noshot" | "rasen" - Editor aktiv für diesen Typ
   editRings: null,      // Arbeitskopie der Ringe waehrend des Bearbeitens
   editSel: null,        // {ring, idx} markierter Punkt (Ziehen/Löschen)
+  editDirty: false,     // Arbeitskopie wurde veraendert (Rueckfrage beim Abbrechen)
   editPollTimer: null,  // Poll auf /noshot|/rasenmap, bis der Manager die Karte übernommen hat
 };
 const SEL_COLOR = "#ffd23b";   // Hervorhebung des angeklickten Tracks
@@ -652,7 +653,7 @@ function mapBind(){
     if(dragPt){
       const T = mapTransform(cv);
       dragPt.ring[dragPt.idx] = [T.invX(e.offsetX), T.invY(e.offsetY)];
-      moved = true;
+      moved = true; ANA.editDirty = true;
       drawAnaMap();
       return;
     }
@@ -673,6 +674,7 @@ function mapBind(){
         const pt = [Math.round(T.invX(lastPos.x)), Math.round(T.invY(lastPos.y))];
         hit.ring.splice(hit.afterIdx + 1, 0, pt);
         ANA.editSel = {ring:hit.ring, idx:hit.afterIdx + 1};
+        ANA.editDirty = true;
       } else {
         ANA.editSel = null;
       }
@@ -703,7 +705,10 @@ function mapBind(){
   }, {passive:false});
   cv.addEventListener("dblclick", ()=>{ if(!ANA.editType){ anaFit(); drawAnaMap(); } });
   window.addEventListener("keydown", e=>{
-    if(!ANA.editType || !ANA.editSel) return;
+    if(!ANA.editType) return;
+    // Esc = Notausgang zurueck in den Normalmodus (dieselbe Wirkung wie "Abbrechen").
+    if(e.key==="Escape"){ e.preventDefault(); anaMapEditDiscard(); return; }
+    if(!ANA.editSel) return;
     if((e.key==="Delete" || e.key==="Backspace") && document.activeElement===document.body){
       e.preventDefault(); anaMapEditDelPoint();
     }
@@ -723,6 +728,8 @@ function anaMapEditStart(){
     ANA.editType = type;
     ANA.editRings = (rings||[]).map(ring => ring.map(([x,y])=>[x,y]));   // Arbeitskopie
     ANA.editSel = null;
+    ANA.editDirty = false;
+    if(ANA.editPollTimer){ clearInterval(ANA.editPollTimer); ANA.editPollTimer = null; }
     anaMapSetStatus("");
     anaEl("anaMap").classList.add("editing");
     anaEl("anaMapEditTools").style.display = "";
@@ -738,8 +745,9 @@ function anaMapEditStart(){
   }
 }
 
+// Zurueck in den Normalmodus (Tracks wieder anklickbar, Doppelklick = einpassen).
 function anaMapEditExit(){
-  ANA.editType = null; ANA.editRings = null; ANA.editSel = null;
+  ANA.editType = null; ANA.editRings = null; ANA.editSel = null; ANA.editDirty = false;
   if(ANA.editPollTimer){ clearInterval(ANA.editPollTimer); ANA.editPollTimer = null; }
   anaEl("anaMap").classList.remove("editing");
   anaEl("anaMapEditTools").style.display = "none";
@@ -750,6 +758,9 @@ function anaMapEditExit(){
 
 function anaMapEditDiscard(){
   const type = ANA.editType;
+  if(!type) return;
+  if(ANA.editDirty && !confirm("Bearbeiten beenden? Nicht gespeicherte Änderungen gehen verloren."))
+    return;
   anaMapEditExit();
   anaMapSetStatus("");
   const url = type === "rasen" ? "/rasenmap" : "/noshot";
@@ -765,13 +776,14 @@ function anaMapEditAddRing(){
   ANA.editRings.push([[Math.round(v.cx), Math.round(v.cy+s)],
                        [Math.round(v.cx-s), Math.round(v.cy-s)],
                        [Math.round(v.cx+s), Math.round(v.cy-s)]]);
+  ANA.editDirty = true;
   drawAnaMap();
 }
 
 function anaMapEditDelRing(){
   if(!ANA.editSel) return;
   const i = ANA.editRings.indexOf(ANA.editSel.ring);
-  if(i >= 0) ANA.editRings.splice(i, 1);
+  if(i >= 0){ ANA.editRings.splice(i, 1); ANA.editDirty = true; }
   ANA.editSel = null;
   drawAnaMap();
 }
@@ -781,7 +793,7 @@ function anaMapEditDelPoint(){
   const {ring, idx} = ANA.editSel;
   if(ring.length <= 3){ anaMapSetStatus("Ring braucht mindestens 3 Punkte — erst \"Ring −\""); return; }
   ring.splice(idx, 1);
-  ANA.editSel = null;
+  ANA.editSel = null; ANA.editDirty = true;
   drawAnaMap();
 }
 
@@ -796,16 +808,25 @@ async function anaMapEditSave(){
     await anaJson(`/maps/${type}`, {method:"POST", headers:{"Content-Type":"application/json"},
                                      body: JSON.stringify({rings})});
   }catch(e){ anaMapSetStatus("Fehler: " + e.message); return; }
+  // Gespeichert = fertig: zurueck in den Normalmodus (Tracks wieder anklickbar).
+  // Frueher blieb der Editor offen und der einzige Ausgang hiess "Verwerfen" -
+  // das sah aus, als wuerfe man damit die eben gespeicherte Karte weg.
+  const saved = rings.map(r => r.map(([x,y])=>[x,y]));
+  anaMapEditExit();   // beendet auch einen noch laufenden Poll einer frueheren Speicherung
+  // Solange pending ist, liefert /noshot|/rasenmap noch die ALTE bestaetigte Karte
+  // (map_status() spiegelt nur den Manager). Bis zur Bestaetigung deshalb die eben
+  // gespeicherten Ringe zeigen, sonst wirkt die Aenderung verschwunden.
+  if(type === "rasen") ANA.rasen = saved; else ANA.noshot = saved;
   anaMapSetStatus("gespeichert — wartet auf Manager …");
-  if(ANA.editPollTimer) clearInterval(ANA.editPollTimer);
+  drawAnaMap();
   ANA.editPollTimer = setInterval(async ()=>{
     let st;
     try{ st = await anaJson(type === "rasen" ? "/rasenmap" : "/noshot"); }catch(e){ return; }
+    if(st.pending) return;                       // noch nicht abgeholt - Anzeige so lassen
     if(type === "rasen") ANA.rasen = st.rings||[]; else ANA.noshot = st.rings||[];
-    if(!st.pending){
-      clearInterval(ANA.editPollTimer); ANA.editPollTimer = null;
-      anaMapSetStatus("übernommen als v" + st.version);
-    }
+    clearInterval(ANA.editPollTimer); ANA.editPollTimer = null;
+    anaMapSetStatus("übernommen als v" + st.version);
+    drawAnaMap();
   }, 3000);
 }
 
