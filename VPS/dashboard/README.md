@@ -27,17 +27,22 @@ Erreichbar unter **`http://<VPS-IP>/`** (Port 80).
 | Methode | Pfad | Zweck |
 |---|---|---|
 | `GET`  | `/` | Web-UI |
-| `POST` | `/ingest` | Manager-Push `{events,debug,hb,settings,poses}` |
+| `POST` | `/ingest` | Manager-Push `{events,debug,hb,settings,poses,maps}` |
 | `GET`  | `/state` | Debug + aktive Geräte + Minuten-Zusammenfassung |
 | `GET`  | `/events?since=N` | neue catObserved ab Index N (für die Karten) |
 | `POST` | `/reset` | akkumulierte Ereignisse löschen |
-| `GET`  | `/map` | RasenKarte-Punkte (aus dem GitHub-Repo) |
+| `GET`  | `/map` | Rasen-Punkte (Manager-Spiegel, Meter) für die Welt-Karte |
+| `GET`  | `/noshot` `/rasenmap` | No-Shot-/RasenKarte (Manager-Spiegel) als Ringe in Welt-mm |
+| `GET`  | `/maps/<typ>` | Manager holt eine pending Karte ab (204 = nichts pending) |
+| `POST` | `/maps/<typ>` | Editor speichert eine Kartenänderung als pending |
+| `POST` | `/mapsync` | Manager meldet die aktive Karte (Version/CRC + CSV) - siehe `MapConcept.md` |
 | `GET`  | `/manual_data` | Snapshot für die manuelle Pose-Seite (Geräte, gültige Posen, letzte Treffer) |
 | `POST` | `/manual_pose` | Manuell bestimmte Weltpose als Kommando-Sequenz an Sensor senden |
 | `GET`  | `/coverage_profiles` `/coverage_export` | gelernte Erfassungs-Polygone verwalten / kompakt für ESP32 exportieren |
 | `POST` | `/coverage_learn` `/coverage_delete` | Polygon aus Mäherperiode lernen / gelerntes Polygon deaktivieren |
 | `GET/POST` | `/rec` | Aufnahme-Status / Pause-Append |
 | `GET`  | `/density /adata /amodel /alabels /acoverage` | Analyse-Tab (Fenster-Daten, Tracks aus der Analysierer-DB, Abdeckungs-Sektoren) |
+| `GET`  | `/hbstats` | Sensor-Spuren der Zeitleiste: HB-Empfangsquote 0..1 je Bin+Sensor (aus `hb_minute`, null = keine Daten) |
 | `POST` | `/alabel /alabel_del /amark` | Labels + manuelle Track-Bewertung (Katze/Person/Vogel/Mäher/Insekt/Sturm/Störung/sicher keine Katze) |
 | `POST` | `/amerge /aunmerge` | Tracks zusammenkleben (gehören zum selben Tier) / Klebung lösen |
 | `GET`  | `/atracks` `/atracks.csv` | komplette Trackliste inkl. Bewertungen+Klebungen (JSON/CSV, separat verwendbar) |
@@ -75,8 +80,10 @@ automatisch einen kompletten Neuaufbau aus (Nummern werden neu vergeben;
 manuelle Bewertungen und Klebungen überleben über den stabilen Track-key).
 
 State liegt im RAM (Ereignisse kumulieren bis Reset; gehen bei Container-Neustart
-verloren). `RasenKarte.csv` wird aus dem Repo geladen (Fallback: ins Image
-gebacken).
+verloren). Der Kartenspiegel (No-Shot/Rasen) kommt ausschließlich vom Manager
+(`/mapsync`, siehe `MapConcept.md`) und geht bei Container-Neustart ebenfalls
+verloren, bis der Manager sich wieder meldet (Boot-Heartbeat via `/ingest`) —
+kein GitHub-Fetch/Fallback-CSV mehr im Image.
 
 ## Deployment
 

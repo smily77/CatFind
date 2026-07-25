@@ -71,9 +71,12 @@
 // Anzeige: HB-Blitz und Target-LED ein-/ausschaltbar. Automatik: Welt-Pose aus der Gruppe
 // uebernehmen und (Radar-Spezialfall) automatische Co-Observation-Kalibrierung.
 // Aktionen: Pose jetzt kopieren, Kalibrierung jetzt ausloesen.
-#define STG_SUPPORTED ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCopyPose)|(1u<<stgAutoCalib))
+// stgRadarFullRasen NICHT in STG_DEFAULT/STG_PERSIST: Default AUS (NoShot-gefiltert,
+// ruhiger Bus) und nicht persistiert - nach jedem Reboot wieder der ruhige Normalbetrieb,
+// unabhaengig davon, was vor dem letzten Neustart eingestellt war (s. Radar6_3_0.ino).
+#define STG_SUPPORTED ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCopyPose)|(1u<<stgAutoCalib)|(1u<<stgRadarFullRasen))
 #define STG_DEFAULT   ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCalib))   // Auto-Kalib default an
-#define STG_PERSIST   STG_SUPPORTED                                         // alle im NVS
+#define STG_PERSIST   ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCopyPose)|(1u<<stgAutoCalib))
 #define STG_ACTIONS   ((1u<<actCopyPose)|(1u<<actCalibrate)|(1u<<actClearPose))
 
 byte radarBuffer[30];
@@ -89,3 +92,18 @@ struct targetData {
 };
 targetData target[3];
 boolean newDataReady = false;
+
+// Verwaltungszustand je Filterkarte (NoShot/Rasen, siehe serviceFilterMaps in
+// Radar6_3_0.ino). MUSS hier im Header stehen, nicht im .ino: der Arduino-Builder
+// setzt Auto-Prototypen (serviceMapSlot nimmt MapSlot&) VOR den Sketch-Code -
+// ein im .ino definierter Struct waere dort noch unbekannt (gleiches Muster wie
+// catTrackDef.h beim Cat Identifier).
+struct MapSlot {
+  bool          loaded    = false;   // dieser Slot beim letzten Versuch erfolgreich geladen?
+  bool          synced    = false;   // ... UND dabei mit dem Manager abgeglichen (mapLastSynced).
+                                     // Nur dann darf bis zum stuendlichen Fangnetz gewartet werden -
+                                     // sonst faellt eine verlorene Anfrage erst nach 1 h auf.
+  unsigned long lastTry   = 0;       // letzter Beschaffungsversuch (0 = noch keiner)
+  bool          recheckNow = false;  // per Announce (mapInfo) sofortiger Re-Check angefordert
+  unsigned long recheckAt  = 0;      // fruehester Zeitpunkt dafuer (Announce-Versatz je Geraet)
+};

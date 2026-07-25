@@ -37,6 +37,7 @@ void ctSetDefaults() {
   CTP.storm_window_s = 3.0f; CTP.storm_rate_evts_s = 8.0f;
   CTP.storm_min_events = 12; CTP.storm_scatter_mm = 2500;
   CTP.fusion_distance_mm = 500; CTP.fusion_time_s = 0.7f;
+  CTP.quiet_t0_min = 900; CTP.quiet_t1_min = 990;   // NoShot-Zeit 15:00-16:30 lokal
 }
 
 // einen key=value-Eintrag anwenden (ms-Parameter werden hier in Sekunden gefuehrt)
@@ -78,6 +79,8 @@ static bool ctApplyParam(const String& k, float v) {
   else if (k == "storm_scatter_mm")    CTP.storm_scatter_mm = v;
   else if (k == "fusion_distance_mm")  CTP.fusion_distance_mm = v;
   else if (k == "fusion_time_ms")      CTP.fusion_time_s = v / 1000.0f;
+  else if (k == "quiet_t0_min")        CTP.quiet_t0_min = (int)v;
+  else if (k == "quiet_t1_min")        CTP.quiet_t1_min = (int)v;
   else return false;                   // unbekannt (z.B. reine VPS-Parameter) - ok
   return true;
 }
@@ -130,9 +133,42 @@ bool ctFetchParams() {
   return ok;
 }
 
+String ctQuietStr() {
+  if (CTP.quiet_t0_min == CTP.quiet_t1_min) return "aus";
+  char b[16];
+  snprintf(b, sizeof b, "%02d:%02d-%02d:%02d", CTP.quiet_t0_min / 60, CTP.quiet_t0_min % 60,
+           CTP.quiet_t1_min / 60, CTP.quiet_t1_min % 60);
+  return String(b);
+}
+
 String ctParamSummary() {
   return "confirm=" + String(CTP.confirm_score) + " maxPath=" +
-         String((int)(CTP.max_path_mm / 1000)) + "m edge=" + String((int)CTP.edge_dist_mm);
+         String((int)(CTP.max_path_mm / 1000)) + "m edge=" + String((int)CTP.edge_dist_mm) +
+         " ruhe=" + ctQuietStr();
+}
+
+// NoShot-Zeit (Maeher-Ruhefenster, quiet_t0_min..quiet_t1_min in lokalen Minuten seit
+// Mitternacht, konfiguriert ueber dieselben VPS-Parameter wie der Rest des Modells):
+// im Fenster wird das Modell nicht gefuettert und nie catDetected gesendet - Katze und
+// Maeher sind sich im Track zu aehnlich, und ein Fehlschuss auf den Maeher waere teuer
+// (sein Regensensor liesse ihn die Arbeit einstellen); eine im Fenster verpasste Katze
+// ist es nicht (Katzen meiden den laufenden Maeher ohnehin). t0 == t1 = deaktiviert,
+// t0 > t1 laeuft ueber Mitternacht. Uhr nie gestellt (NTP seit Boot nicht erreichbar)
+// -> fail-open, sonst waere das Geraet bis zum ersten NTP-Erfolg komplett blind.
+bool ctInQuietWindow() {
+  if (CTP.quiet_t0_min == CTP.quiet_t1_min) return false;
+  static time_t cachedSec = 0; static bool cachedIn = false;   // localtime_r max. 1x/s
+  time_t now = time(nullptr);
+  if (now == cachedSec) return cachedIn;
+  cachedSec = now;
+  struct tm lt;
+  localtime_r(&now, &lt);
+  if (lt.tm_year + 1900 < 2020) { cachedIn = false; return false; }  // Uhr laeuft noch nicht
+  int m = lt.tm_hour * 60 + lt.tm_min;
+  cachedIn = (CTP.quiet_t0_min < CTP.quiet_t1_min)
+               ? (m >= CTP.quiet_t0_min && m < CTP.quiet_t1_min)
+               : (m >= CTP.quiet_t0_min || m < CTP.quiet_t1_min);
+  return cachedIn;
 }
 
 

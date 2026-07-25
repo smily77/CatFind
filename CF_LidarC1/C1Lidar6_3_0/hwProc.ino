@@ -108,10 +108,32 @@ void finishInit() {
 
   phase = PH_NOSHOT; statusLeds();
   noShotOK = acquireNoShot(NOSHOT_PATH, device[Manager].IP, MAP_WAIT_MS);
+  noShotSynced = mapLastSynced;
+  lastNoShotTry = millis();          // serviceNoShotMap() zaehlt MAP_RETRY_MS/MAP_RECHECK_MS ab hier
 
   phase = myPose.validWorldPose ? PH_ACTIVE : PH_NOLOC;
   statusLeds();
   sendStatusText();
   sendSettingsReport();              // Einstellungen erneut annoncieren (Display/VPS)
   Serial << "Phase 2: Ueberwachung aktiv." << endl;
+}
+
+// No-Shot-Karte nach der Erstbeschaffung (finishInit) am Leben halten: ohne Karte alle
+// MAP_RETRY_MS neuer Versuch; MIT Karte zusaetzlich alle MAP_RECHECK_MS ein Fangnetz-
+// Re-Check UND sofort bei einem passenden mapInfo-Announce (mapRecheckNow, siehe loop()).
+void serviceNoShotMap() {
+  if (!calibrated) return;           // vor Phase 1 fertig: finishInit() erledigt die Erstbeschaffung
+  if (mapRecheckNow) {
+    if ((long)(millis() - mapRecheckAt) < 0) return;   // Announce-Versatz laeuft noch
+  } else {
+    // Nur eine ABGEGLICHENE Karte darf bis zum stuendlichen Fangnetz warten - sonst
+    // liefe der Filter womoeglich eine Stunde lang mit einer veralteten Karte.
+    unsigned long dueMs = (noShotOK && noShotSynced) ? MAP_RECHECK_MS : MAP_RETRY_MS;
+    if (lastNoShotTry != 0 && millis() - lastNoShotTry < dueMs) return;
+  }
+  lastNoShotTry = millis();
+  mapRecheckNow = false;
+  noShotOK = acquireNoShot(NOSHOT_PATH, device[Manager].IP, MAP_WAIT_MS);
+  noShotSynced = mapLastSynced;
+  sendUdpTextln(noShotOK ? "No-Shot-Karte aktuell" : "No-Shot-Karte nicht verfuegbar");
 }

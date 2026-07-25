@@ -11,11 +11,18 @@ auf einer Web-Seite dar:
 
 Endpunkte:
   GET  /                index.html (Single-Page-UI)
-  POST /ingest          Manager-Push: {"events":[...],"debug":[...],"hb":[...],"settings":[...]}
+  POST /ingest          Manager-Push: {"events":[...],"debug":[...],"hb":[...],"settings":[...],
+                        "maps":[{"type","version","crc"},...]}
   GET  /state           Debug + Geräte + Minuten-Zusammenfassung + Geräte-Einstellungen
   GET  /events?since=N  neue catObserved ab Index N (für die Karten)
   POST /reset           akkumulierte Ereignisse löschen
-  GET  /map             RasenKarte-Punkte (aus dem GitHub-Repo) für die Welt-Karte
+  GET  /map             Rasen-Punkte (Manager-Spiegel, Meter) für die Welt-Karte
+  GET  /noshot          No-Shot-Karte (Manager-Spiegel) als Ringe in Welt-mm
+  GET  /rasenmap        RasenKarte (Manager-Spiegel) als Ringe in Welt-mm (für den Editor)
+  GET  /maps/<typ>      Manager holt eine pending Karte ab (204 = nichts pending)
+  POST /maps/<typ>      Editor speichert eine Kartenänderung als pending {"rings":[[[x,y],...],...]}
+  POST /mapsync         Manager meldet die aktive Karte (Version/CRC in der Query, CSV im Body) -
+                        siehe MapConcept.md für den vollständigen Karten-Sync-Ablauf
   GET/POST /coverage_*  gelernte Sensor-Erfassungs-Polygone aus Mäherfahrten
                         inkl. /coverage_export(.csv) fuer CatIdentifier/ESP32
   GET  /manual_data     Daten fuer manuelle Sensor-Weltpose-Kalibration
@@ -30,6 +37,8 @@ Analyse (Aufgabe "VPS-Modellierung der Katzenerkennung", GesamtKonzeptCatFinder.
   ms-genaue Serverzeiten gerechnet (die Push-Zeit allein hätte 1,5-s-Raster).
   GET/POST /rec         Aufnahme-Status / Aufnahme ein-aus (Pause/Append)
   GET  /density         Ereignisdichte je Sender für die Zeitleiste (?t0&t1&bins)
+  GET  /hbstats         Sensor-Verfügbarkeit (HB-Empfangsquote 0..1 je Bin+Sensor,
+                        null = keine Daten) für die Sensor-Spuren der Zeitleiste
   GET  /adata           Events eines Zeitfensters (?t0&t1, ausgedünnt auf max_pts)
   GET  /amodel          Tracks eines Zeitfensters aus der Analysierer-DB lesen
                         (die ERKENNUNG läuft kontinuierlich im Hintergrund-Thread,
@@ -58,16 +67,12 @@ der Geräte per /ingest ("poses", aus poseReport). Daraus baut catmodel.
 build_coverage_geo die Abdeckungs-Sektoren — nach dem Versetzen eines Sensors
 stimmt der Bereich sofort wieder. Fallback ohne Posen: empirische Abdeckung.
 """
-import os, re, time, json, base64, sqlite3, threading, hashlib, traceback, urllib.request, zoneinfo
+import os, re, time, json, base64, sqlite3, threading, hashlib, traceback, urllib.request, urllib.error, zoneinfo
 from datetime import datetime
 from collections import deque, OrderedDict
 from flask import Flask, request, jsonify, send_from_directory, Response
 import catmodel
 
-MAP_URL      = os.environ.get(
-    "MAP_URL",
-    "https://raw.githubusercontent.com/smily77/CatFind/main/Map/RasenKarte.csv")
-FALLBACK_MAP = os.environ.get("FALLBACK_MAP", "/app/RasenKarte.csv")
 MAX_EVENTS   = int(os.environ.get("MAX_EVENTS", "20000"))
 HB_WINDOW_S  = int(os.environ.get("HB_WINDOW_S", "180"))    # "aktiv" = HB in den letzten 3 min
 DB_PATH      = os.environ.get("DB_PATH", "/data/catfinder.db")
@@ -81,9 +86,149 @@ except Exception:                                            # noqa: BLE001
 XCOMDEF_URL  = os.environ.get(
     "XCOMDEF_URL",
     "https://raw.githubusercontent.com/smily77/CatFind/main/Controller/Manager6_3_0/xComDef6_3.h")
-NOSHOT_URL   = os.environ.get(
-    "NOSHOT_URL",
-    "https://raw.githubusercontent.com/smily77/CatFind/main/Controller/Manager6_3_0/Manager6_3_0.ino")
+
+# --- Karten-Spiegel (MapConcept.md) ------------------------------------------------
+# Kein GitHub-Regex-Fetch mehr (frueher NOSHOT_URL -> Manager6_3_0.ino parsen bzw.
+# MAP_URL auf die Meter-RasenKarte): der VPS zeigt nur noch, was der Manager per
+# /mapsync SELBST bestaetigt hat - das ist immer der wirklich aktive Kartenstand,
+# nicht das, was zuletzt auf GitHub gepusht wurde. Ist der Spiegel leer (frischer
+# VPS, Manager noch nie verbunden), liefern /map und /noshot schlicht nichts.
+GITHUB_REPO      = os.environ.get("GITHUB_REPO", "smily77/CatFind")
+GITHUB_MAP_TOKEN = os.environ.get("GITHUB_MAP_TOKEN", "")   # Deploy-Token, nur Schreibrecht auf die zwei Pfade unten
+MAP_TYPE_ID   = {"noshot": 1, "rasen": 2}      # == mapNoShot/mapRasen in xComDef6_3.h
+# Single Source of Truth im Repo: Controller/Manager6_3_0/data/<typ>.csv - GENAU
+# der Ordner, aus dem das Arduino/ESP32-Tooling das LittleFS-Image fuer USB-/OTA-
+# Upload baut (siehe Controller/Manager6_3_0/KartenUpload.md). Map/backup/<typ>.csv
+# ist NUR eine zusaetzliche Sicherheitskopie, nie die Quelle.
+MAP_SOURCE_PATH = {"noshot": "Controller/Manager6_3_0/data/noshot.csv",
+                    "rasen":  "Controller/Manager6_3_0/data/rasen.csv"}
+MAP_BACKUP_PATH = {"noshot": "Map/backup/noshot.csv", "rasen": "Map/backup/rasen.csv"}
+# Zusaetzlich zur ueberschriebenen Backup-Kopie eine UNVERAENDERLICHE, pro
+# Version eigene Datei - durchblaetterbar (GitHub-Weboberflaeche/Datei-
+# Explorer) ohne Git-Kenntnisse. Git-Commit-Historie auf MAP_BACKUP_PATH/
+# MAP_SOURCE_PATH deckt dasselbe bereits ab (git log/show/checkout); dies
+# ist bewusst redundant dazu, auf Wunsch (siehe MapConcept.md). Waechst
+# unbegrenzt - kleine Text-Dateien, aber ohne Rotation/Aufraeumen bislang.
+MAP_HISTORY_DIR = "Map/backup/history"
+
+
+def _map_history_path(map_type, version):
+    return "%s/%s_v%05d.csv" % (MAP_HISTORY_DIR, map_type, int(version))
+MAP_CMD_FETCH = 28   # == cmdMapFetch (xComDef6_3.h): Manager holt eine pending Karte ab
+MAP_CMD_PUSH  = 29   # == cmdMapPush  (xComDef6_3.h): Manager meldet die aktive Karte (Re-Sync)
+MANAGER_TARGET = 0   # == #define Manager 0 (xComDef6_3.h device-Index)
+
+_map_mirror_lock = threading.Lock()
+_map_mirror = {}                 # {"noshot": {"version","crc","csv","rings","t"}, "rasen": {...}}
+_map_pending_lock = threading.Lock()
+_map_pending = {}                # {"noshot": {"csv","t"}, "rasen": {...}} - Editor "Speichern", bis
+                                  # der Manager sie abgeholt (und via /mapsync bestaetigt) hat
+_map_resync_requested = {}       # type -> letzter cmdMapPush-Anstoss (Anti-Spam in ingest())
+
+
+def _parse_map_csv(text):
+    """CSV (Kommentarzeilen '#', Ringe durch Leerzeile getrennt, 'x,y' in Welt-mm) -> Ringe."""
+    rings, ring = [], []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            if len(ring) >= 3:
+                rings.append(ring)
+            ring = []
+            continue
+        if line.startswith("#"):
+            continue
+        p = line.replace(";", ",").split(",")
+        try:
+            ring.append([int(float(p[0])), int(float(p[1]))])
+        except (ValueError, IndexError):
+            continue
+    if len(ring) >= 3:
+        rings.append(ring)
+    return rings
+
+
+def _map_plausible(text):
+    """EXAKT die Annahme-Regel des Managers (loadNoShot in xComProc6_3.h): mindestens
+    1 Ring und insgesamt >= 3 Punkte, wobei wie dort JEDE Nicht-Kommentar-Zeile mit
+    Komma als Punkt zaehlt (toInt() auf dem ESP32 macht aus Nicht-Zahlen eine 0,
+    verwirft die Zeile aber nicht). Bewusst NICHT strenger: waere der VPS strenger
+    als der Manager, koennte der Manager eine Karte melden, die der VPS ablehnt -
+    der /ingest-Kartenstand-Abgleich wuerde dann endlos cmdMapPush anstossen.
+    Schuetzt Spiegel und Repo-Commit vor komplett unplausiblen /mapsync-Bodies
+    (der Endpunkt ist unauthentifiziert, siehe MapConcept.md Review-Punkt 10)."""
+    rings = pts = cur = 0
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            if cur:
+                rings += 1
+                cur = 0
+            continue
+        if line.startswith("#") or "," not in line:
+            continue
+        pts += 1
+        cur += 1
+    if cur:
+        rings += 1
+    return rings >= 1 and pts >= 3
+
+
+# ALLE Repo-Commits serialisieren. Die GitHub Contents API baut jeden Commit auf
+# den aktuellen Branch-HEAD; zwei gleichzeitige Commits (auch auf VERSCHIEDENE
+# Dateien) forken vom selben Parent -> der zweite kollidiert (HTTP 409). Beim
+# VPS-Neustart schickt der Manager beide Karten quasi gleichzeitig, was genau
+# diesen Sturm ausloest. Nacheinander committen (je frischer HEAD) loest es;
+# Commits sind selten (nur bei Kartenaenderung) und wenige Dateien -> unkritisch.
+_gh_commit_lock = threading.Lock()
+
+
+def _github_commit_map(map_type, csv_text, version, path):
+    """Vom Manager bestaetigte Karte nach `path` committen (GitHub Contents API -
+    kein lokaler Git-Client/Checkout im Container noetig). Wird zweimal aufgerufen
+    (Source of truth + Backup, siehe mapsync()). Best-effort: ohne Token oder bei
+    Fehlern nur geloggt, nie fatal - die Kartenverteilung selbst haengt NICHT vom
+    Repo-Spiegel ab (Leitplanke 1, MapConcept.md)."""
+    if not GITHUB_MAP_TOKEN or not path:
+        return
+    api = "https://api.github.com/repos/%s/contents/%s" % (GITHUB_REPO, path)
+    headers = {"Authorization": "token " + GITHUB_MAP_TOKEN,
+               "Accept": "application/vnd.github+json",
+               "User-Agent": "CatFind-VPS"}
+    content_b64 = base64.b64encode(csv_text.encode("utf-8")).decode("ascii")
+    # Global serialisieren (s.o.); der 409-Retry bleibt als Netz fuer Rest-Races
+    # (fremde Pushes, GitHub-Eventual-Consistency): sha frisch holen, neu schreiben.
+    with _gh_commit_lock:
+      for attempt in range(3):
+        try:
+            sha = None
+            try:
+                with urllib.request.urlopen(urllib.request.Request(api, headers=headers), timeout=10) as r:
+                    sha = json.load(r).get("sha")
+            except urllib.error.HTTPError as e:
+                if e.code != 404:        # 404 = Datei existiert noch nicht -> sha bleibt None (Neuanlage)
+                    raise
+            payload = {
+                "message": "Karte %s: v%s vom Manager uebernommen (VPS-Editor)" % (map_type, version),
+                "content": content_b64,
+            }
+            if sha:
+                payload["sha"] = sha
+            req = urllib.request.Request(api, data=json.dumps(payload).encode("utf-8"),
+                                          headers=headers, method="PUT")
+            with urllib.request.urlopen(req, timeout=15) as r:
+                r.read()
+            print("map %s: v%s nach %s committet" % (map_type, version, path), flush=True)
+            return
+        except urllib.error.HTTPError as e:
+            if e.code == 409 and attempt < 2:
+                time.sleep(0.5 * (attempt + 1))   # kurz warten, dann sha neu holen
+                continue
+            print("map %s: Git-Commit fehlgeschlagen: %s" % (map_type, e), flush=True)
+            return
+        except Exception as e:                                    # noqa: BLE001
+            print("map %s: Git-Commit fehlgeschlagen: %s" % (map_type, e), flush=True)
+            return
 
 # Fallback-Geräteverzeichnis (Name/Typ/Gruppe/Erfassungsbereich), falls
 # xComDef6_3.h nicht erreichbar ist. Führend ist IMMER die live geparste
@@ -165,6 +310,14 @@ def dev_group(sid):
     d = _devtab.get(sid)
     return d["group"] if d else 0
 
+# --- Sensor-Verfuegbarkeit (HB-Quote je Minute, Spuren in der Analyse-Zeitleiste) ------
+# Typ (stationDefinitions in xComDef6_3.h) -> HB-Periode in Sekunden. Nur diese Typen
+# bekommen eine Spur; kuenftige Sensortypen hier ergaenzen. Hinweis: LD06 sendet Stand
+# heute gar keinen HB (CF3_LD06_Lidar/LD06_6_3_0/REVIEW_6_3.md) - seine Spur bleibt
+# grau ("keine Daten"), bis die Firmware einen HB bekommt.
+HB_SENSOR_PERIOD_S = {"HLK": 5, "Lidar": 10, "Kamera": 10}
+_hb_zero_minute = [0]            # zuletzt mit 0-Zeilen angelegte Minute (Liste = mutabel)
+
 _lock = threading.Lock()
 _debug = deque(maxlen=80)        # {t, msg}
 _devices = {}                    # sender -> {t, ip}
@@ -192,10 +345,6 @@ def _sysmsg(msg):
 
 _cmd_lock = threading.Lock()
 _cmd_queue = []                  # [(target, cmd, info)]  Webinterface -> Manager -> Bus
-
-_map_lock = threading.Lock()
-_map = []                        # [[x,y],...] Meter
-_map_ts = 0.0
 
 # ---------------------------------------------------------------- Persistenz (SQLite im Docker-Volume)
 
@@ -255,6 +404,13 @@ def init_db():
         pose_head REAL, pose_mir INT, pose_hash TEXT, polygon_json TEXT,
         point_count INT, source_t0 REAL, source_t1 REAL, quality REAL,
         created REAL, note TEXT)""")
+    # Sensor-Verfuegbarkeit: empfangene Heartbeats je Minute+Sender (Spuren in der
+    # Analyse-Zeitleiste, /hbstats). Rein additiv - bestehende Tabellen/Daten bleiben
+    # unberuehrt; Minuten VOR der Einfuehrung haben schlicht keine Zeilen (Anzeige:
+    # grau = keine Daten). Zeile mit cnt=0 = Manager hat gepusht, Sensor schwieg (rot).
+    _db.execute("""CREATE TABLE IF NOT EXISTS hb_minute(
+        minute INTEGER NOT NULL, sender INTEGER NOT NULL,
+        cnt INTEGER NOT NULL, PRIMARY KEY(minute, sender))""")
     _db.commit()
     row = _db.execute("SELECT v FROM meta WHERE k='rec'").fetchone()
     _rec_on = (row is None) or (row[0] == "1")   # Default: Aufnahme AN
@@ -316,76 +472,22 @@ def save_params(p):
         json.dump(p, f, indent=2, sort_keys=True)
 
 
-def load_map():
-    global _map, _map_ts
-    with _map_lock:
-        if _map and time.time() - _map_ts < 600:
-            return
-        text = None
-        try:
-            with urllib.request.urlopen(MAP_URL, timeout=10) as r:
-                text = r.read().decode("utf-8", "replace")
-        except Exception as e:                                  # noqa: BLE001
-            print("map fetch failed: %s" % e, flush=True)
-        if text is None and os.path.exists(FALLBACK_MAP):
-            text = open(FALLBACK_MAP, encoding="utf-8", errors="replace").read()
-        pts = []
-        if text:
-            for line in text.splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                p = line.replace(";", ",").split(",")
-                try:
-                    pts.append([float(p[0]), float(p[1])])
-                except (ValueError, IndexError):
-                    continue
-        if pts:
-            _map, _map_ts = pts, time.time()
-            print("map loaded: %d points" % len(pts), flush=True)
+def map_mirror_rings(map_type):
+    """Aktuelle Ringe eines Kartentyps aus dem Manager-Spiegel (leer = noch nichts
+    bestaetigt - kein GitHub-Fallback mehr, siehe /mapsync und _map_mirror oben)."""
+    with _map_mirror_lock:
+        return list(_map_mirror.get(map_type, {}).get("rings", []))
 
 
-_noshot, _noshot_ts = None, 0.0
-_noshot_lock = threading.Lock()
-
-def load_noshot():
-    # No-Shot-Karte (erlaubte Schusszone, Welt-mm) fürs Karten-Overlay. Quelle =
-    # NOSHOT_DEFAULT-Seed im Manager-Quellcode (GitHub main, wie xComDef) — der
-    # Manager verteilt dieselbe Karte aus seinem LittleFS an die Aktoren
-    # (Kartenänderung = git push + Manager-Update). Mehrere Ringe durch
-    # Leerzeile getrennt.
-    global _noshot, _noshot_ts
-    with _noshot_lock:
-        if _noshot is not None and time.time() - _noshot_ts < 600:
-            return _noshot
-        rings = []
-        try:
-            with urllib.request.urlopen(NOSHOT_URL, timeout=10) as r:
-                src = r.read().decode("utf-8", "replace")
-            m = re.search(r'NOSHOT_DEFAULT\[\]\s*=\s*R"CSV\((.*?)\)CSV"', src, re.S)
-            ring = []
-            for line in (m.group(1) if m else "").splitlines():
-                line = line.strip()
-                if line.startswith("#"):
-                    continue
-                if not line:
-                    if len(ring) >= 3:
-                        rings.append(ring)
-                    ring = []
-                    continue
-                p = line.replace(";", ",").split(",")
-                try:
-                    ring.append([int(float(p[0])), int(float(p[1]))])
-                except (ValueError, IndexError):
-                    continue
-            if len(ring) >= 3:
-                rings.append(ring)
-        except Exception as e:                                  # noqa: BLE001
-            print("noshot fetch failed: %s" % e, flush=True)
-        if rings or _noshot is None:
-            _noshot = rings
-        _noshot_ts = time.time()
-        return _noshot
+def map_status(map_type):
+    """Ringe + Version + Pending-Status - fuer den Editor (Statuszeile "wartet auf
+    Manager..." -> "uebernommen als vN"), siehe analysis.js anaMapEditPoll()."""
+    with _map_mirror_lock:
+        m = _map_mirror.get(map_type, {})
+        rings, version = list(m.get("rings", [])), int(m.get("version", 0))
+    with _map_pending_lock:
+        pending = map_type in _map_pending
+    return {"rings": rings, "version": version, "pending": pending}
 
 
 app = Flask(__name__, static_folder="static")
@@ -426,11 +528,14 @@ def ingest():
     with _lock:
         for m in data.get("debug", []):
             _debug.append({"t": now, "msg": str(m)[:200]})
+        hb_counts = {}                   # sender -> HBs in diesem Push (fuer hb_minute)
         for h in data.get("hb", []):
             sid = int(h.get("sender", -1))
             # dz = im Sensor eingestellte Totzone (mm, aus radarHbPayload; 0 = keine)
             _devices[sid] = {"t": now, "ip": int(h.get("ip", 0)),
                              "dz": float(h.get("dz", 0) or 0)}
+            if sid >= 0:
+                hb_counts[sid] = hb_counts.get(sid, 0) + 1
         for s in data.get("settings", []):
             sid = int(s.get("sender", -1))
             _settings[sid] = {"sup": int(s.get("sup", 0)), "val": int(s.get("val", 0)),
@@ -475,6 +580,29 @@ def ingest():
             global _events_base
             _events_base += cut
     dropped = int(data.get("dropped", 0) or 0)
+    # HB-Zaehlung je Minute+Sender (Sensor-Spuren der Analyse-Zeitleiste, /hbstats).
+    # Beim Minutenwechsel 0-Zeilen fuer ALLE Spur-Sensoren anlegen: so bleibt "Zeile
+    # mit 0" (Manager pusht, Sensor schweigt -> rot) unterscheidbar von "keine Zeile"
+    # (VPS/Manager down bzw. Zeit vor der Einfuehrung -> grau). Laeuft unabhaengig
+    # von der Aufnahme (_rec_on) - die Diagnose braucht man gerade dann, wenn etwas
+    # nicht laeuft.
+    hb_minute = int(now // 60)
+    hb_wrote = False
+    with _db_lock:
+        if hb_minute != _hb_zero_minute[0]:
+            _hb_zero_minute[0] = hb_minute
+            for hsid, hd in load_devices().items():
+                if hd["type"] in HB_SENSOR_PERIOD_S:
+                    _db.execute("INSERT OR IGNORE INTO hb_minute(minute,sender,cnt) "
+                                "VALUES(?,?,0)", (hb_minute, hsid))
+                    hb_wrote = True
+        for hsid, n in hb_counts.items():
+            _db.execute("INSERT INTO hb_minute(minute,sender,cnt) VALUES(?,?,?) "
+                        "ON CONFLICT(minute,sender) DO UPDATE SET cnt=cnt+excluded.cnt",
+                        (hb_minute, hsid, n))
+            hb_wrote = True
+        if hb_wrote:
+            _db.commit()
     if pose_rows or invalid_pose_sids:
         with _db_lock:
             if pose_rows:
@@ -504,6 +632,28 @@ def ingest():
                 _db.execute("INSERT INTO drops(t,dropped) VALUES(?,?)", (now, dropped))
             if changed or db_rows or dropped:
                 _db.commit()
+    # Leichter Kartenstand-Heartbeat (Version/CRC, kein Body - siehe gwFlush im
+    # Manager): weicht er vom Spiegel ab (z.B. nach einem Notweg-Flash, oder der
+    # Spiegel ist noch leer), stoesst der VPS per cmdMapPush ueber /commands einen
+    # Re-Sync an (der Manager postet dann die volle CSV an /mapsync). Anti-Spam:
+    # hoechstens alle 60s pro Kartentyp, sonst wuerde jeder gwFlush (1,5s) erneut anstossen.
+    for mp in data.get("maps", []):
+        typ = mp.get("type")
+        if typ not in MAP_TYPE_ID:
+            continue
+        version = int(mp.get("version", 0) or 0)
+        if not version:
+            continue                                       # Manager hat selbst noch keine Karte
+        crc = int(mp.get("crc", 0) or 0)
+        with _map_mirror_lock:
+            mirrored = _map_mirror.get(typ)
+        if mirrored and mirrored.get("version") == version and mirrored.get("crc") == crc:
+            continue                                        # Spiegel schon aktuell
+        if now - _map_resync_requested.get(typ, 0) < 60:
+            continue
+        _map_resync_requested[typ] = now
+        with _cmd_lock:
+            _cmd_queue.append((MANAGER_TARGET, MAP_CMD_PUSH, MAP_TYPE_ID[typ]))
     return jsonify(ok=True)
 
 
@@ -578,15 +728,110 @@ def reset():
 
 @app.get("/map")
 def get_map():
-    load_map()
-    with _map_lock:
-        return jsonify(points=_map)
+    # Weltkarten-Hintergrund (Rasen-Umriss): Spiegel vom Manager (Welt-mm -> Meter
+    # fuers bestehende Frontend-Format; einzelne Punkte, keine Ringlinien - das
+    # Frontend zeichnet sie ohnehin nur als Punktwolke, siehe index.html). Ringe
+    # werden dafuer flach zusammengefasst (Loecher sind fuer den Hintergrund
+    # irrelevant); die strukturierte Variante liefert /noshot fuer den Editor.
+    rings = map_mirror_rings("rasen")
+    pts = [[x / 1000.0, y / 1000.0] for ring in rings for x, y in ring]
+    return jsonify(points=pts)
 
 
 @app.get("/noshot")
 def get_noshot():
-    # No-Shot-Karte (erlaubte Schusszone) als Ringe in Welt-mm.
-    return jsonify(rings=load_noshot() or [])
+    # No-Shot-Karte (erlaubte Schusszone) als Ringe in Welt-mm - Spiegel vom Manager,
+    # plus version/pending fuer die Editor-Statuszeile (siehe map_status()).
+    return jsonify(**map_status("noshot"))
+
+
+@app.get("/rasenmap")
+def get_rasenmap():
+    # RasenKarte (Relevanzfilter) als Ringe in Welt-mm - fuer den Karten-Editor
+    # (derselbe Editor bearbeitet NoShot UND Rasen, siehe analysis.js).
+    return jsonify(**map_status("rasen"))
+
+
+@app.get("/maps/<typ>")
+def maps_get(typ):
+    # Regulaerer Weg: der Manager holt eine vom Editor gespeicherte pending Karte
+    # ab (ausgeloest durch cmdMapFetch aus /commands). 204 = nichts pending -
+    # das ist der Normalfall, kein Fehler.
+    if typ not in MAP_TYPE_ID:
+        return "", 404
+    with _map_pending_lock:
+        p = _map_pending.get(typ)
+    if not p:
+        return "", 204
+    return p["csv"], 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+
+@app.post("/maps/<typ>")
+def maps_post(typ):
+    # Editor "Speichern": Ring-Rohdaten (OHNE Versions-Header - den vergibt
+    # ausschliesslich der Manager) als pending ablegen und den Manager beim
+    # naechsten /commands-Poll zum Abholen auffordern.
+    if typ not in MAP_TYPE_ID:
+        return jsonify(error="unbekannter Kartentyp"), 404
+    d = request.get_json(force=True, silent=True) or {}
+    rings = d.get("rings") or []
+    if not rings or not all(isinstance(r, list) and len(r) >= 3 for r in rings):
+        return jsonify(error="jeder Ring braucht mindestens 3 Punkte"), 400
+    lines = []
+    for i, ring in enumerate(rings):
+        if i:
+            lines.append("")
+        for pt in ring:
+            lines.append("%d,%d" % (int(round(float(pt[0]))), int(round(float(pt[1])))))
+    csv_text = "\n".join(lines) + "\n"
+    with _map_pending_lock:
+        _map_pending[typ] = {"csv": csv_text, "t": time.time()}
+    with _cmd_lock:
+        _cmd_queue.append((MANAGER_TARGET, MAP_CMD_FETCH, MAP_TYPE_ID[typ]))
+    _sysmsg("Karte %s: Aenderung gespeichert, wartet auf Manager" % typ)
+    return jsonify(ok=True, pending=True)
+
+
+@app.post("/mapsync")
+def mapsync():
+    # Manager meldet die aktive Karte (gleich welcher Herkunft - VPS-Weg oder
+    # Notweg-Flash): Version/CRC in der Query, CSV-Text im Body. Der VPS
+    # uebernimmt sie in den Spiegel und committet sie bei Abweichung ins Repo.
+    typ = request.args.get("type", "")
+    if typ not in MAP_TYPE_ID:
+        return jsonify(error="unbekannter Kartentyp"), 404
+    version = request.args.get("version", type=int) or 0
+    crc = request.args.get("crc", type=int) or 0
+    csv_text = request.get_data(as_text=True) or ""
+    if not _map_plausible(csv_text):
+        # Spiegel/Repo unveraendert lassen - eine Karte, die nicht mal die
+        # Manager-Annahmeregel erfuellt, kann nicht vom Manager stammen.
+        _sysmsg("Karte %s: /mapsync mit unplausibler CSV abgelehnt" % typ)
+        return jsonify(error="unplausible Karte (mind. 1 Ring, 3 Punkte)"), 400
+    rings = _parse_map_csv(csv_text)
+
+    with _map_mirror_lock:
+        old = _map_mirror.get(typ)
+        changed = not old or old.get("version") != version or old.get("crc") != crc
+        _map_mirror[typ] = {"version": version, "crc": crc, "csv": csv_text,
+                             "rings": rings, "t": time.time()}
+    with _map_pending_lock:
+        was_pending = _map_pending.pop(typ, None) is not None
+    if was_pending:
+        _sysmsg("Karte %s: uebernommen als v%d" % (typ, version))
+    if changed:
+        # Source of truth (Controller/Manager6_3_0/data/), ueberschriebene
+        # Backup-Kopie (Map/backup/) UND eine unveraenderliche, pro Version
+        # eigene Verlaufsdatei (Map/backup/history/) committen - drei
+        # separate Contents-API-Calls, da die GitHub-API immer nur eine
+        # Datei pro Aufruf schreibt.
+        threading.Thread(target=_github_commit_map,
+                          args=(typ, csv_text, version, MAP_SOURCE_PATH.get(typ)), daemon=True).start()
+        threading.Thread(target=_github_commit_map,
+                          args=(typ, csv_text, version, MAP_BACKUP_PATH.get(typ)), daemon=True).start()
+        threading.Thread(target=_github_commit_map,
+                          args=(typ, csv_text, version, _map_history_path(typ, version)), daemon=True).start()
+    return jsonify(ok=True)
 
 
 
@@ -738,6 +983,69 @@ def density():
                             "ORDER BY t0", (t0, t1)).fetchall()
     return jsonify(t0=t0, t1=t1, bins=bins, per_sender=per, drops=drops,
                    spans=[[a, b] for a, b in spans])
+
+
+@app.get("/hbstats")
+def hbstats():
+    # Sensor-Verfuegbarkeit fuer die Spuren der Analyse-Zeitleiste: je Bin und
+    # Sensor die HB-Empfangsquote 0..1 (empfangene / erwartete Heartbeats laut
+    # HB_SENSOR_PERIOD_S), null = keine Daten (Zeit vor der Einfuehrung oder
+    # VPS/Manager down). Quelle: hb_minute (jeder vom Manager weitergereichte HB
+    # wird beim /ingest je Minute+Sender gezaehlt). Viele fehlende HBs = schwaches
+    # WiFi = auch viele verlorene catObserved - deshalb Quote statt an/aus.
+    t0, t1 = _win_args(default_all=True)
+    bins = min(max(int(request.args.get("bins", "600")), 10), 2000)
+    if t0 is None or t1 is None or t1 <= t0:
+        return jsonify(t0=t0, t1=t1, bins=0, bin_s=0, senders=[])
+    with _db_lock:
+        rows = _db.execute("SELECT minute,sender,cnt FROM hb_minute "
+                           "WHERE minute>=? AND minute<=?",
+                           (int(t0 // 60), int(t1 // 60))).fetchall()
+    devtab = load_devices()
+    lanes = [(sid, d) for sid, d in sorted(devtab.items())
+             if d["type"] in HB_SENSOR_PERIOD_S]
+    bt = (t1 - t0) / bins
+    now = time.time()
+
+    # Abdeckung je Bin: Sekunden, in denen die Zaehlung ueberhaupt lief (irgendeine
+    # hb_minute-Zeile vorhanden; die angebrochene aktuelle Minute nur bis "jetzt").
+    # Die ERWARTUNG bezieht sich auf diese Abdeckung, nicht auf die volle Bin-Breite -
+    # sonst wuerde ein grober Bin, der Daten-Minuten UND datenlose Zeit (vor der
+    # Einfuehrung / VPS down) mischt, die Quote faelschlich verwaessern (rot zeigen,
+    # obwohl der Sensor in der abgedeckten Zeit sauber lief).
+    def spread(a, b, weight, arr):
+        """Intervall [a,b] anteilig (weight je Sekunde) auf die Bins verteilen."""
+        i0, i1 = int((a - t0) / bt), int((b - t0) / bt)
+        for i in range(max(i0, 0), min(i1, bins - 1) + 1):
+            ov = min(b, t0 + (i + 1) * bt) - max(a, t0 + i * bt)
+            if ov > 0:
+                arr[i] += ov * weight
+
+    cov = [0.0] * bins
+    for minute in {r[0] for r in rows}:
+        a = minute * 60.0
+        b = min(a + 60.0, now)
+        if b > a:
+            spread(a, b, 1.0, cov)
+    got = {sid: [0.0] * bins for sid, _ in lanes}
+    for minute, sender, cnt in rows:
+        arr = got.get(sender)
+        if arr is None or not cnt:
+            continue
+        a = minute * 60.0
+        b = min(a + 60.0, now)           # HBs fielen in den bereits vergangenen Teil
+        if b > a:
+            spread(a, b, cnt / (b - a), arr)
+
+    senders = []
+    for sid, d in lanes:
+        period = HB_SENSOR_PERIOD_S[d["type"]]
+        q = [None if cov[i] <= 0
+             else round(min(got[sid][i] / (cov[i] / period), 1.0), 3)
+             for i in range(bins)]
+        senders.append({"id": sid, "name": d["name"], "type": d["type"],
+                        "period_s": period, "q": q})
+    return jsonify(t0=t0, t1=t1, bins=bins, bin_s=bt, senders=senders)
 
 
 @app.get("/adata")
@@ -1722,7 +2030,6 @@ def alabel_del():
 
 
 init_db()
-load_map()
 load_devices()
 # kontinuierlicher Analysierer: Trackerkennung läuft ab jetzt im Hintergrund
 # über die ganze Aufnahme — unabhängig davon, was im Browser betrachtet wird
