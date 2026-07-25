@@ -521,8 +521,11 @@ document.getElementById("reset").onclick=async()=>{
 
 function renderDebug(rows){
   const el=document.getElementById("debug");
+  // Nur "kleben", wenn der Nutzer ohnehin (fast) unten ist — sonst bleibt
+  // seine hochgescrollte Position erhalten, statt bei jedem Poll zurückzuspringen.
+  const stick = (el.scrollHeight - el.scrollTop - el.clientHeight) < 24;
   el.innerHTML = rows.map(r=>`<div class="row"><span class="t">${fmtTime(r.t)}</span>  ${escapeHtml(r.msg)}</div>`).join("");
-  el.scrollTop = el.scrollHeight;
+  if(stick) el.scrollTop = el.scrollHeight;
 }
 function renderDevices(devs, now){
   document.getElementById("devs").innerHTML = devs.map(d=>{
