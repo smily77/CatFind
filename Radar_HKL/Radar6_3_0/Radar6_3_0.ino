@@ -35,19 +35,34 @@ posPayload obsData;
 #define HEALTH_ASSOC_MM    1500   // groessere Distanz = anderes Ziel -> nicht bewerten
 #define HEALTH_MAX_BAD        8   // so viele schlechte Messungen in Folge -> Pose verwerfen
 
-// RasenKarte (Rasen-Umriss in Welt-mm, vom Manager per mapRasen bezogen): mit gueltiger
-// Welt-Pose werden nur Ziele INNERHALB des Rasens gemeldet (Nachbargrundstueck/Strasse
-// im 7-m-Radarkegel erzeugen sonst Dauer-Stoerungen). Ohne Karte/Pose: alles melden.
-#define RASEN_PATH        "/rasen.csv"
+// Filterkarte: standardmaessig NoShot (kleinere, ruhigere Karte - wie CatIdentifier/Lidar),
+// per stgRadarFullRasen umschaltbar auf die volle RasenKarte (mehr Randdaten, z.B. fuer eine
+// NoShot-Editier-Session im VPS, aber mehr Bus-/VPS-Traffic). Mit gueltiger Welt-Pose werden
+// nur Ziele INNERHALB der jeweils aktiven Karte gemeldet (Nachbargrundstueck/Strasse im
+// 7-m-Radarkegel erzeugen sonst Dauer-Stoerungen). Ohne Karte/Pose: alles melden.
+#define NOSHOT_PATH        "/noshot.csv"
+#define RASEN_PATH         "/rasen.csv"
 #define MAP_WAIT_MS        6000   // so lange auf mapInfo/Chunks vom Manager warten
 #define MAP_RETRY_MS      60000   // Karte nicht bekommen -> so lange bis zum naechsten Versuch
+#define MAP_RECHECK_MS  3600000UL // Fangnetz: auch mit geladener Karte stuendlich neu pruefen
+                                  // (ein mapInfo-Announce kann per UDP verlorengehen - kein Resend)
+#define MAP_ANNOUNCE_SLOT_MS 300  // Versatz je Geraet nach einem Announce (ID % 10 * diesen Wert:
+                                  // die real vergebenen IDs 0-3/17-19 liefern so lauter
+                                  // verschiedene Slots, serveMap braucht je Karte ~0,1 s)
 
 int32_t  lastTargetX = 0, lastTargetY = 0;   // juengste eigene Detektion (fuer Health-Check)
 unsigned long lastTargetMs = 0;              // wann zuletzt ein Radar-Target aktiv war
 unsigned long lastWorldObsMs = 0;            // wann zuletzt eine welt-valide catObserved kam
 unsigned long autoArmMs = 0;                 // seit wann Co-Observation anliegt (0 = nicht)
-bool     rasenLoaded = false;                // RasenKarte im RAM (insideNoShot nutzbar)
-unsigned long lastMapTry = 0;                // letzter Beschaffungsversuch (0 = noch keiner)
+
+// Zwei unabhaengig gepflegte Karten-Slots (NoShot/Rasen, struct MapSlot in hwDef.h -
+// Auto-Prototypen!); insideNoShot() wirkt aber immer nur auf EINEN im RAM geladenen
+// Puffer (acquireMap endet intern mit loadNoShot). Deshalb nach jedem Slot-Refresh in
+// serviceFilterMaps() immer neu durchsetzen, welche Karte laut aktuellem
+// stgRadarFullRasen gerade aktiv sein soll - unabhaengig davon, welcher Slot zuletzt lud.
+MapSlot noshotSlot, rasenSlot;
+bool filterMapActive = false;   // insgesamt EINE Karte aktiv nutzbar (insideNoShot sinnvoll)?
+bool activeIsRasen   = false;   // welche der beiden zuletzt in den RAM-Puffer geladen wurde
 
 #include <xComProc6_3.h>
 
@@ -89,7 +104,7 @@ void loop() {
   if (Serial2.available()) readRadar();
   if (newDataReady) { processTargets(); newDataReady = false; }
   serviceCalibration();
-  serviceRasenMap();
+  serviceFilterMaps();
 }
 
 // Kommando per Unicast: Kalibrierfenster per Knopf/commandMsg starten.
@@ -123,6 +138,20 @@ void handleCommand(const xMsg& m) {
 // (im Fenster sammeln; sonst Health-Check der eigenen Pose).
 void handleObservation(const xMsg& m) {
   if (handleCommonMsg(m)) return;    // settingsRequest/poseRequest (Broadcast) generisch
+  if (m.header.msgCode == mapInfo) {  // Announce: Manager hat eine Karte angenommen (gwAcceptMap)
+    // Versatz je Geraet (aus der eigenen ID): sonst fragen nach dem Announce alle
+    // Sensoren im selben Moment an und der Manager kann nur einen bedienen.
+    unsigned long due = millis() + MAP_ANNOUNCE_SLOT_MS * (unsigned long)(ID % 10);
+    if (mapAnnounceOutdated(m, mapNoShot, NOSHOT_PATH)) {
+      noshotSlot.loaded = false; noshotSlot.synced = false;
+      noshotSlot.recheckNow = true; noshotSlot.recheckAt = due;
+    }
+    if (mapAnnounceOutdated(m, mapRasen,  RASEN_PATH)) {
+      rasenSlot.loaded = false; rasenSlot.synced = false;
+      rasenSlot.recheckNow = true; rasenSlot.recheckAt = due + MAP_ANNOUNCE_SLOT_MS * 10;
+    }
+    return;
+  }
   if (m.header.msgCode != catObserved || m.header.sender == ID) return;
   posPayload obs;
   if (!getPayload(m, obs) || !obs.worldValid) return;   // nur welt-valide Quellen taugen
@@ -149,9 +178,10 @@ void handleObservation(const xMsg& m) {
 
 // Radar-Frame auswerten: catObserved (mit Welt-Koordinaten, falls Pose gueltig) senden,
 // im Kalibrierfenster die eigenen Bahnen sammeln, juengstes Target fuer Health-Check merken.
-// Mit gueltiger Welt-Pose UND geladener RasenKarte werden Ziele AUSSERHALB des Rasens
-// nicht gemeldet (Nachbargrundstueck/Strasse); Kalibrier-Sammlung und Health-Check
-// arbeiten weiter mit ALLEN Zielen (die Referenzperson koennte am Rand stehen).
+// Mit gueltiger Welt-Pose UND geladener Filterkarte (NoShot oder RasenKarte, siehe
+// serviceFilterMaps) werden Ziele AUSSERHALB davon nicht gemeldet (Nachbargrundstueck/
+// Strasse); Kalibrier-Sammlung und Health-Check arbeiten weiter mit ALLEN Zielen (die
+// Referenzperson koennte am Rand stehen).
 void processTargets() {
   boolean validTarget = false;
   for (int i = 0; i < 3; i++) {
@@ -167,24 +197,54 @@ void processTargets() {
       fillWorld(obsData);                              // worldX/worldY/worldValid aus myPose
       if (calib.active) coCalibFeedLocal(calib, i, target[i].x, target[i].y);
       lastTargetX = target[i].x; lastTargetY = target[i].y; lastTargetMs = millis();
-      if (obsData.worldValid && rasenLoaded &&
-          !insideNoShot(obsData.worldX, obsData.worldY)) continue;   // ausserhalb des Rasens
+      if (obsData.worldValid && filterMapActive &&
+          !insideNoShot(obsData.worldX, obsData.worldY)) continue;   // ausserhalb der Filterkarte
       broadcastMsg(catObserved, obsData);
     }
   }
   setPixel(maxPix, (validTarget && settingOn(stgCatLed)) ? 0x0000FF : 0x000000);  // Anzeige schaltbar
 }
 
-// RasenKarte beschaffen, sobald eine gueltige Welt-Pose da ist (vorher nuetzt sie nichts):
-// erst lokaler LittleFS-Cache + Versionsabgleich beim Manager, sonst Download (acquireMap
-// blockiert dabei bis MAP_WAIT_MS - passiert nur einmal bzw. alle MAP_RETRY_MS).
-void serviceRasenMap() {
-  if (rasenLoaded || !myPose.validWorldPose || calib.active) return;
-  if (lastMapTry != 0 && millis() - lastMapTry < MAP_RETRY_MS) return;
-  lastMapTry = millis();
-  rasenLoaded = acquireMap(mapRasen, RASEN_PATH, device[Manager].IP, MAP_WAIT_MS);
-  sendUdpTextln(rasenLoaded ? "RasenKarte geladen - melde nur Ziele auf dem Rasen"
-                            : "RasenKarte nicht verfuegbar - melde ungefiltert");
+// Einen Karten-Slot beschaffen (lokaler LittleFS-Cache + Versionsabgleich beim Manager,
+// sonst Download - acquireMap blockiert dabei bis MAP_WAIT_MS). Ohne Karte alle MAP_RETRY_MS
+// neuer Versuch; MIT geladener Karte zusaetzlich alle MAP_RECHECK_MS ein Fangnetz-Re-Check UND
+// sofort bei passendem mapInfo-Announce (recheckNow, siehe handleObservation). Liefert true,
+// wenn tatsaechlich ein Beschaffungsversuch stattfand (der RAM-Puffer also frisch ueberschrieben
+// wurde und die aktive Karte ggf. neu durchgesetzt werden muss).
+bool serviceMapSlot(MapSlot& slot, uint8_t mapType, const char* path) {
+  if (slot.recheckNow) {
+    if ((long)(millis() - slot.recheckAt) < 0) return false;   // Announce-Versatz laeuft noch
+  } else {
+    // Nur eine ABGEGLICHENE Karte darf bis zum stuendlichen Fangnetz warten. Ohne
+    // Abgleich (kein mapInfo/Download abgebrochen) laeuft der Filter womoeglich mit
+    // einer veralteten Karte -> in MAP_RETRY_MS erneut versuchen.
+    unsigned long dueMs = (slot.loaded && slot.synced) ? MAP_RECHECK_MS : MAP_RETRY_MS;
+    if (slot.lastTry != 0 && millis() - slot.lastTry < dueMs) return false;
+  }
+  slot.lastTry = millis();
+  slot.recheckNow = false;
+  slot.loaded = acquireMap(mapType, path, device[Manager].IP, MAP_WAIT_MS);
+  slot.synced = mapLastSynced;
+  return true;
+}
+
+// Beide Karten unabhaengig aktuell halten, danach IMMER die laut stgRadarFullRasen aktuell
+// gewuenschte Karte in den (einzigen, geteilten) RAM-Puffer laden - acquireMap() ueberschreibt
+// diesen Puffer bei jedem Refresh, ganz gleich welcher Slot gerade dran war, darum reicht ein
+// Slot-Refresh allein nicht: die "andere" Karte koennte danach im Puffer stehen.
+void serviceFilterMaps() {
+  if (!myPose.validWorldPose || calib.active) return;
+  bool noshotTouched = serviceMapSlot(noshotSlot, mapNoShot, NOSHOT_PATH);
+  bool rasenTouched  = serviceMapSlot(rasenSlot,  mapRasen,  RASEN_PATH);
+  bool wantRasen = settingOn(stgRadarFullRasen);
+  MapSlot& wantSlot = wantRasen ? rasenSlot : noshotSlot;
+  if (wantRasen != activeIsRasen || noshotTouched || rasenTouched) {
+    activeIsRasen = wantRasen;
+    filterMapActive = wantSlot.loaded && loadNoShot(wantRasen ? RASEN_PATH : NOSHOT_PATH);
+    sendUdpTextln(filterMapActive
+      ? (String(wantRasen ? "RasenKarte" : "NoShot-Karte") + " aktiv - melde nur Ziele darin")
+      : (String(wantRasen ? "RasenKarte" : "NoShot-Karte") + " nicht verfuegbar - melde ungefiltert"));
+  }
 }
 
 // Kalibrierfenster abschliessen bzw. Auto-Trigger bedienen.

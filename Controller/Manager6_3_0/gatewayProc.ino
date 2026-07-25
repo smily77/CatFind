@@ -95,6 +95,180 @@ void gwAddHb(uint8_t sender, uint8_t ip, uint16_t dz) {
   if (gwHbN < GW_MAX_HB) { gwHb[gwHbN].sender = sender; gwHb[gwHbN].ip = ip; gwHb[gwHbN].dz = dz; gwHbN++; }
 }
 
+//---------------------------------------------------------------------------------------
+// Karten-Sync mit dem VPS (MapConcept.md). Der Manager bleibt Master im LittleFS;
+// der VPS-Editor ist der reguläre Weg fürs ÄNDERN (Annahme-Code hier, Pull über
+// /commands+HTTP GET, siehe gwFetchMap). Notweg ohne VPS: Map/<typ>.csv im Repo von
+// Hand anpassen + Firmware/LittleFS-Image neu flashen (kein Netzwerk-Endpunkt nötig).
+//---------------------------------------------------------------------------------------
+
+// Version/CRC-Cache, damit gwFlush() sie GUENSTIG (ohne LittleFS-Lesen) mitschicken
+// kann. Wird beim Boot (ensureMaps -> gwRefreshMapStatus) und nach jeder angenommenen
+// Kartenaenderung aktualisiert - dazwischen aendert sich die Datei nicht.
+static uint16_t gwMapVer[3] = { 0, 0, 0 };   // Index mapNoShot(1)/mapRasen(2), 0 ungenutzt
+static uint32_t gwMapCrc[3] = { 0, 0, 0 };
+
+static const char* gwMapTypeName(uint8_t mapType) { return (mapType == mapRasen) ? "rasen" : "noshot"; }
+static const char* gwMapTypePath(uint8_t mapType) { return (mapType == mapRasen) ? RASEN_PATH : NOSHOT_PATH; }
+
+// Aus ensureMaps() (Boot) und nach jeder angenommenen Kartenaenderung aufgerufen.
+void gwRefreshMapStatus() {
+  uint16_t v; uint32_t crc, len;
+  gwMapVer[mapNoShot] = mapFileInfo(NOSHOT_PATH, v, crc, len) ? v : 0;
+  gwMapCrc[mapNoShot] = gwMapVer[mapNoShot] ? crc : 0;
+  gwMapVer[mapRasen]  = mapFileInfo(RASEN_PATH,  v, crc, len) ? v : 0;
+  gwMapCrc[mapRasen]  = gwMapVer[mapRasen]  ? crc : 0;
+  if (gwMapVer[mapNoShot] == 0) Serial << "noshot: keine Karte im LittleFS - warte auf VPS/Notweg" << endl;
+  else Serial << "noshot map: v" << gwMapVer[mapNoShot] << " crc=0x" << String(gwMapCrc[mapNoShot], HEX) << endl;
+  if (gwMapVer[mapRasen] == 0) Serial << "rasen: keine Karte im LittleFS - warte auf VPS/Notweg" << endl;
+  else Serial << "rasen map: v" << gwMapVer[mapRasen] << " crc=0x" << String(gwMapCrc[mapRasen], HEX) << endl;
+}
+
+static mapInfoPayload gwMapInfoFor(uint8_t mapType) {
+  mapInfoPayload info{};
+  uint16_t v; uint32_t crc, len;
+  if (mapFileInfo(gwMapTypePath(mapType), v, crc, len)) {
+    info.mapType = mapType; info.version = v; info.fileCrc = crc; info.totalLen = len;
+    info.chunkSize = mapChunkBytes;
+    info.chunkCount = len ? (uint16_t)((len + mapChunkBytes - 1) / mapChunkBytes) : 0;
+  }
+  return info;
+}
+
+// Aus ensureMaps() (Boot) aufrufen: vorhandene Karten sofort annoncieren, statt
+// darauf zu warten, dass Sensoren sie zufaellig selbst anfordern oder bis zu
+// MAP_RECHECK_MS (Fangnetz, stuendlich) auf einen Re-Check warten. Wichtig fuer
+// den Notweg: nach einem manuellen LittleFS-Reflash + Reboot des Managers
+// bekommen Sensoren die neue Version so binnen Sekunden mit, nicht erst nach
+// bis zu einer Stunde (siehe Controller/Manager6_3_0/KartenUpload.md).
+void gwAnnounceMaps() {
+  if (gwMapVer[mapNoShot]) broadcastMsg(mapInfo, gwMapInfoFor(mapNoShot));
+  if (gwMapVer[mapRasen])  broadcastMsg(mapInfo, gwMapInfoFor(mapRasen));
+}
+
+// Annahme-Code: Rohdaten (Ring-Punkte je Zeile "x,y", Leerzeile = Ringende; eine
+// evtl. mitgeschickte erste Kommentarzeile wird verworfen - Version/Header vergibt
+// AUSSCHLIESSLICH der Manager) validieren, Version hochzaehlen, atomar ins LittleFS
+// schreiben. Bei Fehler: ablehnen, alte Karte bleibt unveraendert aktiv (es gibt
+// keinen Zustand "kaputte Karte").
+static bool gwAcceptMap(uint8_t mapType, const String& rawCsv) {
+  const char* tag  = gwMapTypeName(mapType);
+  const char* path = gwMapTypePath(mapType);
+  String pendingPath = String(path) + ".pending";
+
+  LittleFS.remove(pendingPath.c_str());
+  { File f = LittleFS.open(pendingPath.c_str(), "w");
+    if (!f) { sendUdpTextln("Karte " + String(tag) + ": Temp-Datei fehlgeschlagen"); return false; }
+    f.print(rawCsv);
+    f.close(); }
+
+  // Validierung ueber den vorhandenen Ring-Parser (jeder Ring >= 3 Punkte, Datei
+  // parsebar) - derselbe Code, den die Sensoren zum Laden nutzen (loadNoShot ist
+  // generisch fuer No-Shot UND Rasen, siehe Dokumentation_6_3.md).
+  if (!loadNoShot(pendingPath.c_str())) {
+    LittleFS.remove(pendingPath.c_str());
+    sendUdpTextln("Karte " + String(tag) + ": Validierung fehlgeschlagen - abgelehnt, alte Karte bleibt aktiv");
+    return false;
+  }
+
+  uint16_t newVersion = gwMapVer[mapType] + 1;
+  String body; body.reserve(rawCsv.length() + 8);
+  { File f = LittleFS.open(pendingPath.c_str(), "r");
+    bool first = true;
+    while (f && f.available()) {
+      String line = f.readStringUntil('\n');
+      line.trim();                                                      // CR/Whitespace weg (wie loadNoShot)
+      if (first && line.startsWith("#")) { first = false; continue; }   // fremden Header verwerfen
+      first = false;
+      body += line; body += '\n';
+    }
+    if (f) f.close(); }
+  LittleFS.remove(pendingPath.c_str());
+
+  // Das "crc=" im Header ist rein informativ (fuers menschliche Lesen der CSV) -
+  // NICHT identisch mit dem fileCrc aus mapFileInfo/mapInfoPayload (der deckt die
+  // ganze Datei INKL. Header ab, waere also selbstreferenziell). Hier bewusst nur
+  // die CRC ueber die Ring-Daten OHNE Header.
+  String header = "# " + String(mapType == mapRasen ? "RasenKarte" : "NoShotZone") +
+                  " v" + String(newVersion) + "  crc=0x" +
+                  String(crc32Bytes((const uint8_t*)body.c_str(), body.length()), HEX) +
+                  "  units=mm  frame=world\n";
+
+  String finalContent = header + body;
+  if (finalContent.length() > MAP_RX_BUF_BYTES) {   // dasselbe Limit wie beim UDP-Kartenempfang
+    sendUdpTextln("Karte " + String(tag) + ": zu gross (" + String(finalContent.length()) +
+                  " > " + String(MAP_RX_BUF_BYTES) + " B) - abgelehnt");
+    return false;
+  }
+
+  String finalTmp = String(path) + ".tmp";
+  LittleFS.remove(finalTmp.c_str());
+  { File f = LittleFS.open(finalTmp.c_str(), "w");
+    if (!f || f.print(finalContent) != (int)finalContent.length()) {
+      if (f) f.close();
+      LittleFS.remove(finalTmp.c_str());
+      sendUdpTextln("Karte " + String(tag) + ": LittleFS-Schreiben fehlgeschlagen");
+      return false;
+    }
+    f.close(); }
+  LittleFS.remove(path);
+  LittleFS.rename(finalTmp.c_str(), path);
+
+  gwRefreshMapStatus();
+  sendUdpTextln("Karte " + String(tag) + ": uebernommen als v" + String(gwMapVer[mapType]));
+  broadcastMsg(mapInfo, gwMapInfoFor(mapType));   // Announce: Sensoren vergleichen + laden bei Abweichung neu
+  return true;
+}
+
+// Aktuelle Karte (gleich welcher Herkunft - VPS-Weg oder Notweg-Flash) an /mapsync
+// melden. Der VPS committet sie bei Versions-/CRC-Abweichung automatisch ins
+// Git-Repo (Map/<typ>.csv) - siehe MapConcept.md.
+void gwPushMap(uint8_t mapType) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  const char* tag  = gwMapTypeName(mapType);
+  const char* path = gwMapTypePath(mapType);
+  uint16_t v; uint32_t crc, len;
+  if (!mapFileInfo(path, v, crc, len)) return;      // keine Karte vorhanden -> nichts zu melden
+  File f = LittleFS.open(path, "r");
+  if (!f) return;
+  String content; content.reserve(len + 1);
+  while (f.available()) content += (char)f.read();
+  f.close();
+
+  HTTPClient http;
+  String url = "http://" + ipVPS.toString() + ":80/mapsync?type=" + String(tag) +
+               "&version=" + String(v) + "&crc=" + String(crc);
+  if (http.begin(url)) {
+    http.addHeader("Content-Type", "text/plain");
+    http.setTimeout(5000);
+    http.POST(content);
+    http.end();
+  }
+}
+
+// Pending Karte vom VPS abholen (regulärer Weg: VPS-Editor -> /commands -> hier).
+// Ausgelöst durch cmdMapFetch aus der /commands-Queue (siehe gwInjectCommand).
+void gwFetchMap(uint8_t mapType) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  const char* tag = gwMapTypeName(mapType);
+  HTTPClient http;
+  String url = "http://" + ipVPS.toString() + ":80/maps/" + String(tag) + "?pending=1";
+  if (!http.begin(url)) return;
+  http.setTimeout(5000);
+  int code = http.GET();
+  if (code == 200) {
+    String csvBody = http.getString();
+    http.end();
+    if (csvBody.length() == 0) return;              // leer -> nichts zu tun
+    gwAcceptMap(mapType, csvBody);                   // meldet Erfolg/Ablehnung selbst per sendUdpTextln
+    gwPushMap(mapType);                               // Annahme (bzw. unveraenderte alte Karte) zurueckmelden
+  } else {
+    http.end();
+    if (code != 204 && code != 404)                  // 204/404 = nichts pending, kein Fehler
+      Serial << "gwFetchMap " << tag << ": HTTP " << code << endl;
+  }
+}
+
 void gwFlush() {
   if (WiFi.status() != WL_CONNECTED) return;   // Puffer BEHALTEN - naechster Flush versucht es erneut
                                                // (Ueberlauf faengt der Burst-Schutz/gwDropped ab)
@@ -138,6 +312,12 @@ void gwFlush() {
           + ",\"x\":" + String(gwPose[i].x) + ",\"y\":" + String(gwPose[i].y)
           + ",\"head\":" + String(gwPose[i].head, 1) + ",\"mir\":" + String(gwPose[i].mir) + "}";
   }
+  // Leichter Kartenstand (Version/CRC, kein Body) - aus dem Cache, kein LittleFS-
+  // Zugriff im Hot Path. Der VPS erkennt daran Abweichungen (z.B. nach einem
+  // Notweg-Flash) und stoesst per cmdMapPush ueber /commands einen Re-Sync an.
+  body += "],\"maps\":[";
+  body += "{\"type\":\"noshot\",\"version\":" + String(gwMapVer[mapNoShot]) + ",\"crc\":" + String(gwMapCrc[mapNoShot]) + "}";
+  body += ",{\"type\":\"rasen\",\"version\":" + String(gwMapVer[mapRasen]) + ",\"crc\":" + String(gwMapCrc[mapRasen]) + "}";
   body += "]}";
 
   HTTPClient http;
@@ -162,6 +342,10 @@ void gwFlush() {
 // wirkt als Gateway. target 255 = Broadcast settingsRequest (alle melden ihre Einstellungen),
 // target 254 = Broadcast poseRequest (alle melden ihre Welt-Pose -> Erfassungssektoren).
 void gwInjectCommand(int target, int cmd, long info) {
+  // Karten-Sync: kein Bus-Kommando, sondern ein direkter HTTP-Aufruf des Managers
+  // zum VPS (info = Kartentyp mapNoShot/mapRasen) - siehe cmdMapFetch/cmdMapPush.
+  if (cmd == cmdMapFetch) { gwFetchMap((uint8_t)info); return; }
+  if (cmd == cmdMapPush)  { gwPushMap((uint8_t)info); return; }
   if (target == 255) { broadcastMsg(settingsRequest); return; }
   if (target == 254) { broadcastMsg(poseRequest); return; }
   if (target < 0 || target >= deviceCount) return;

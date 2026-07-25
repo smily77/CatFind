@@ -243,7 +243,9 @@ wenn `worldValid==1`:
 **settingsPayload** (6 Bytes) — Einstellungen & Aktionen eines Geräts (Antwort auf
 `settingsRequest`). Bit-Indizes: `stgHbLed(0)`, `stgCatLed(1)`, `stgAutoCopyPose(2)`,
 `stgAutoCalib(3)`, `stgLidarMotor(4)`, `stgCatDetLed(5)` (Manager: rotes Blinken beim
-catDetected-Empfang), `stgCamAi(6)` (Cat Cam: Vision-KI-Erkennung an/aus); Aktionen
+catDetected-Empfang), `stgCamAi(6)` (Cat Cam: Vision-KI-Erkennung an/aus),
+`stgRadarFullRasen(7)` (HLK-Radar: volle RasenKarte statt NoShot-gefiltert melden,
+nicht persistiert — siehe Kap. 5.2); Aktionen
 `actCopyPose(0)`, `actCalibrate(1)`, `actClearPose(2)`, `actReloadParams(3)` (CatIdent:
 Modell-Parameter neu vom VPS), `actPhoto(4)` (CatCam: Foto jetzt):
 
@@ -532,15 +534,91 @@ Gemeinsame Prozeduren in `xComProc6_3.h`:
 | `acquireMap(mapType, path, mgrOctet, waitMs)` | Sensor | Komplettablauf: Cache laden, Version prüfen, ggf. Download |
 | `acquireNoShot(path, mgrOctet, waitMs)` | Sensor | Kurzform `acquireMap(mapNoShot, …)` |
 | `loadNoShot(path)` / `insideNoShot(x,y)` | Sensor | Polygon-Karte in RAM laden / Welt-Punkt-Test (generisch für No-Shot UND Rasen) |
+| `mapAnnounceOutdated(msg, mapType, path)` | Sensor | unaufgefordertes `mapInfo` (Announce) auswerten: weicht es von der lokalen Version/CRC ab? |
 
-Auf dem **Manager** werden beide Karten beim ersten Boot aus im Sketch
-eingebetteten Defaults ins LittleFS geschrieben (`ensureMaps()`), falls dort noch
-keine liegen. Die No-Shot-Karte entsteht mit dem Zeichen-Tool
-`Lidar_C1_Prog/Position_estimate/map_draw/`; das RasenKarten-Seed ist aus
-`Map/RasenKarte.csv` generiert (Meter → mm, ×1000 gerundet) — **bei
-Kartenänderung** Seed im Manager-Sketch neu erzeugen, Version im Header
-hochzählen und `/rasen.csv` im Manager-FS löschen (die Geräte laden bei
-Versions-/CRC-Abweichung automatisch neu).
+#### Karten-Quelle: VPS-Editor statt Firmware-Defaults
+
+Karten liegen **nicht** mehr im Firmware-Quellcode (siehe `MapConcept.md` im
+Repo-Root für das vollständige Konzept). Einziger regulärer Weg, eine Karte zu
+ändern, ist der VPS-Editor im Analyse-Tab; er läuft über den bestehenden
+`/commands`-Kanal (Pull statt Push, der VPS kann den Manager nicht direkt
+erreichen):
+
+```
+Editor speichert  ──►  VPS: Karte als "pending" ablegen
+                        │
+/commands-Poll (Manager, alle paar Sekunden)
+                        │  Kommando cmdMapFetch (info=mapType)
+                        ▼
+Manager: HTTP GET /maps/<typ>?pending=1 vom VPS
+                        │
+Annahme-Code (gwAcceptMap, gatewayProc.ino):
+  validieren (loadNoShot-Ringparser) → Version = alte+1, CRC neu,
+  Header schreiben → atomar ins LittleFS (Temp + Rename)
+                        │
+                        ├─► broadcastMsg(mapInfo, …)   Announce an alle Geräte
+                        └─► HTTP POST /mapsync (gwPushMap)  Bestätigung an den VPS
+                                                             → VPS-Spiegel + Git-Commit nach
+                                                               Controller/Manager6_3_0/data/<typ>.csv
+                                                               (Source of Truth) + Map/backup/<typ>.csv
+                                                               + Map/backup/history/<typ>_v<N>.csv
+```
+
+- **Annahme-Code** (`gwAcceptMap` in `gatewayProc.ino`): Rohdaten (Ring-Punkte,
+  ohne gültigen Versions-Header — den vergibt ausschließlich der Manager)
+  werden über denselben Ring-Parser wie beim Laden validiert (`loadNoShot`
+  auf eine Temp-Datei). Bei Fehler: ablehnen, alte Karte bleibt unverändert
+  aktiv — es gibt keinen Zustand „kaputte Karte“.
+- **Announce statt Warten:** nach jeder angenommenen Karte broadcastet der
+  Manager unaufgefordert `mapInfo` (Multicast). Geräte vergleichen mit ihrer
+  lokalen Version/CRC (`mapAnnounceOutdated`) und rufen bei Abweichung ihr
+  `acquireMap()` zeitnah erneut auf, statt bis zum nächsten periodischen
+  Versuch zu warten.
+- **Fangnetz:** zusätzlich prüfen Radar (`Radar6_3_0.ino`, `serviceFilterMaps`
+  — hält NoShot **und** Rasen unabhängig in zwei `MapSlot`s aktuell, siehe
+  unten), LidarC1 (`hwProc.ino`, `serviceNoShotMap`) und CatIdentifier
+  (`hwProc.ino`, `serviceNoShotMap`) auch mit bereits geladener Karte
+  periodisch nach (`MAP_RECHECK_MS`, stündlich) — ein UDP-Announce kann
+  verlorengehen, es gibt kein Resend.
+- **Kartenstand-Spiegel:** der Manager meldet Version/CRC beider Karten
+  leichtgewichtig in jedem `/ingest`-Push mit (`"maps":[…]`, aus einem Cache,
+  kein LittleFS-Zugriff im Hot Path). Weicht der VPS-Spiegel ab (z. B. weil
+  jemand die Karte am Manager vorbei per Notweg geändert hat), stößt der VPS
+  per `cmdMapPush` einen Re-Sync an — der Manager postet dann die volle CSV an
+  `/mapsync`. Details, Endpunkte und Sicherheitsüberlegungen: `MapConcept.md`.
+- **Notweg ohne VPS:** `Controller/Manager6_3_0/data/noshot.csv` bzw.
+  `.../data/rasen.csv` im Repo von Hand anpassen (das ist die Source of
+  Truth — genau der Ordner, aus dem das Arduino/ESP32-Tooling das
+  LittleFS-Image baut) und per USB oder OTA flashen. Bewusst kein eigener
+  Netzwerk-Upload-Endpunkt am Manager (kleinere Angriffsfläche für die
+  Schuss-Freigabezone im lokalen Netz). Nach dem Reboot annonciert der
+  Manager seinen Kartenstand sofort (`gwAnnounceMaps()` in `ensureMaps()`),
+  Sensoren laden also zeitnah nach, nicht erst nach dem stündlichen
+  Fangnetz. Ausführliche Schritt-für-Schritt-Anleitung (USB **und** OTA,
+  inkl. konkreter Befehle): `Controller/Manager6_3_0/KartenUpload.md`.
+
+**Welches Programm nutzt welche Karte** (Details/Troubleshooting in
+`KartenUpload.md`):
+
+| Programm | Karte | Wofür |
+|---|---|---|
+| Manager6_3_0 | beide (Master) | hält beide im LittleFS, verteilt per `mapRequest`/`mapInfo`/`mapChunk` |
+| C1Lidar6_3_0 (LidarC1) | NoShot | Fire-Gating (`insideNoShot` vor jedem `catObserved`) |
+| Radar6_3_0 (HLK-Radar) | NoShot (Default) / Rasen (umschaltbar) | Relevanzfilter (Ziele außerhalb werden nicht gemeldet); Umschalter `stgRadarFullRasen` — Default NoShot-gefiltert (ruhig), für Editier-Sessions temporär volle RasenKarte, nicht persistiert |
+| CatId6_3_0 (CatIdentifier) | NoShot | Modellfilter: nur `catObserved` innerhalb NoShot füttert das Erkennungsmodell |
+| LD06_6_3_0, alle übrigen Programme | keine | keine Polygon-Karte im Einsatz |
+
+**Strategie-Hintergrund (NoShot-Filterung deutlich effektiver als gedacht):**
+Eine Analyse der realen `catObserved`-Daten (`VPS/dashboard/analyze_noshot_filter.py`,
+Juli 2026) zeigte, dass der Anteil kohärent bewegter (glaubwürdiger) Punkte
+durch reines Filtern auf „innerhalb NoShot“ von ca. 20 % auf über 90 % steigt
+— deutlich mehr, als ein reiner Mäher-Zeitfenster-Ausschluss bringt (das
+Modell verwirft lange Mäher-Spuren ohnehin über `max_path_mm`). Deshalb
+filtert seit dieser Iteration auch der CatIdentifier intern mit NoShot statt
+nur mit der (größeren) RasenKarte, und der Radar meldet standardmäßig
+NoShot-gefiltert statt voller RasenKarte — mit einer Umschaltoption für
+NoShot-Editier-Sessions, in denen man auch die Randbereiche außerhalb der
+Schusszone sehen möchte.
 
 ---
 
@@ -573,10 +651,12 @@ Jedes Programm folgt demselben Grundgerüst:
   Manager dedupt über identische Payload, damit nur einmal geblinkt und einmal
   ins VPS-Debug geloggt wird.
 - Feste IP .180, OTA aktiv.
-- **Karten-Server:** hält die No-Shot-Karte im LittleFS (`/noshot.csv`) und
-  beantwortet `mapRequest` per `serveMap()` (siehe Kap. 4.2). Beim Boot wird die
-  Karte aus einer eingebetteten Default-Karte ins LittleFS geschrieben, falls dort
-  noch keine liegt.
+- **Karten-Server:** hält No-Shot- und RasenKarte im LittleFS (`/noshot.csv`,
+  `/rasen.csv`) und beantwortet `mapRequest` per `serveMap()` (siehe Kap. 4.2).
+  Keine eingebetteten Default-Karten mehr im Sketch — einzige Quelle ist der
+  VPS-Editor (`gwAcceptMap`/`gwFetchMap`/`gwPushMap`, `gatewayProc.ino`; Notweg
+  ohne VPS: Repo-CSV anpassen + neu flashen). Ohne Karte im LittleFS antwortet
+  der Manager auf `mapRequest` schlicht nicht.
 - **VPS-Gateway (Treffervisualisierung):** der Manager lauscht ohnehin auf dem
   Bus und leitet `catObserved`, `HB` und die Text-Debug-Meldungen gebündelt per
   HTTP-POST an das VPS-Dashboard weiter (`ipVPS:80/ingest`, ~alle 1,5 s,
@@ -640,16 +720,29 @@ beide Bahnen und liefert die Transformation (Details: GesamtKonzeptCatFinder.md,
   Verwerfung dauerhaft bestehen.
 - **Nach Kalibrierung:** eigene `catObserved` tragen zusätzlich `worldX/worldY`
   (`worldValid=1`) via `localToWorld`.
-- **RasenKarte-Gating:** sobald eine gültige Welt-Pose vorliegt, bezieht das Radar die
-  **RasenKarte** vom Manager (`mapRasen`, gechunktes UDP wie die No-Shot-Karte, LittleFS-
-  Cache mit Versions-/CRC-Abgleich, Retry alle 60 s) und meldet nur noch Ziele **innerhalb
-  des Rasens** — Nachbargrundstück/Straße im 7-m-Radarkegel erzeugen sonst Dauer-
-  Störungen. Kalibrier-Sammlung und Health-Check arbeiten weiter mit allen Zielen. Ohne
-  Karte oder ohne Pose wird ungefiltert gemeldet (fail-open). Die **No-Shot-Karte** lädt
-  das Radar bewusst nicht — es schießt nicht; No-Shot prüft der Aktor.
-- **Einstellungen (Kap. 5.12):** HB-/Target-Anzeige schaltbar, Auto-Kalibrierung und
-  Auto-Pose-Übernahme schaltbar (NVS); Aktionen „Kalibrieren", „Pose kopieren" und
-  „Pose löschen" (`cmdClearPose`, verwirft die gespeicherte Welt-Pose, siehe 5.11).
+- **Filterkarten-Gating (umschaltbar, `serviceFilterMaps`):** sobald eine gültige
+  Welt-Pose vorliegt, hält das Radar **beide** Karten (NoShot und Rasen, je ein
+  eigener `MapSlot` mit Versions-/CRC-Abgleich, Retry alle 60 s, stündliches
+  Fangnetz) unabhängig aktuell und meldet nur noch Ziele **innerhalb der gerade
+  aktiven Karte**. **Default: NoShot** (dieselbe kleinere, „schießbare" Fläche
+  wie beim Aktor/CatIdentifier) — eine Analyse realer Daten zeigte, dass reines
+  NoShot-Filtern den Anteil kohärent bewegter (glaubwürdiger) Punkte massiv
+  erhöht, weit über das hinaus, was ein Rasen-Filter allein bringt
+  (`VPS/dashboard/analyze_noshot_filter.py`). Per Einstellung **„Radar: volle
+  RasenKarte melden"** (`stgRadarFullRasen`, Kap. 5.12/VPS-Steuerung) lässt sich
+  temporär auf die größere RasenKarte umschalten — praktisch für eine
+  NoShot-Editier-Session im Analyse-Tab, in der man auch die Randbereiche
+  außerhalb der Schusszone sehen will. Diese Einstellung ist **nicht
+  persistiert**: nach jedem Reboot startet das Radar wieder im ruhigen
+  NoShot-gefilterten Normalbetrieb. Kalibrier-Sammlung und Health-Check
+  arbeiten immer mit allen Zielen (ungefiltert) — nur das gemeldete
+  `catObserved` wird gegated. Ohne Karte oder ohne Pose wird ungefiltert
+  gemeldet (fail-open).
+- **Einstellungen (Kap. 5.12):** HB-/Target-Anzeige schaltbar, Auto-Kalibrierung,
+  Auto-Pose-Übernahme und „volle RasenKarte melden" schaltbar (letztere NICHT
+  im NVS persistiert, alle anderen schon); Aktionen „Kalibrieren", „Pose
+  kopieren" und „Pose löschen" (`cmdClearPose`, verwirft die gespeicherte
+  Welt-Pose, siehe 5.11).
 
 ### 5.3 LD06_6_3_0 — Lidar-Sensor
 
@@ -885,7 +978,24 @@ gespeichert; **Lidar-Motor** an/aus (`lidar.stop()`/`startScan()`), Default an u
 > GitHub). UI: Die **Zeitleiste zeigt genau das gewählte Zeitfenster**
 > (Ereignisdichte je Sender, Zeit-Gitter, Aufnahme-Band, Labels, rote
 > CatDetected-Punkte); Ziehen = verschieben, Mausrad = strecken/stauchen,
-> „Alles" = ganze Aufnahme, Shift+Ziehen = Bereich für Label. Welt-Karte mit
+> „Alles" = ganze Aufnahme, Shift+Ziehen = Bereich für Label.
+> **Sensor-Spuren (WLAN-Verfügbarkeit):** unter der Dichte je Sensor ein
+> Farbband mit der **HB-Empfangsquote** — der Manager reicht jeden
+> empfangenen Heartbeat per `/ingest` weiter, der VPS zählt sie je
+> Minute+Sender in der Tabelle `hb_minute` (rein additiv, alte Daten bleiben
+> unberührt) und `/hbstats` liefert daraus die Quote empfangen/erwartet je
+> Zeit-Bin (HB-Perioden je Typ: HLK 5 s, Lidar/Kamera 10 s,
+> `HB_SENSOR_PERIOD_S` in `dashboard.py` — neue Sensortypen dort ergänzen).
+> **Grün** = alle erwarteten HBs kamen an, über gelb/orange nach **rot** =
+> keine; **grau** = keine Daten (Zeit vor der Einführung oder VPS/Manager
+> down). Bewusst eine Quote statt an/aus: einzelne fehlende HBs sind
+> normale UDP-Verluste, aber eine sinkende Quote zeigt ein schwächelndes
+> WLAN — und damit auch verlorene `catObserved` — lange bevor der Sensor
+> ganz verschwindet. Die Erwartung bezieht sich je Bin nur auf die
+> tatsächlich abgedeckten Minuten, damit grobe Zoomstufen an den Rändern
+> der Aufzeichnung die Quote nicht verwässern. Hinweis: der LD06 sendet
+> Stand heute keinen HB (siehe `CF3_LD06_Lidar/LD06_6_3_0/REVIEW_6_3.md`) —
+> seine Spur bleibt grau, bis die Firmware einen bekommt. Welt-Karte mit
 > Pan/Zoom, Sensoren einzeln ausblendbar, Labels (Katze/Störungsarten)
 > persistent. **Erfassungsbereiche**: die Sensoren tragen ihren nominellen
 > Bereich in `xComDef6_3.h` (`covLeftDeg/covRightDeg/covRangeMm`; HLK-Radar
@@ -911,8 +1021,13 @@ gespeichert; **Lidar-Motor** an/aus (`lidar.stop()`/`startScan()`), Default an u
 > „✕ Störung"/„🚫 sicher keine Katze" (persistent; keine Markierung =
 > einverstanden; alles außer Katze zählt als „keine Katze"), oben die
 > **Übereinstimmung Modell↔Mensch**; Modell-Flags als Chips. Der angeklickte
-> Track wird **gelb** in Karte und Zeitleiste hervorgehoben; mehrere Tracks
-> lassen sich **zusammenkleben** (gehören zum selben Tier). Knopf
+> Track wird **gelb** in Karte und Zeitleiste hervorgehoben; Tracks lassen
+> sich **sowohl in der Liste als auch direkt auf der Karte anklicken**
+> (nächstgelegene Track-Linie im Klickradius; nochmal klicken oder Klick ins
+> Leere = abwählen; die Liste scrollt zum gewählten Track — praktisch beim
+> Kategorisieren: Track auf der Karte anklicken, Bewertung in der Liste
+> setzen). Mehrere Tracks lassen sich **zusammenkleben** (gehören zum selben
+> Tier). Knopf
 > **„Modell-Check"** (`/avalidate`) prüft das Modell gegen alle bewerteten
 > Tracks; die Trackliste ist als **CSV** exportierbar (`/atracks.csv`).
 > **RoboMäher**: Label „Mäher" = Analyse-Ausschlussfenster (aufgezeichnet
@@ -977,10 +1092,10 @@ aller aktiven Geräte per Touch bedienen lassen (siehe GesamtKonzeptCatFinder.md
 - **Bedienmodell:** Jedes Gerät führt eine Bitmaske `mySettings` (`deviceSettings`):
   `supported`/`values`/`actions`. WELCHE Bits ein Gerät hat, legt seine `hwDef.h` über
   `STG_SUPPORTED`/`STG_DEFAULT`/`STG_PERSIST`/`STG_ACTIONS` fest. `initSettings()` lädt die
-  persistierten Bits aus dem NVS-Namespace `"devcfg"`; nicht persistierte Bits (Lidar-Motor)
-  starten auf Default. Setting-Indizes `stgHbLed/stgCatLed/stgAutoCopyPose/stgAutoCalib/
-  stgLidarMotor/stgCatDetLed/stgCamAi`, Aktionen `actCopyPose/actCalibrate/actClearPose/
-  actReloadParams/actPhoto`.
+  persistierten Bits aus dem NVS-Namespace `"devcfg"`; nicht persistierte Bits (Lidar-Motor,
+  Radar-Vollmodus) starten auf Default. Setting-Indizes `stgHbLed/stgCatLed/stgAutoCopyPose/
+  stgAutoCalib/stgLidarMotor/stgCatDetLed/stgCamAi/stgRadarFullRasen`, Aktionen
+  `actCopyPose/actCalibrate/actClearPose/actReloadParams/actPhoto`.
 - **Seite 1 (Geräteauswahl):** listet die Geräte, die per `settingsReport` ihre
   Fähigkeiten gemeldet haben (Broadcast `settingsRequest` beim Start und periodisch). Touch
   wählt ein Gerät → Seite 2.
@@ -1014,10 +1129,16 @@ die Erkennung, die bisher offline im Analyse-Tab lief, live auf einem ESP32.
 Ordner `CatIdentifier/CatId6_3_0/`. Hardware: **Seeed XIAO ESP32-S3**, feste IP
 .184.
 
-- **Eingang:** hört alle `catObserved` mit `worldValid=1` vom Bus und füttert sie
-  ins Modell (`catTrack.ino`): Track-Bildung (Gate + Stitching), kohärente
-  Bewegungsphase als Pflicht, Score 0..100, Sturm-/Burst-Unterdrückung je Sensor,
-  Mäher-K.o. über die Weglänge (`max_path_mm`). Der Erfassungsrand wird
+- **Eingang:** hört alle `catObserved` mit `worldValid=1` vom Bus, filtert sie
+  intern auf **innerhalb der NoShot-Karte** (`insideNoShot`, Karte per
+  `serviceNoShotMap`/`acquireNoShot` bezogen, fail-open ohne geladene Karte) und
+  füttert erst dann ins Modell (`catTrack.ino`): Track-Bildung (Gate +
+  Stitching), kohärente Bewegungsphase als Pflicht, Score 0..100, Sturm-/Burst-
+  Unterdrückung je Sensor, Mäher-K.o. über die Weglänge (`max_path_mm`). Die
+  NoShot-Filterung wurde eingeführt, nachdem eine Analyse realer Daten zeigte,
+  dass sie den Anteil kohärent bewegter (glaubwürdiger) Punkte deutlich erhöht
+  (`VPS/dashboard/analyze_noshot_filter.py`) — Punkte außerhalb der Schusszone
+  sind für die Feuer-Entscheidung ohnehin irrelevant. Der Erfassungsrand wird
   **geometrisch** aus den Sektoren der device dB (`covLeft/covRight/covRange`) und
   den per `poseReport` mitgehörten Welt-Posen berechnet (wie `build_coverage_geo`
   auf dem VPS) — beim Boot fragt CatIdent einmal per `poseRequest` nach.
@@ -1025,6 +1146,19 @@ Ordner `CatIdentifier/CatId6_3_0/`. Hardware: **Seeed XIAO ESP32-S3**, feste IP
   bewertet; hier muss entschieden werden, **während** die Katze noch im Feld ist.
   Darum fließen nur die zum Zeitpunkt bekannten Merkmale ein (kein Austritts-Term),
   und die Bestätigung feuert, sobald der Score die Schwelle erreicht.
+- **NoShot-Zeit (Mäher-Ruhefenster):** im lokalen Tagesfenster
+  `quiet_t0_min`–`quiet_t1_min` (Modell-Parameter, Minuten seit Mitternacht,
+  Default 900–990 = 15:00–16:30, Werte gleichsetzen = aus, t0 > t1 läuft über
+  Mitternacht) wird das Modell nicht gefüttert **und** `announceCat` zusätzlich
+  hart gesperrt — Mäher- und Katzen-Tracks sind sich zu ähnlich, und ein
+  Fehlschuss auf den Mäher wäre teuer (sein Regensensor ließe ihn die Arbeit
+  einstellen), eine im Fenster verpasste Katze nicht (Katzen meiden den
+  laufenden Mäher ohnehin). Änderbar ohne Neuflash über den Analyse-Tab
+  „Parameter…" + Aktion „Parameter laden". Die Uhrzeit kommt per NTP
+  (`time_zone` = CET/CEST); solange die Uhr nach einem Boot noch nie gestellt
+  wurde, ist das Fenster wirkungslos (fail-open — sonst wäre das Gerät bis zum
+  ersten NTP-Erfolg dauerhaft blind). Die retrospektive VPS-Analyse wendet das
+  Fenster bewusst NICHT an, damit der Analyse-Tab zeigt, was der Mäher erzeugt.
 - **Ausgang:** bei Bestätigung wird `catDetected` **doppelt** gebroadcastet
   (UDP-Verlustschutz) — der Manager blinkt rot, die Cat Cam fotografiert.
 - **Modell-Parameter** kommen vom VPS (`GET /aparams.csv`, flache `key=value`-Liste

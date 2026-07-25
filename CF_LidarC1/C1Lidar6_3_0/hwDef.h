@@ -34,7 +34,12 @@
 
 // --- No-Shot-Karte ---
 #define NOSHOT_PATH    "/noshot.csv"
-#define MAP_WAIT_MS    4000        // so lange auf mapInfo/Chunks vom Manager warten
+#define MAP_WAIT_MS       4000        // so lange auf mapInfo/Chunks vom Manager warten
+#define MAP_RETRY_MS     60000        // Karte nicht bekommen -> so lange bis zum naechsten Versuch
+#define MAP_RECHECK_MS 3600000UL      // Fangnetz: auch mit geladener Karte stuendlich neu pruefen
+                                      // (ein mapInfo-Announce kann per UDP verlorengehen - kein Resend)
+#define MAP_ANNOUNCE_SLOT_MS 300      // Versatz je Geraet nach einem Announce (ID % 10 * diesen Wert -
+                                      // real vergebene IDs 0-3/17-19 ergeben so verschiedene Slots)
 
 // --- Kommunikation ---
 #define periodeForHB   10000       // HB-Periode (ms)

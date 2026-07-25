@@ -81,10 +81,18 @@
   #anaBar label { font-size:12px; color:#aaa; display:flex; gap:4px; align-items:center; }
   #anaWinInfo { font-size:12px; color:#89a; padding:2px 10px; background:#111; }
   #anaRecWarn { background:#7a2230; color:#fff; font-size:13px; font-weight:600; padding:6px 12px; }
-  #anaTl { height:92px !important; min-height:92px; width:100%; border-bottom:1px solid #2a2a30; cursor:crosshair; }
+  #anaTl { height:138px !important; min-height:138px; width:100%; border-bottom:1px solid #2a2a30; cursor:crosshair; }
   #anaMain { position:relative; flex:1; min-height:0; display:flex; }
   #anaMapWrap { flex:1; min-width:0; position:relative; }
   #anaMap { position:absolute; inset:0; width:100%; height:100%; cursor:grab; }
+  #anaMap.editing { cursor:crosshair; }
+  #anaMapEditBar { position:absolute; left:8px; top:8px; z-index:3; display:flex; gap:6px;
+                   align-items:center; background:#000a; border:1px solid #333; border-radius:6px;
+                   padding:6px 8px; font-size:12px; flex-wrap:wrap; max-width:calc(100% - 16px); }
+  #anaMapEditBar select, #anaMapEditBar button { background:#2a2a33; color:#ccc; border:1px solid #3a3a44;
+                   border-radius:5px; padding:3px 8px; cursor:pointer; font-size:12px; }
+  #anaMapEditBar button.act { background:#2d6cdf; color:#fff; border-color:#2d6cdf; }
+  #anaMapEditStatus { color:#9ab; }
   #anaSide { width:260px; min-width:260px; border-left:1px solid #333; overflow:auto; font-size:12px; }
   #anaSide h2 { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:#888; margin:0; padding:5px 8px; background:#16161b; border-bottom:1px solid #2a2a30; position:sticky; top:0; }
   .anaSens { display:flex; gap:5px; padding:3px 8px; align-items:center; cursor:pointer; }
@@ -226,9 +234,26 @@
       </div>
       <div id="anaRecWarn" style="display:none">⚠ AUFNAHME PAUSIERT — eingehende Events werden NICHT gespeichert! (REC-Knopf oben links startet sie)</div>
       <div id="anaWinInfo"></div>
-      <canvas id="anaTl" title="Die Leiste zeigt genau das gewählte Zeitfenster. Ziehen = verschieben · Rad = strecken/stauchen · Shift+Ziehen = Bereich für Label · grünes Band unten = aufgezeichnet · rote Punkte = CatDetected-Auslösung · gelbes Band = angeklickter Track"></canvas>
+      <canvas id="anaTl" title="Die Leiste zeigt genau das gewählte Zeitfenster. Ziehen = verschieben · Rad = strecken/stauchen · Shift+Ziehen = Bereich für Label · farbige Spuren = Sensor-WLAN-Empfangsqualität (HB-Quote: grün = alle Heartbeats kamen an, rot = keine, grau = keine Daten) · grünes Band unten = aufgezeichnet · rote Punkte = CatDetected-Auslösung · gelbes Band = angeklickter Track"></canvas>
       <div id="anaMain">
-        <div id="anaMapWrap"><canvas id="anaMap" title="Ziehen = verschieben · Rad = zoomen · Doppelklick = einpassen"></canvas></div>
+        <div id="anaMapWrap">
+          <canvas id="anaMap" title="Ziehen = verschieben · Rad = zoomen · Doppelklick = einpassen · Klick auf einen Track = auswählen (wie in der Liste; nochmal klicken oder ins Leere = abwählen)"></canvas>
+          <div id="anaMapEditBar">
+            <select id="anaMapType" title="Kartentyp">
+              <option value="noshot">NoShot (Schusszone)</option>
+              <option value="rasen">Rasen (Relevanzfilter)</option>
+            </select>
+            <button id="anaMapEditBtn" title="Ringe werden Polygone mit greifbaren Eckpunkten: Punkt ziehen · Klick auf eine Kante fügt einen Punkt ein · Punkt markieren + Entf löscht ihn · Esc beendet das Bearbeiten">Karte bearbeiten</button>
+            <span id="anaMapEditTools" style="display:none">
+              <button id="anaMapRingAdd" title="Neuen Ring (kleines Dreieck in der Kartenmitte) einfügen — danach Eckpunkte an Ort und Stelle ziehen">Ring +</button>
+              <button id="anaMapRingDel" title="Den Ring des markierten Punkts komplett löschen">Ring −</button>
+              <button id="anaMapPtDel" title="Markierten Punkt löschen (auch Entf-Taste)">Punkt −</button>
+              <button id="anaMapSave" class="act" title="Karte speichern und Bearbeiten beenden — der Manager übernimmt sie beim nächsten Poll">Speichern</button>
+              <button id="anaMapDiscard" title="Bearbeiten beenden, ohne zu speichern (auch Esc-Taste) — Änderungen gehen verloren">Bearbeiten beenden</button>
+            </span>
+            <span id="anaMapEditStatus"></span>
+          </div>
+        </div>
         <div id="anaSide">
           <h2>Sensoren (Fenster)</h2><div id="anaSensors"></div>
           <h2>Tracks (Modell)</h2><div id="anaTracks"></div>
@@ -270,7 +295,7 @@ function fmtTime(t){ return new Date(t*1000).toLocaleTimeString(); }
 function minMaxArr(a){ let lo=Infinity, hi=-Infinity; for(const v of a){ if(v<lo)lo=v; if(v>hi)hi=v; } return [lo,hi]; }
 
 // Einstellungen/Aktionen (Bit-Index = stg*/act* aus xComDef6_3.h)
-const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor","CatDetected-Anzeige","Kamera-KI"];
+const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor","CatDetected-Anzeige","Kamera-KI","Radar: volle RasenKarte melden"];
 const ACT=[{l:"Pose kopieren",cmd:21,info:0},{l:"Kalibrieren",cmd:18,info:45000},{l:"Pose löschen",cmd:19,info:0},{l:"Parameter laden",cmd:22,info:0},{l:"Foto jetzt",cmd:23,info:0}];
 const CMD_SET_SETTING=20;
 
@@ -496,8 +521,11 @@ document.getElementById("reset").onclick=async()=>{
 
 function renderDebug(rows){
   const el=document.getElementById("debug");
+  // Nur "kleben", wenn der Nutzer ohnehin (fast) unten ist — sonst bleibt
+  // seine hochgescrollte Position erhalten, statt bei jedem Poll zurückzuspringen.
+  const stick = (el.scrollHeight - el.scrollTop - el.clientHeight) < 24;
   el.innerHTML = rows.map(r=>`<div class="row"><span class="t">${fmtTime(r.t)}</span>  ${escapeHtml(r.msg)}</div>`).join("");
-  el.scrollTop = el.scrollHeight;
+  if(stick) el.scrollTop = el.scrollHeight;
 }
 function renderDevices(devs, now){
   document.getElementById("devs").innerHTML = devs.map(d=>{
