@@ -165,7 +165,7 @@ void drawDetail() {
   int nRows = 0;
   for (int i = 0; i < STG_COUNT; i++) if (sup & (1u << i)) nRows++;
   for (int i = 0; i < ACT_COUNT; i++) if (act & (1u << i)) nRows++;
-  nRows++;                 // Neustart-Zeile (fuer jedes Geraet verfuegbar)
+  if (sel != CatCam) nRows++;   // Neustart-Zeile (nicht bei CatCam, s.u.)
   if (nRows == 0) nRows = 1;
 
   int areaY = HEADER_H + MARGIN;
@@ -201,8 +201,9 @@ void drawDetail() {
     addHot(MARGIN, y, screenWidth - 2 * MARGIN, bh, HOT_ACTION, i);
     row++;
   }
-  // Neustart: fuer jedes Geraet, rot abgesetzt (Fernwartung).
-  {
+  // Neustart: fuer (fast) jedes Geraet, rot abgesetzt (Fernwartung). Ausnahme CatCam:
+  // Soft-Reset laesst das I2C-Vision-Modul haengen (braucht physischen Power-Cycle).
+  if (sel != CatCam) {
     int y = areaY + row * rowH;
     button(MARGIN, y, screenWidth - 2 * MARGIN, bh, "> Neustart", 0x8000, TFT_WHITE);   // dunkelrot
     addHot(MARGIN, y, screenWidth - 2 * MARGIN, bh, HOT_RESET, 0);
