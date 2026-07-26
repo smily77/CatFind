@@ -10,7 +10,9 @@
 // --- Einstellungen & Steuerung (settingsPayload / xComProc initSettings) ---------------
 // stgCamAi: KI-Erkennung an/aus (Katze im Bild -> catObserved + Foto). Persistiert.
 // Aktion actPhoto: sofort ein Foto machen und zum VPS hochladen (Test/Doku).
-#define STG_SUPPORTED (1u<<stgCamAi)
-#define STG_DEFAULT   (1u<<stgCamAi)
-#define STG_PERSIST   (1u<<stgCamAi)
+// stgActive (Ruhemodus) unterstuetzt, Default AN, NICHT persistiert (nach Reboot aktiv):
+// inaktiv = keine KI/keine Fotos, nur HB.
+#define STG_SUPPORTED ((1u<<stgCamAi)|(1u<<stgActive))
+#define STG_DEFAULT   ((1u<<stgCamAi)|(1u<<stgActive))
+#define STG_PERSIST   (1u<<stgCamAi)   // stgActive bewusst nicht persistiert
 #define STG_ACTIONS   (1u<<actPhoto)

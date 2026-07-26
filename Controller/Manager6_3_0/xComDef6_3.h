@@ -294,7 +294,14 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
                             // (mehr Randdaten fuers NoShot-Editieren, aber mehr Bus-/VPS-
                             // Traffic) - Default AUS (NoShot-gefiltert), NICHT persistiert:
                             // nach einem Reboot immer der ruhige Normalbetrieb.
-#define STG_COUNT       8
+#define stgActive       8   // Sensor aktiv/inaktiv. AUS = Ruhemodus: das Geraet meldet nur noch
+                            // seinen HB, unterdrueckt ALLE Detektions-/Foto-/catDetected-Meldungen
+                            // und schaltet seine Sensor-Hardware ab, wo moeglich (Lidar-Motor stop,
+                            // Kamera-KI aus, Radar wertet keine Ziele mehr aus). Default AN, NICHT
+                            // persistiert: nach Reboot/Stromausfall ist das Geraet wieder aktiv
+                            // (der Reset-Befehl cmdReboot ist damit zugleich ein 'zurueck auf normal').
+                            // Nur Sensor-Geraete unterstuetzen es; Aktoren/Manager nicht.
+#define STG_COUNT       9
 
 // Ausloesbare Aktionen (Bit-Position in settingsPayload.actions).
 #define actCopyPose     0   // Welt-Pose jetzt aus der Gruppe kopieren  -> cmdCopyPose
@@ -351,6 +358,10 @@ struct __attribute__((packed)) settingsPayload {
 // VPS aus (der Manager ist der einzige, der den VPS erreichen kann).
 #define cmdMapFetch               28   // info: Kartentyp (mapNoShot/mapRasen) - pending Karte vom VPS abholen+annehmen
 #define cmdMapPush                29   // info: Kartentyp - aktuelle Karte (egal welcher Herkunft) an /mapsync melden (Re-Sync)
+// Fernwartung: sofortiger Neustart. Von JEDEM Geraet unterstuetzt - bei Geraeten mit
+// handleCommonMsg (Radar/Lidar/CatIdent/CatCam/Manager) generisch, bei Aktoren
+// (PA1_1/PA2i/LaserMarker) im geraetespezifischen Command-Switch.
+#define cmdReboot                 30   // info: ignoriert - ESP.restart() nach kurzer Verzoegerung
 
 //---------------------------------------------------------------------------------------
 // Welt-Pose dieses Geraets (jedes Geraet besitzt diese Variablen, damit die

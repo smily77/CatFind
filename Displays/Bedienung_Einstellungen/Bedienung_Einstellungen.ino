@@ -43,7 +43,7 @@ DevState devSt[deviceCount];
 // Beschriftungen (Index = stg*/act* aus xComDef6_3.h)
 const char* stgLabel[STG_COUNT] = {
   "HB-Anzeige", "Cat-Anzeige", "Auto Pose kop.", "Auto-Kalib.", "Lidar-Motor", "CatDet-Anzeige", "Kamera-KI",
-  "Radar Vollmodus"
+  "Radar Vollmodus", "Aktiv (Sensor an)"
 };
 const char* actLabel[ACT_COUNT] = { "Pose kopieren", "Kalibrieren", "Pose loeschen", "Param. laden", "Foto jetzt" };
 const uint8_t actCmd[ACT_COUNT] = { cmdCopyPose,     cmdCalibrate, cmdClearPose, cmdReloadParams, cmdTakePhoto };
@@ -67,6 +67,7 @@ int TS, MARGIN, HEADER_H;
 #define HOT_ACTION 3
 #define HOT_BACK   4
 #define HOT_REFRESH 5
+#define HOT_RESET  6
 struct Hot { int x, y, w, h; uint8_t type; int arg; };
 Hot     hots[48];
 int     nHot = 0;
@@ -164,6 +165,7 @@ void drawDetail() {
   int nRows = 0;
   for (int i = 0; i < STG_COUNT; i++) if (sup & (1u << i)) nRows++;
   for (int i = 0; i < ACT_COUNT; i++) if (act & (1u << i)) nRows++;
+  nRows++;                 // Neustart-Zeile (fuer jedes Geraet verfuegbar)
   if (nRows == 0) nRows = 1;
 
   int areaY = HEADER_H + MARGIN;
@@ -197,6 +199,13 @@ void drawDetail() {
     button(MARGIN, y, screenWidth - 2 * MARGIN, bh, String("> ") + actLabel[i],
            0x02B5, TFT_WHITE);                              // cyan-blau
     addHot(MARGIN, y, screenWidth - 2 * MARGIN, bh, HOT_ACTION, i);
+    row++;
+  }
+  // Neustart: fuer jedes Geraet, rot abgesetzt (Fernwartung).
+  {
+    int y = areaY + row * rowH;
+    button(MARGIN, y, screenWidth - 2 * MARGIN, bh, "> Neustart", 0x8000, TFT_WHITE);   // dunkelrot
+    addHot(MARGIN, y, screenWidth - 2 * MARGIN, bh, HOT_RESET, 0);
     row++;
   }
   if (!ipOk) {
@@ -251,6 +260,11 @@ void onHot(const Hot& h) {
       redraw();
       break;
     }
+    case HOT_RESET:
+      sendCmd(cmdReboot, 0);            // Fernwartung: Geraet neu starten
+      statusLine = "Neustart gesendet";
+      redraw();
+      break;
   }
 }
 

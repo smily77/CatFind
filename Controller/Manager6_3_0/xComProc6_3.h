@@ -610,6 +610,13 @@ void clearPose() {
 
 inline bool settingOn(uint8_t idx) { return (mySettings.values >> idx) & 1u; }
 
+// Ist das Geraet aktiv (nicht im Ruhemodus)? Geraete OHNE stgActive-Setting (Aktoren,
+// Manager, Displays) gelten immer als aktiv - nur echte Sensoren koennen inaktiv sein.
+// Ein Sensor-Sketch ruft dies vor jeder Detektion/Meldung: !deviceActive() -> nur HB.
+inline bool deviceActive() {
+  return !((mySettings.supported >> stgActive) & 1u) || settingOn(stgActive);
+}
+
 void saveSettings() {
   Preferences p; p.begin("devcfg", false);
   p.putUShort("v", (uint16_t)(mySettings.values & (uint16_t)STG_PERSIST));
@@ -662,6 +669,12 @@ bool handleCommonMsg(const xMsg& m) {
     case commandMsg: {
       cmdPayload c;
       if (!getPayload(m, c)) return false;
+      if (c.cmd == cmdReboot) {          // Fernwartung: sofortiger Neustart
+        sendUdpTextln("Neustart per Kommando (cmdReboot) ...");
+        delay(200);                       // dem UDP-Text/ACK kurz Zeit lassen
+        ESP.restart();
+        return true;                      // (wird nicht mehr erreicht)
+      }
       if (c.cmd == cmdSetSetting) {
         uint8_t idx = (uint8_t)((uint32_t)c.info >> 1);
         bool    on  = (uint32_t)c.info & 1u;

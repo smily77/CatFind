@@ -19,7 +19,8 @@
 // Anzeige: HB-Blitz + CatDetected-Blitz auf der Onboard-LED, je schaltbar (NVS).
 // Aktion: Modell-Parameter neu vom VPS laden (cmdReloadParams) - fuer Modell-Iterationen
 // ohne Neuflash.
-#define STG_SUPPORTED ((1u<<stgHbLed)|(1u<<stgCatLed))
+// stgActive (Ruhemodus) unterstuetzt, Default AN, NICHT persistiert (nach Reboot aktiv).
+#define STG_SUPPORTED ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgActive))
 #define STG_DEFAULT   STG_SUPPORTED
-#define STG_PERSIST   STG_SUPPORTED
+#define STG_PERSIST   ((1u<<stgHbLed)|(1u<<stgCatLed))   // stgActive bewusst nicht persistiert
 #define STG_ACTIONS   (1u<<actReloadParams)

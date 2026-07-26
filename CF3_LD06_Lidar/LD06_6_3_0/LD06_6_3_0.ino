@@ -27,6 +27,13 @@ posPayload obsData;
 #define nearEndC 500
 #define farEndC 6500
 
+// Ruhemodus (stgActive) unterstuetzt: AUS = Motor aus, keine catObserved-Meldungen, nur HB.
+// Default AN, NICHT persistiert (nach Reboot aktiv). Muss VOR xComProc stehen (initSettings).
+#define STG_SUPPORTED (1u<<stgActive)
+#define STG_DEFAULT   (1u<<stgActive)
+#define STG_PERSIST   0u
+#define STG_ACTIONS   0u
+
 #include <xComProc6_3.h>
 
 void setup(){
@@ -36,12 +43,31 @@ void setup(){
   initUnicast();
   setUpOTA();
   setUpTime();
+  initSettings();                     // Ruhemodus-Setting aus hwDef/NVS (Default aktiv)
   lidarMotor(HIGH);
   initLidar();
+  sendSettingsReport();               // Einstellungen annoncieren (Display/VPS lernen sie)
 }
 
 void loop() {
   ArduinoOTA.handle();
+  // (LD06 sendet legacy-bedingt keinen HB - siehe REVIEW_6_3.md; hier nicht nachgeruestet.)
+
+  // Steuer-/Einstellungsnachrichten generisch verarbeiten (cmdReboot/cmdSetSetting per
+  // Unicast, settingsRequest per Multicast-Broadcast).
+  if (ucDataReceived) { ucDataReceived = false; handleCommonMsg(lastUcMsg); }
+  if (mcDataReceived) { mcDataReceived = false; handleCommonMsg(lastMcMsg); }
+
+  // Ruhemodus (stgActive AUS): Motor stoppen -> keine Messung/Meldung, nur HB.
+  static bool motorOn = true;
+  bool wantMotor = deviceActive();
+  if (wantMotor != motorOn) {
+    motorOn = wantMotor;
+    lidarMotor(wantMotor ? HIGH : LOW);
+    sendUdpTextln(String("LD06 ") + (wantMotor ? "aktiv" : "Ruhemodus (Motor aus)"));
+  }
+  if (!motorOn) return;
+
   if (Serial2.available()) newLidarData = readLidar();
   if (newLidarData) {
     newLidarData = false;

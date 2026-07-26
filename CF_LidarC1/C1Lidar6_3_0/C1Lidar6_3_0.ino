@@ -118,8 +118,9 @@ void loop() {
   serviceNoShotMap();                 // Re-Check/Fangnetz nach der Erstbeschaffung in finishInit()
 
   // Motor an/aus (Lidar-Spezial-Setting): stop()/startScan() beim Umschalten.
+  // Ruhemodus (stgActive AUS) erzwingt Motor aus -> keine Messung/Detektion, nur HB.
   static bool motorRunning = true;
-  bool wantMotor = settingOn(stgLidarMotor);
+  bool wantMotor = deviceActive() && settingOn(stgLidarMotor);
   if (wantMotor != motorRunning) {
     motorRunning = wantMotor;
     if (wantMotor) lidar.startScan(); else lidar.stop();

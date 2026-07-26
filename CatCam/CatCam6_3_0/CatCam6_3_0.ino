@@ -195,6 +195,7 @@ void handleCommand(const xMsg& m) {
 void handleBusMsg(const xMsg& m) {
   if (handleCommonMsg(m)) return;
   if (m.header.msgCode != catDetected || m.header.sender == ID) return;
+  if (!deviceActive()) return;         // Ruhemodus: kein Auto-Foto auf fremdes catDetected
   catDetectedPayload cd;
   if (!getPayload(m, cd)) return;
   // Der Identifier sendet jede Detektion DOPPELT (UDP-Verlustschutz) -> dedupen
@@ -209,6 +210,7 @@ void handleBusMsg(const xMsg& m) {
 
 // KI-Takt: Vision-Modul befragen; Katze im Bild -> catObserved (+ Foto bei neuer Sichtung)
 void aiTick() {
+  if (!deviceActive()) return;         // Ruhemodus (stgActive AUS): keine KI/Fotos, nur HB
   if (!settingOn(stgCamAi) || !aiEnsure()) return;
   if (millis() - lastInvokeMs < CAM_INVOKE_PERIOD_MS) return;
   lastInvokeMs = millis();

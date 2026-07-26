@@ -183,6 +183,8 @@ void handleObservation(const xMsg& m) {
 // Strasse); Kalibrier-Sammlung und Health-Check arbeiten weiter mit ALLEN Zielen (die
 // Referenzperson koennte am Rand stehen).
 void processTargets() {
+  // Ruhemodus (stgActive AUS): keine Zielauswertung/-meldung, nur HB laeuft weiter.
+  if (!deviceActive()) { setPixel(maxPix, 0x000000); return; }
   boolean validTarget = false;
   for (int i = 0; i < 3; i++) {
     if (target[i].active && (target[i].l > deadZone)) {
