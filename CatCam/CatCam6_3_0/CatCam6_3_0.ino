@@ -96,41 +96,11 @@ static void aiResolveCatClass(const String& infoJson) {
   }
 }
 
-// I2C-Bus-Recovery: Ein Soft-Reset (ESP.restart, auch per cmdReboot) kappt die
-// Stromversorgung des Vision-Moduls NICHT. Wurde der C3 mitten in einer I2C-
-// Transaktion zurueckgesetzt, kann das Modul den Bus blockieren (haelt SDA LOW,
-// Clock-Stretching) -> AI.begin(&Wire) schlaegt dann dauerhaft fehl, bis das Modul
-// stromlos gemacht wird. Hier den Bus per Software freitakten: bis zu 9 SCL-Pulse
-// bei freigegebenem SDA lassen den Slave seine Transaktion beenden, dann ein STOP.
-static void i2cBusRecover() {
-  Wire.end();
-  pinMode(SCL, INPUT_PULLUP);
-  pinMode(SDA, INPUT_PULLUP);
-  delay(5);
-  if (digitalRead(SDA) == LOW) {              // Slave blockiert den Bus
-    pinMode(SCL, OUTPUT);
-    for (int i = 0; i < 9 && digitalRead(SDA) == LOW; i++) {
-      digitalWrite(SCL, LOW);  delayMicroseconds(6);
-      pinMode(SCL, INPUT_PULLUP); delayMicroseconds(6);   // SCL freigeben (Clock-Stretch zulassen)
-      pinMode(SCL, OUTPUT); digitalWrite(SCL, HIGH); delayMicroseconds(6);
-    }
-    // STOP-Bedingung: SDA LOW->HIGH waehrend SCL HIGH
-    pinMode(SDA, OUTPUT); digitalWrite(SDA, LOW); delayMicroseconds(6);
-    pinMode(SCL, INPUT_PULLUP);  delayMicroseconds(6);
-    pinMode(SDA, INPUT_PULLUP);  delayMicroseconds(6);
-  }
-  Wire.begin();                               // Wire-Peripherie sauber neu aufsetzen
-}
-
 // Vision-Modul (re-)initialisieren. Schlaegt der Boot-Versuch fehl (Modul
 // braucht nach dem Einstecken laenger o.ae.), wird periodisch neu probiert -
 // vorher blieb "Vision-Modul fehlt" bis zum naechsten Reboot bestehen.
 static bool aiInit() {
   aiOk = AI.begin(&Wire);
-  if (!aiOk) {                                // haengt evtl. nach Warm-Reset -> Bus freitakten
-    i2cBusRecover();
-    aiOk = AI.begin(&Wire);
-  }
   if (aiOk) {
     AI.set_rx_buffer(CAM_RX_BUF);
     String info = b64decode(AI.info(false));
