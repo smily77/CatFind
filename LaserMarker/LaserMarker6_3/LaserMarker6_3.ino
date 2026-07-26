@@ -73,6 +73,11 @@ void handleCommand(const xMsg &m) {
 
   bool known = true;
   switch (c.cmd) {
+    case cmdReboot:                            // Fernwartung: sofortiger Neustart
+      sendUdpTextln("Neustart per Kommando (cmdReboot) ...");
+      delay(200);
+      ESP.restart();
+      break;
     case cmdMainLaser: state.mainLaser = c.info ? 1 : 0; break;
     case cmdSubLaser:  state.subLaser  = c.info ? 1 : 0; break;
     case cmdAux:       state.aux       = c.info ? 1 : 0; break;

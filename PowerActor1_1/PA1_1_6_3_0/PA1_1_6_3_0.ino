@@ -76,6 +76,11 @@ void loop() {
     cmdPayload cmd;
     if (getPayload(lastUcMsg, cmd)) {
       switch (cmd.cmd) {
+        case cmdReboot:                 // Fernwartung: sofortiger Neustart
+          sendUdpTextln("Neustart per Kommando (cmdReboot) ...");
+          delay(200);
+          ESP.restart();
+        break;
         case cmdArmFire:
           hbState.readyToFire = !hbState.readyToFire;
         break;

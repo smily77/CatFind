@@ -170,6 +170,7 @@ void handleBusMsg(const xMsg& m) {
     return;
   }
   if (m.header.msgCode == catObserved && m.header.sender != ID) {
+    if (!deviceActive()) return;       // Ruhemodus (stgActive AUS): Modell wird nicht gefuettert
     posPayload obs;
     if (!getPayload(m, obs) || !obs.worldValid) return;   // Modell arbeitet in Welt-mm
     if (m.header.sender >= deviceCount) return;
@@ -192,6 +193,7 @@ void handleBusMsg(const xMsg& m) {
 // Paket wuerde die Detektion verschlucken. Empfaenger (Manager, spaeter Aktoren)
 // dedupen ueber identische Payload innerhalb ~1,5 s.
 void announceCat(const catDetectedPayload& cd) {
+  if (!deviceActive()) return;         // Ruhemodus: kein catDetected (Doppelsicherung zum Feed-Gate)
   // Doppelte Absicherung zur Feed-Sperre in handleBusMsg: waehrend der NoShot-Zeit
   // darf unter keinen Umstaenden ein catDetected raus (Fehlschuss auf den Maeher).
   if (ctInQuietWindow()) return;

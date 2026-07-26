@@ -295,9 +295,10 @@ function fmtTime(t){ return new Date(t*1000).toLocaleTimeString(); }
 function minMaxArr(a){ let lo=Infinity, hi=-Infinity; for(const v of a){ if(v<lo)lo=v; if(v>hi)hi=v; } return [lo,hi]; }
 
 // Einstellungen/Aktionen (Bit-Index = stg*/act* aus xComDef6_3.h)
-const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor","CatDetected-Anzeige","Kamera-KI","Radar: volle RasenKarte melden"];
+const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor","CatDetected-Anzeige","Kamera-KI","Radar: volle RasenKarte melden","Aktiv (Sensor an)"];
 const ACT=[{l:"Pose kopieren",cmd:21,info:0},{l:"Kalibrieren",cmd:18,info:45000},{l:"Pose löschen",cmd:19,info:0},{l:"Parameter laden",cmd:22,info:0},{l:"Foto jetzt",cmd:23,info:0}];
 const CMD_SET_SETTING=20;
+const CMD_REBOOT=30;   // Fernwartung: Geraet neu starten (jedes Geraet, ueber Manager-Bus)
 
 function setView(v,b){
   view=v;
@@ -487,6 +488,9 @@ function applyPending(){
   }
 }
 function doAct(id,cmd,info){ postCmd(id,cmd,info); }
+function doReboot(id,name){
+  if(confirm(`${name} (#${id}) jetzt neu starten?`)) postCmd(id,CMD_REBOOT,0);
+}
 function reqAll(){ postCmd(255,0,0); }   // Manager broadcastet settingsRequest an alle
 
 let _ctrlSig=null;
@@ -510,6 +514,8 @@ function renderCtrl(settings,force){
     }
     for(let i=0;i<ACT.length;i++) if(act&(1<<i))
       h+=`<button class="act" onclick="doAct(${id},${ACT[i].cmd},${ACT[i].info})">▶ ${ACT[i].l}</button>`;
+    // Neustart: fuer JEDES Geraet verfuegbar (Fernwartung), rot abgesetzt.
+    h+=`<button class="act" style="background:#7a2230" onclick="doReboot(${id},'${(s.name||'').replace(/'/g,'')}')">⟳ Neustart</button>`;
     if(!s.ip) h+=`<div style="color:#c93;font-size:11px">IP noch unbekannt (Manager wartet auf HB)</div>`;
     h+=`</div>`;
   }
