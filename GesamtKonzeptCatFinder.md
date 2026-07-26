@@ -620,4 +620,147 @@ Modell auf dem ESP32 implementiert.
    Aktor-Reichweiten); am Radar: Mute je Sensor (VPS + Display, wegen
    mehrerer Radars).
 
+## Aufgabe: KI-Vision-Katzenlokalisierung auf Raspberry Pi (KIVisionCatLocator)
+
+### Grobkonzept
+Ein kamerabasiertes Gerät auf einem **Raspberry Pi 4** überwacht den Rasen
+dauerhaft, erkennt eindringende Katzen per KI (**Coral Edge TPU**, lokal, ohne
+Cloud), bestimmt ihre **Position im Rasen-Weltkoordinatensystem** und meldet sie
+dem bestehenden CatFinder-ESP32-Netzwerk. Das Gerät (`KIVisionCatLocator`) ist
+**vollwertiges Mitglied des Busses** und verhält sich wie die anderen Sensoren,
+obwohl es auf einem Pi statt einem ESP32 läuft. Es wird vollständig von Claude
+Code per SSH programmiert und ist wie die übrigen Geräte im Heim-WLAN
+(192.168.0.x) angebunden.
+
+Motivation: Eine gute KI-Kamera ist voraussichtlich der **stärkste
+Katzendetektor** im System (Erfahrung bisher: Radar gut, Lidar schwach) und
+liefert zusätzlich welt-lokalisierte Treffer als Ground-Truth, mit denen sich
+das kausale CatIdent-Modell verbessern lässt.
+
+### Hardware
+- **Raspberry Pi 4, 1 GB** — Kamera, Bildverarbeitung, KI-Ansteuerung, Webserver, Bus-Kommunikation.
+- **OV5647-Kamera (5 MP)** am CSI-Anschluss, einstellbarer Fokus/Objektiv.
+- **Schaltbarer IR-CUT-Filter** — Farbbild am Tag, IR-empfindlich in der Nacht.
+- **850-nm-IR-Scheinwerfer** — nächtliche Ausleuchtung für kurze Belichtung/scharfe Bilder.
+- **Coral USB Accelerator** — Edge-TPU-Inferenz über USB 3.0.
+- **WLAN** — Heimnetz, Weboberfläche, Bus-Teilnahme.
+
+### Prinzip / Bild-Pipeline
+Ein einziges Programm öffnet die Kamera und stellt jedes Bild gleichzeitig der
+KI, dem Webserver und der Ereignisspeicherung zur Verfügung.
+- Kamera läuft dauerhaft (z.B. 1280×960, 10–15 fps).
+- Der relevante Rasenbereich wird in **mehrere überlappende Ausschnitte** geteilt;
+  jeder wird auf die Modell-Eingabegröße (z.B. 320×320) skaliert und vom Coral
+  geprüft. Treffer-Koordinaten werden auf das volle Kamerabild zurückgerechnet.
+  Grund: eine entfernte Katze bleibt im Ausschnitt größer/erkennbarer, als wenn
+  das ganze breite Bild auf 320×320 verkleinert wird. (Optional später:
+  Bewegungs-Gating — Inferenz nur auf Ausschnitten mit Bewegung, spart CPU/Wärme.)
+- **Treffer-Bestätigung** (gegen Fehlalarme durch Schatten/Pflanzen/Insekten/
+  Rauschen): eine Katze gilt z.B. erst als bestätigt, wenn ≥3 passende
+  Erkennungen innerhalb ~1 s auftreten, die Sicherheit über einem Mindestwert
+  liegt und die Treffer räumlich zusammenpassen.
+
+### Weltlokalisierung (Boden-Homographie)
+Eine einzelne Kamera misst nur eine **Richtung**, keine Distanz. Die Weltposition
+entsteht über eine **planare Boden-Homographie** `H` (3×3), die Bildpixel auf
+Rasen-Weltkoordinaten (mm) abbildet:
+- Für eine erkannte Katze wird der **Fußpunkt** der Bounding-Box (Kontakt
+  Katze↔Boden, i.d.R. Unterkante-Mitte) über `H` in `worldX/worldY` gerechnet.
+- Voraussetzungen: Rasen ~eben (planar), Kamera fix montiert, **Linsen­verzeichnung
+  vorher korrigiert** (Weitwinkel-OV5647 verzeichnet spürbar), Füße sichtbar.
+- **Grenze:** Genauigkeit nah gut, fern schlecht (Perspektive staucht Distanz).
+  Bei langem, längs betrachtetem Rasen hat das ferne Ende wenig Auflösung →
+  Kamera möglichst hoch und steil nach unten montieren. Fernbereich-Lokalisierung
+  ggf. bewusst grob.
+- Die Homographie **ist** die „Pose" der Kamera (entspricht `poseReport`/Welt-Pose
+  der anderen Geräte). Kalibrierung **assistiert** über die Weboberfläche: der
+  Nutzer klickt bekannte Rasenpunkte (z.B. die Ecken der `RasenKarte`) im
+  Kamerabild an, daraus wird `H` berechnet. Das nutzt vorhandene RasenKarten-Daten
+  wieder; eine vollautomatische Ableitung ist nicht Teil dieser Aufgabe.
+
+### Integration ins ESP32-Netz
+- **Vollwertiges Busgerät:** Python-Portierung des xCom-Protokolls (`struct`-
+  gepackte Payloads, little-endian, Header-Version `0x63`, Multicast
+  239.0.0.57:8266, Unicast :23456, Text-Multicast :8300). Der Pi sendet **HB**,
+  **`poseReport`**, **`settingsReport`** und antwortet auf `settingsRequest`,
+  `cmdSetSetting`, `cmdReboot`; er erscheint damit automatisch im VPS-Steuertab
+  (inkl. Aktiv/Ruhemodus `stgActive`, Reset).
+- **Neues Gerät:** ID **20**, neuer Typ (z.B. `VisionLocator`), feste IP (z.B.
+  `.186`), Eintrag in `device[]`, `deviceCount` 20 → **21**. Die Gerätetabelle
+  parst der VPS bereits aus `xComDef6_3.h` (`parse_xcomdef`).
+- **Festlegung (Variante A): der Pi sendet `catObserved` mit `worldValid=1`,
+  NICHT `catDetected`.** CatIdent bleibt der einzige Bestätiger (`catDetected`),
+  damit nicht mehrere Quellen Aktoren auslösen; der Pi ist ein hochwertiger,
+  welt-lokalisierender Sensor, dessen Beobachtungen das kausale Modell fusioniert.
+- **Bilder** werden per HTTP an den VPS geladen (wie die CatCam) und erscheinen im
+  Bilder-Tab. **Rollen-Abgrenzung zur CatCam:** CatCam = Nahaufnahme/Identifikation,
+  Pi = Weitwinkel-Erkennung + Lokalisierung.
+
+### Software-Stack (Festlegungen)
+- **OS: Raspberry Pi OS Bullseye (Legacy) 64-bit Lite (Python 3.9), ohne Desktop.**
+  Bewusst nicht Bookworm/Python 3.11 — der Coral-Stack (`pycoral`/`libedgetpu`)
+  ist an ältere Python-Versionen gebunden; Bullseye hat offizielle Wheels und
+  vermeidet die größte Setup-Falle des Projekts.
+- **Kamera:** `picamera2`/libcamera (OV5647).
+- **Inferenz:** `pycoral` + `tflite-runtime` + `libedgetpu`; Startmodell
+  **COCO-vortrainiert (Klasse „cat"), Edge-TPU-kompiliert (int8)**. Nachtbetrieb
+  (IR-Graubild) erkennt COCO anfangs schlecht → **IR-Nachttraining später**
+  (anspruchsvoll, iterativ; siehe Phase 7).
+- **Web:** kleiner Flask/FastAPI-Server + MJPEG-Stream, Kontrollstream nur aktiv,
+  solange die Seite offen ist (spart CPU/RAM/WLAN im Normalbetrieb).
+- **Autostart:** `systemd`-Dienst.
+- **Protokoll-Sync:** die Python-xCom-Structs werden aus `xComDef6_3.h`
+  abgeleitet/generiert, damit C-Header und Python nicht auseinanderdriften
+  (zwei Quellen der Wahrheit vermeiden).
+
+### Tag- und Nachtbetrieb
+| Modus | IR-Filter | IR-Scheinwerfer |
+|-------|-----------|-----------------|
+| Tag   | ein       | aus             |
+| Nacht | aus       | ein             |
+
+Umschaltung über Sonnenauf-/-untergang oder gemessene Bildhelligkeit; für gute
+Nachtbilder ist gleichmäßige IR-Ausleuchtung wichtiger als maximale Mittenhelligkeit.
+
+### Grenzen / Risiken (bewusst benannt)
+- **Coral/Python-Version** — mit Bullseye entschärft.
+- **Nacht-IR-Erkennung** — COCO auf Tag-RGB trainiert; Nachtraining nötig.
+- **Monokulare Fernbereich-Genauigkeit** — Boden-Ebenen-Annahme; kauernde/erhöhte
+  Katze bricht die Fußpunkt-Annahme.
+- **Outdoor (Hardware, macht der Nutzer):** stabile 5V/3A+-Versorgung, Kühlung
+  (Dauer-Inferenz erwärmt den Pi), wetterfestes Gehäuse, WLAN-Reichweite am
+  Montageort. IR-CUT/IR-Scheinwerfer-Verkabelung (GPIO; der IR-CUT-Filter braucht
+  meist einen kurzen Umschalt-Impuls, kein Dauersignal) klärt der Nutzer im Detail.
+
+### Phasen (Reihenfolge der Umsetzung)
+1. **Pi-Setup (assistiert).** Der Nutzer beschreibt eine leere SD-Karte mit dem
+   Raspberry Pi Imager (Windows); Claude gibt die exakten „Advanced options"
+   (Hostname, WLAN, SSH-Key, User). Danach übernimmt Claude per SSH: OS, Kamera
+   und Coral einrichten, Grundcheck der Steuerbarkeit. (SD-Beschreiben und
+   Kamera-/IR-Verkabelung sind die manuellen Teile.)
+2. **Kamera-Test + Webserver.** Livebild + Kamerasteuerung im Browser. Der Nutzer
+   sucht den optimalen Montageort (ganzer Rasen im Blick — vermutlich Kamera 90°
+   gedreht, da der Rasen länger als breit ist) und testet Objektive sowie
+   Tag-/Nachtfähigkeit.
+3. **Netz-Integration.** Claude macht den Pi zum Busgerät `KIVisionCatLocator`
+   (Python-xCom, HB, `settingsReport`, Steuerbarkeit im VPS).
+4. **Pose / Homographie (assistiert).** Die Kamera lernt Standort und Ausrichtung
+   als Boden-Homographie über RasenKarten-Referenzpunkte (Web-UI-Klicks; VPS falls
+   nötig).
+5. **Katzenerkennung + Tag/Nacht-Automatik.** Permanente Erkennung; IR-Filter/
+   -Scheinwerfer automatisch tag/nacht; bei bestätigter Katze `catObserved` senden
+   und ein Bild auf dem VPS ablegen.
+6. **Lokalisierung.** Erkannte Katze → Rasen-Weltkoordinaten (Homographie aus
+   Phase 4) → in `catObserved` (`worldX/worldY`, `worldValid=1`) mitübertragen.
+7. **CatIdent-Modelloptimierung.** Die welt-lokalisierten Kamera-Treffer dienen
+   zusammen mit den Daten der anderen Sensoren als Labels/Ground-Truth, um das
+   kausale CatIdent-Modell zu tunen — und als Grundlage fürs IR-Nachttraining.
+
+### Nicht Teil dieser Aufgabe / Abgrenzung
+- Wetterfestes Gehäuse, Strom, Montage (Nutzer).
+- IR-CUT-/IR-Scheinwerfer-Verkabelung im Detail (Nutzer studiert Modul/GPIO noch).
+- Vollautomatische Pose-Ableitung ohne Nutzerklicks; IR-Nachttraining (eigene
+  spätere Iteration); Nutzung als eigenständiger `catDetected`-Bestätiger
+  (bleibt bei CatIdent).
+
 
