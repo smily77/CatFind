@@ -514,8 +514,11 @@ function renderCtrl(settings,force){
     }
     for(let i=0;i<ACT.length;i++) if(act&(1<<i))
       h+=`<button class="act" onclick="doAct(${id},${ACT[i].cmd},${ACT[i].info})">▶ ${ACT[i].l}</button>`;
-    // Neustart: fuer JEDES Geraet verfuegbar (Fernwartung), rot abgesetzt.
-    h+=`<button class="act" style="background:#7a2230" onclick="doReboot(${id},'${(s.name||'').replace(/'/g,'')}')">⟳ Neustart</button>`;
+    // Neustart: fuer (fast) JEDES Geraet, rot abgesetzt. Ausnahme CatCam (#19): ein
+    // Soft-Reset laesst das I2C-Vision-Modul haengen (braucht physischen Power-Cycle),
+    // darum dort KEIN Remote-Reset - die Firmware ignoriert cmdReboot ebenfalls.
+    if(+id!==19)
+      h+=`<button class="act" style="background:#7a2230" onclick="doReboot(${id},'${(s.name||'').replace(/'/g,'')}')">⟳ Neustart</button>`;
     if(!s.ip) h+=`<div style="color:#c93;font-size:11px">IP noch unbekannt (Manager wartet auf HB)</div>`;
     h+=`</div>`;
   }
