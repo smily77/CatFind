@@ -88,10 +88,17 @@ XCOMDEF_URL  = os.environ.get(
     "https://raw.githubusercontent.com/smily77/CatFind/main/Controller/Manager6_3_0/xComDef6_3.h")
 
 # --- URL-Praefix der Weboberflaeche -------------------------------------------------
-# Die Oberflaeche liegt unter UI_PREFIX (Default /Tristan), der Wurzelpfad liefert
-# 404. Das ist bewusst nur VERSCHLEIERUNG, KEINE Authentifizierung: wer den Pfad
-# kennt, hat weiterhin vollen Zugriff inkl. /command (Fernsteuerung von
-# PowerActor/LaserMarker). Siehe MapConcept.md "Review-Punkt 10" - der bleibt offen.
+# Die Oberflaeche liegt unter UI_PREFIX, der Wurzelpfad liefert 404.
+#
+# Der Wert steht NICHT hier, sondern als Default in der docker-compose.yml - so
+# gibt es genau eine Stelle, an der er zu aendern ist, und ein frischer Deploy
+# ist ohne Zusatzschritt geschuetzt (Portabilitaet: git clone + docker compose up
+# bei einem beliebigen Anbieter). Eine .env kann ihn ueberschreiben.
+#
+# Das ist bewusst nur VERSCHLEIERUNG, KEINE Authentifizierung: wer den Pfad kennt,
+# hat weiterhin vollen Zugriff inkl. /command (Fernsteuerung von PowerActor/
+# LaserMarker), und ueber reines HTTP steht er im Klartext in jedem Request.
+# Siehe MapConcept.md "Review-Punkt 10" - der bleibt offen.
 #
 # Die Endpunkte, die die FIRMWARE anspricht, muessen am Wurzelpfad bleiben: die
 # Geraete haben die Pfade fest einkompiliert und ein 404 waere dort teilweise
@@ -99,7 +106,13 @@ XCOMDEF_URL  = os.environ.get(
 # verwirft den Puffer, ein 404 auf /ingest wuerde Events/Debug/HB still vernichten.
 # Diese sieben bleiben damit unauthentifiziert erreichbar; ein Shared-Secret waere
 # der naechste Schritt, kostet aber ein Neuflashen von Manager, CatCam, CatIdent.
-UI_PREFIX = os.environ.get("UI_PREFIX", "/Tristan").rstrip("/")
+UI_PREFIX = os.environ.get("UI_PREFIX", "").rstrip("/")
+if not UI_PREFIX:
+    # Fail-open ist hier die einzige sichere Variante (ein leerer Wert darf die
+    # Firmware-Endpunkte nicht abwuergen), aber es muss auffallen: ohne .env
+    # liegt die komplette Oberflaeche wieder offen am Wurzelpfad.
+    print("WARNUNG: UI_PREFIX nicht gesetzt - Oberflaeche liegt offen auf '/'. "
+          "Wert in .env eintragen (siehe .env.example).", flush=True)
 
 # (Methode, Pfad) EXAKT - bewusst kein startswith, denn zwei Pfade sind geteilt:
 #   /maps/<typ>  GET = Manager holt Karte  |  POST = Karten-Editor im Browser

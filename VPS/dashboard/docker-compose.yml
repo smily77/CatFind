@@ -22,9 +22,15 @@ services:
       GITHUB_MAP_TOKEN: "${GITHUB_MAP_TOKEN:-}"
       DB_PATH: "/data/catfinder.db"
       PARAMS_PATH: "/data/model_params.json"
-      # Die Weboberflaeche liegt unter diesem Pfad, der Wurzelpfad liefert 404.
-      # Nur Verschleierung gegen Scanner, KEINE Authentifizierung - wer den Pfad
-      # kennt, kann weiterhin alles (auch /command). Die sieben Endpunkte der
-      # Firmware bleiben zwingend am Wurzelpfad, siehe DEVICE_ROUTES in
-      # dashboard.py. Leerer Wert = altes Verhalten (alles am Wurzelpfad).
+      # Pfad, unter dem die Weboberflaeche liegt; der Wurzelpfad liefert 404.
+      # Der Standardwert steht BEWUSST hier und nicht nur in der .env: so ist ein
+      # frischer Deploy (git clone + docker compose up, anderer Anbieter) ohne
+      # Zusatzschritt sofort geschuetzt. Laege der Wert nur in der .env, liefe ein
+      # neuer Host still ohne Praefix - also mit offener Oberflaeche.
+      # Eine .env kann ihn ueberschreiben, wenn der Pfad privat bleiben soll.
+      #
+      # Das ist nur Verschleierung gegen Scanner/Zufallsbesucher, KEINE
+      # Authentifizierung - dieses Repo ist oeffentlich, der Wert also lesbar.
+      # Die sieben Endpunkte der Firmware bleiben zwingend am Wurzelpfad, siehe
+      # DEVICE_ROUTES in dashboard.py. Leerer Wert = alles am Wurzelpfad.
       UI_PREFIX: "${UI_PREFIX:-/Tristan}"
