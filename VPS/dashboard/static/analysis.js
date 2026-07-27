@@ -82,9 +82,9 @@ function fmtDT(t){
 
 async function anaJson(url, opts){
   // Fuehrenden Slash entfernen: die Seite liegt unter dem UI_PREFIX aus
-  // dashboard.py (z.B. /Tristan/). Eine absolute URL wie "/adata" wuerde am
-  // Praefix vorbei auf den Wurzelpfad zeigen - und dort gibt es nur noch 404.
-  // Relativ aufgeloest wird daraus /Tristan/adata. Setzt voraus, dass die Seite
+  // dashboard.py. Eine absolute URL wie "/adata" wuerde am Praefix vorbei auf
+  // den Wurzelpfad zeigen - und dort gibt es nur noch 404. Relativ aufgeloest
+  // landet sie dagegen korrekt unter dem Praefix. Setzt voraus, dass die Seite
   // mit abschliessendem Slash geladen wurde (erzwingt _PrefixMiddleware).
   const r = await fetch(url.replace(/^\//, ""), opts);
   if(!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.statusText);

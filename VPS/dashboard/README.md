@@ -4,20 +4,31 @@ Web-Dashboard, das die System-Ereignisse des CatFinder-Netzes zeigt. Die Daten
 liefert der **Manager als Gateway** per HTTP-POST (`/ingest`); der lokale
 Betrieb läuft unabhängig vom VPS weiter.
 
-Erreichbar unter **`http://<VPS-IP>/Tristan/`** (Port 80). Der Wurzelpfad
+Erreichbar unter **`http://<VPS-IP>/*****/`** (Port 80). Der Wurzelpfad
 `http://<VPS-IP>/` liefert bewusst **404**.
 
 ## URL-Präfix (`UI_PREFIX`)
 
-Die Oberfläche und alle Browser-Endpunkte liegen hinter dem Präfix aus der
-Umgebungsvariablen `UI_PREFIX` (Default `/Tristan`, gesetzt in
-`docker-compose.yml`). Alles andere am Wurzelpfad wird mit 404 beantwortet.
+Die Oberfläche und alle Browser-Endpunkte liegen hinter einem Pfad-Präfix, hier
+durchgängig als `/*****/` geschrieben. Alles andere am Wurzelpfad wird mit 404
+beantwortet.
 
-> **Das ist Verschleierung, keine Authentifizierung.** Wer den Pfad kennt, hat
-> vollen Zugriff — auch auf `POST /Tristan/command`, das ungeprüft beliebige
-> Kommandos an PowerActor/LaserMarker weitergibt. Über reines HTTP steht der
-> Pfad zudem in jedem Request im Klartext. Der offene Punkt „Review-Punkt 10"
-> aus `MapConcept.md` bleibt damit bestehen.
+Der tatsächliche Pfad steht **nur an einer Stelle**: als Default von `UI_PREFIX`
+in der `docker-compose.yml`. Diese Doku schreibt ihn bewusst nicht aus, damit er
+nicht schon beim Überfliegen des Repos ins Auge springt. Dass er im Repo steht,
+ist Absicht — so ist ein frischer Deploy (`git clone` + `docker compose up` bei
+einem beliebigen Anbieter) ohne Zusatzschritt geschützt. Läge er nur in einer
+`.env`, liefe ein neuer Host still **ohne** Präfix, also mit offener Oberfläche.
+Wer den Pfad privat halten will, überschreibt ihn per `.env` (siehe
+`.env.example`) — der Default bleibt dann als Fallback erhalten.
+
+> **Das ist Verschleierung, keine Authentifizierung.** Das Repo ist öffentlich,
+> der Pfad also auffindbar; er hält Scanner und Zufallsbesucher ab, mehr nicht.
+> Wer ihn kennt, hat vollen Zugriff — auch auf `POST /*****/command`, das
+> ungeprüft beliebige Kommandos an PowerActor/LaserMarker weitergibt. Über reines
+> HTTP steht er zudem im Klartext in jedem Request, in Proxy-Logs und in der
+> Browser-Historie. Der offene Punkt „Review-Punkt 10" aus `MapConcept.md` bleibt
+> bestehen; echten Schutz gäbe erst eine Authentifizierung.
 
 **Die sieben Firmware-Endpunkte bleiben zwingend am Wurzelpfad**, weil die
 Geräte ihre Pfade fest einkompiliert haben (`DEVICE_ROUTES` in `dashboard.py`):
@@ -38,12 +49,14 @@ HTTP-Status als „zugestellt" und verwirft den Puffer — ein 401/404 auf `/ing
 würde Events, Debug-Zeilen und Heartbeats **still** vernichten. Der Localizer auf
 Port 8080 ist von dieser Änderung nicht berührt und weiterhin komplett offen.
 
-`UI_PREFIX=""` stellt das alte Verhalten her (alles am Wurzelpfad).
+Ein leeres oder nicht gesetztes `UI_PREFIX` stellt das alte Verhalten her (alles
+am Wurzelpfad) — der Container schreibt dann eine Warnung ins Log, damit ein
+verlorenes `.env` nicht unbemerkt die ganze Oberfläche freilegt.
 
 Damit das Präfix ohne verkettete Basis-URL funktioniert, sind alle URLs im
 Frontend **relativ** (`fetch("state")` statt `fetch("/state")`); in
 `static/analysis.js` erledigt das zentral der Wrapper `anaJson`. Deshalb leitet
-die Middleware `/Tristan` auf `/Tristan/` um — ohne den abschließenden Schrägstrich
+die Middleware `/*****` auf `/*****/` um — ohne den abschließenden Schrägstrich
 würden die relativen URLs auf dem Wurzelpfad landen.
 
 ## Anzeige
@@ -66,7 +79,7 @@ würden die relativen URLs auf dem Wurzelpfad landen.
 
 | Methode | Pfad | Zweck |
 |---|---|---|
-| `GET`  | `/Tristan/` | Web-UI (Wurzelpfad `/` = 404, siehe oben) |
+| `GET`  | `/*****/` | Web-UI (Wurzelpfad `/` = 404, siehe oben) |
 | `POST` | `/ingest` | Manager-Push `{events,debug,hb,settings,poses,maps}` |
 | `GET`  | `/state` | Debug + aktive Geräte + Minuten-Zusammenfassung |
 | `GET`  | `/events?since=N` | neue catObserved ab Index N (für die Karten) |
