@@ -226,7 +226,7 @@
         <button id="anaBCovDel" title="Gelerntes Coverage-Polygon eines Sensors deaktivieren">Coverage löschen</button>
         <button id="anaBParams">Parameter…</button>
         <button id="anaBValid" title="Modell gegen alle von Hand bewerteten Tracks der ganzen Aufnahme prüfen">Modell-Check</button>
-        <a class="abtn" href="/atracks.csv" download title="komplette Trackliste inkl. Bewertungen/Klebungen als CSV herunterladen">Tracks ⇩</a>
+        <a class="abtn" href="atracks.csv" download title="komplette Trackliste inkl. Bewertungen/Klebungen als CSV herunterladen">Tracks ⇩</a>
         <select id="anaLblSel"></select>
         <select id="anaLblSender"></select>
         <button id="anaBLabel" title="labelt die Zeit-Selektion (Shift+Ziehen in der Zeitleiste), sonst das ganze Fenster">Label setzen</button>
@@ -275,7 +275,7 @@
           <h3 style="margin:0 0 8px">Modell-Check gegen bewertete Tracks</h3>
           <div id="anaValidTxt"></div>
           <div style="margin-top:8px;display:flex;gap:8px">
-            <a class="tab" href="/atracks.csv" download style="text-decoration:none">Trackliste als CSV</a>
+            <a class="tab" href="atracks.csv" download style="text-decoration:none">Trackliste als CSV</a>
             <button class="tab" id="anaValidClose">Schliessen</button>
           </div>
         </div>
@@ -333,7 +333,7 @@ function updateSelBar(){
 async function loadPics(){
   loadBlock();
   try{
-    const r = await (await fetch("/photos?limit=200")).json();
+    const r = await (await fetch("photos?limit=200")).json();
     document.getElementById("picsInfo").textContent =
       r.photos.length ? `${r.photos.length} Fotos (neueste zuerst) — Klick = gross, Kästchen = mehrere auswählen` : "— noch keine Fotos —";
     document.getElementById("picsGrid").innerHTML = r.photos.map(p=>{
@@ -342,7 +342,7 @@ async function loadPics(){
       return `<div class="picCard" data-id="${p.id}" data-meta="${dt} · ${PIC_TRIG[p.trigger]||p.trigger}${p.score?` · Score ${p.score}`:""}${p.track!=null?` · Track Nr ${p.track}`:""}">
         <input type="checkbox" class="sel" title="zum Mehrfach-Löschen auswählen">
         <button class="del" title="Bild löschen">✕</button>
-        <img loading="lazy" src="/photo/${p.id}" alt="">
+        <img loading="lazy" src="photo/${p.id}" alt="">
         <div class="cap"><b>${dt}</b><br>${PIC_TRIG[p.trigger]||p.trigger}${p.score?` · Score ${p.score}`:""}${trk}</div></div>`;
     }).join("");
     document.querySelectorAll(".picCard").forEach(c=>{
@@ -360,7 +360,7 @@ async function loadPics(){
         picOpenId = id;
         const big = document.getElementById("picsBig");
         big.src = "";     // altes Bild sofort verwerfen - sonst zeigt es bis zum
-        big.src = "/photo/"+id;  // Laden des neuen Fotos noch das vorige (Beschriftung waere schon aktuell)
+        big.src = "photo/"+id;  // Laden des neuen Fotos noch das vorige (Beschriftung waere schon aktuell)
         document.getElementById("picsMeta").textContent = c.dataset.meta;
         document.getElementById("picsOv").style.display = "flex";
       };
@@ -376,7 +376,7 @@ async function delPhotos(ids){
   if(!confirm(ids.length===1 ? "Dieses Bild endgültig löschen?"
                              : `${ids.length} Bilder endgültig löschen?`)) return;
   try{
-    await fetch("/photo_del",{method:"POST",headers:{"Content-Type":"application/json"},
+    await fetch("photo_del",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({ids:ids.map(Number)})});
     ids.forEach(i=>picSel.delete(String(i)));
     document.getElementById("picsOv").style.display = "none";
@@ -397,7 +397,7 @@ document.getElementById("picSelClr").onclick = ()=>{ picSel.clear(); loadPics();
 let blkWins = [], blkTz = "";
 async function loadBlock(){
   try{
-    const r = await (await fetch("/photo_block")).json();
+    const r = await (await fetch("photo_block")).json();
     // Waehrend der Dialog offen ist, darf der periodische Hintergrund-Poll
     // (alle 15s ueber loadPics) laufende Bearbeitungen (neue/geaenderte
     // Zeilen) nicht ueberschreiben - sonst gehen unsichtbar Eingaben verloren,
@@ -442,7 +442,7 @@ document.getElementById("picBlkAdd").onclick = ()=>{
 };
 document.getElementById("picBlkSave").onclick = async ()=>{
   try{
-    const r = await (await fetch("/photo_block",{method:"POST",
+    const r = await (await fetch("photo_block",{method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({windows:blkWins})})).json();
     if(r.error){ document.getElementById("picBlkMsg").textContent = "Fehler: "+r.error; return; }
@@ -461,7 +461,7 @@ setInterval(()=>{ if(view==="pics") loadPics(); }, 15000);
 document.querySelectorAll(".tab[data-v]").forEach(b=>b.onclick=()=>setView(b.dataset.v,b));
 
 async function postCmd(target,cmd,info){
-  try{ await fetch("/command",{method:"POST",headers:{"Content-Type":"application/json"},
+  try{ await fetch("command",{method:"POST",headers:{"Content-Type":"application/json"},
        body:JSON.stringify({target,cmd,info})}); }catch(e){}
 }
 // Optimistische Umschaltung: der Knopf reagiert sofort, ohne auf den Geraete-
@@ -525,7 +525,7 @@ function renderCtrl(settings,force){
   el.innerHTML=h;
 }
 document.getElementById("reset").onclick=async()=>{
-  if(confirm("Alle eingetragenen catObserved löschen?")){ await fetch("/reset",{method:"POST"}); events=[]; drawCurrent(); }
+  if(confirm("Alle eingetragenen catObserved löschen?")){ await fetch("reset",{method:"POST"}); events=[]; drawCurrent(); }
 };
 
 function renderDebug(rows){
@@ -600,7 +600,7 @@ const MAN={data:null, refs:new Set(), target:null, tx:0, ty:0, ang:0, mirror:1, 
 function manDeg(){ return ((MAN.ang*180/Math.PI)%360+360)%360; }
 function manName(id){ const d=MAN.data?.devices?.[String(id)]; return d?`${d.name} #${id}`:`#${id}`; }
 async function manLoad(){
-  MAN.data = await (await fetch('/manual_data')).json();
+  MAN.data = await (await fetch('manual_data')).json();
   const target=document.getElementById('manTarget');
   const ids=MAN.data.calibratable.length?MAN.data.calibratable:Object.keys(MAN.data.devices).map(Number);
   target.innerHTML=ids.map(id=>`<option value="${id}">${escapeHtml(manName(id))}</option>`).join('');
@@ -645,7 +645,7 @@ function manInit(){
   document.getElementById('manMirror').onchange=e=>{MAN.mirror=+e.target.value; drawManual();};
   document.getElementById('manReload').onclick=()=>{MAN.view=null; manLoad();};
   document.getElementById('manClear').onclick=()=>MAN.target!=null&&postCmd(MAN.target,19,0);
-  document.getElementById('manSend').onclick=async()=>{ if(MAN.target==null) return; if(!confirm('Manuelle Pose an Sensor senden und alte Pose löschen?')) return; const r=await fetch('/manual_pose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:MAN.target,x:MAN.tx,y:MAN.ty,heading_deg:manDeg(),mirror:MAN.mirror})}); document.getElementById('manInfo').textContent=JSON.stringify(await r.json()); };
+  document.getElementById('manSend').onclick=async()=>{ if(MAN.target==null) return; if(!confirm('Manuelle Pose an Sensor senden und alte Pose löschen?')) return; const r=await fetch('manual_pose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:MAN.target,x:MAN.tx,y:MAN.ty,heading_deg:manDeg(),mirror:MAN.mirror})}); document.getElementById('manInfo').textContent=JSON.stringify(await r.json()); };
   cv.onpointerdown=e=>{cv.setPointerCapture(e.pointerId); MAN.drag={p:manPointer(e), mode:e.shiftKey?'rot':'move', tx:MAN.tx, ty:MAN.ty, ang:MAN.ang, cx:MAN.view.cx, cy:MAN.view.cy};};
   cv.onpointermove=e=>{if(!MAN.drag)return; const p=manPointer(e),dx=p.x-MAN.drag.p.x,dy=p.y-MAN.drag.p.y; if(MAN.drag.mode==='rot') MAN.ang=MAN.drag.ang+dx*0.01; else if(e.altKey){MAN.view.cx=MAN.drag.cx-dx/MAN.view.s;MAN.view.cy=MAN.drag.cy+dy/MAN.view.s;} else {MAN.tx=MAN.drag.tx+dx/MAN.view.s;MAN.ty=MAN.drag.ty-dy/MAN.view.s;} drawManual();};
   cv.onpointerup=e=>{MAN.drag=null;};
@@ -656,7 +656,7 @@ setTimeout(manInit,0);
 
 async function tick(){
   try{
-    const st = await (await fetch("/state")).json();
+    const st = await (await fetch("state")).json();
     renderDebug(st.debug); renderDevices(st.devices, st.now);
     lastSettings = st.settings || {};
     applyPending();                       // optimistische Umschaltungen ueber frische Server-Settings legen
@@ -664,7 +664,7 @@ async function tick(){
     if(view==="ctrl") renderCtrl(lastSettings);
     if(resetSeq===null) resetSeq=st.reset_seq;
     if(st.reset_seq!==resetSeq){ events=[]; evNext=0; resetSeq=st.reset_seq; }
-    const ev = await (await fetch("/events?since="+evNext)).json();
+    const ev = await (await fetch("events?since="+evNext)).json();
     if(ev.reset_seq!==resetSeq){ events=[]; evNext=0; resetSeq=ev.reset_seq; }
     if(ev.base < evNext){                 // Server neu gestartet / zurueckgesprungen -> Ansicht ersetzen
       events = ev.events.slice();
@@ -676,7 +676,7 @@ async function tick(){
     if(view!=="list") drawCurrent();
   }catch(e){ /* VPS kurz weg -> nächster Tick */ }
 }
-(async()=>{ try{ mapPoints=(await (await fetch("/map")).json()).points; }catch(e){ mapPoints=[]; } tick(); setInterval(tick,1500); })();
+(async()=>{ try{ mapPoints=(await (await fetch("map")).json()).points; }catch(e){ mapPoints=[]; } tick(); setInterval(tick,1500); })();
 </script>
 <script src="static/analysis.js"></script>
 </body>

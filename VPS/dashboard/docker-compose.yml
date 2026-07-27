@@ -22,3 +22,9 @@ services:
       GITHUB_MAP_TOKEN: "${GITHUB_MAP_TOKEN:-}"
       DB_PATH: "/data/catfinder.db"
       PARAMS_PATH: "/data/model_params.json"
+      # Die Weboberflaeche liegt unter diesem Pfad, der Wurzelpfad liefert 404.
+      # Nur Verschleierung gegen Scanner, KEINE Authentifizierung - wer den Pfad
+      # kennt, kann weiterhin alles (auch /command). Die sieben Endpunkte der
+      # Firmware bleiben zwingend am Wurzelpfad, siehe DEVICE_ROUTES in
+      # dashboard.py. Leerer Wert = altes Verhalten (alles am Wurzelpfad).
+      UI_PREFIX: "${UI_PREFIX:-/Tristan}"
