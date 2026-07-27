@@ -4,7 +4,47 @@ Web-Dashboard, das die System-Ereignisse des CatFinder-Netzes zeigt. Die Daten
 liefert der **Manager als Gateway** per HTTP-POST (`/ingest`); der lokale
 Betrieb läuft unabhängig vom VPS weiter.
 
-Erreichbar unter **`http://<VPS-IP>/`** (Port 80).
+Erreichbar unter **`http://<VPS-IP>/Tristan/`** (Port 80). Der Wurzelpfad
+`http://<VPS-IP>/` liefert bewusst **404**.
+
+## URL-Präfix (`UI_PREFIX`)
+
+Die Oberfläche und alle Browser-Endpunkte liegen hinter dem Präfix aus der
+Umgebungsvariablen `UI_PREFIX` (Default `/Tristan`, gesetzt in
+`docker-compose.yml`). Alles andere am Wurzelpfad wird mit 404 beantwortet.
+
+> **Das ist Verschleierung, keine Authentifizierung.** Wer den Pfad kennt, hat
+> vollen Zugriff — auch auf `POST /Tristan/command`, das ungeprüft beliebige
+> Kommandos an PowerActor/LaserMarker weitergibt. Über reines HTTP steht der
+> Pfad zudem in jedem Request im Klartext. Der offene Punkt „Review-Punkt 10"
+> aus `MapConcept.md` bleibt damit bestehen.
+
+**Die sieben Firmware-Endpunkte bleiben zwingend am Wurzelpfad**, weil die
+Geräte ihre Pfade fest einkompiliert haben (`DEVICE_ROUTES` in `dashboard.py`):
+
+| Methode | Pfad | Gerät |
+|---|---|---|
+| `POST` | `/ingest` | Manager (`gatewayProc.ino:324`) |
+| `GET`  | `/commands` | Manager (`gatewayProc.ino:370`) |
+| `POST` | `/mapsync` | Manager (`gatewayProc.ino:239`) |
+| `GET`  | `/maps/<typ>` | Manager (`gatewayProc.ino:255`) — der **POST** auf denselben Pfad ist der Editor und liegt hinter dem Präfix |
+| `POST` | `/photo` | CatCam (`CatCam6_3_0.ino:315`) — **`GET /photo/<id>`** ist die Bildanzeige und liegt hinter dem Präfix |
+| `GET`  | `/aparams.csv` | CatIdentifier (`catTrack.ino:119`) — die JSON-Variante `/aparams` liegt hinter dem Präfix |
+| `GET`  | `/coverage_export.csv` | CatIdentifier (`catTrack.ino:245`) |
+
+Diese sieben abzusichern geht **nur zusammen mit einem Neuflashen** von Manager,
+CatCam und CatIdent. Achtung dabei: `gatewayProc.ino:332` wertet *jeden*
+HTTP-Status als „zugestellt" und verwirft den Puffer — ein 401/404 auf `/ingest`
+würde Events, Debug-Zeilen und Heartbeats **still** vernichten. Der Localizer auf
+Port 8080 ist von dieser Änderung nicht berührt und weiterhin komplett offen.
+
+`UI_PREFIX=""` stellt das alte Verhalten her (alles am Wurzelpfad).
+
+Damit das Präfix ohne verkettete Basis-URL funktioniert, sind alle URLs im
+Frontend **relativ** (`fetch("state")` statt `fetch("/state")`); in
+`static/analysis.js` erledigt das zentral der Wrapper `anaJson`. Deshalb leitet
+die Middleware `/Tristan` auf `/Tristan/` um — ohne den abschließenden Schrägstrich
+würden die relativen URLs auf dem Wurzelpfad landen.
 
 ## Anzeige
 
@@ -26,7 +66,7 @@ Erreichbar unter **`http://<VPS-IP>/`** (Port 80).
 
 | Methode | Pfad | Zweck |
 |---|---|---|
-| `GET`  | `/` | Web-UI |
+| `GET`  | `/Tristan/` | Web-UI (Wurzelpfad `/` = 404, siehe oben) |
 | `POST` | `/ingest` | Manager-Push `{events,debug,hb,settings,poses,maps}` |
 | `GET`  | `/state` | Debug + aktive Geräte + Minuten-Zusammenfassung |
 | `GET`  | `/events?since=N` | neue catObserved ab Index N (für die Karten) |

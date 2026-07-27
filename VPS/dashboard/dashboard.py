@@ -87,6 +87,41 @@ XCOMDEF_URL  = os.environ.get(
     "XCOMDEF_URL",
     "https://raw.githubusercontent.com/smily77/CatFind/main/Controller/Manager6_3_0/xComDef6_3.h")
 
+# --- URL-Praefix der Weboberflaeche -------------------------------------------------
+# Die Oberflaeche liegt unter UI_PREFIX (Default /Tristan), der Wurzelpfad liefert
+# 404. Das ist bewusst nur VERSCHLEIERUNG, KEINE Authentifizierung: wer den Pfad
+# kennt, hat weiterhin vollen Zugriff inkl. /command (Fernsteuerung von
+# PowerActor/LaserMarker). Siehe MapConcept.md "Review-Punkt 10" - der bleibt offen.
+#
+# Die Endpunkte, die die FIRMWARE anspricht, muessen am Wurzelpfad bleiben: die
+# Geraete haben die Pfade fest einkompiliert und ein 404 waere dort teilweise
+# unsichtbar - gatewayProc.ino:332 wertet JEDEN HTTP-Status als "zugestellt" und
+# verwirft den Puffer, ein 404 auf /ingest wuerde Events/Debug/HB still vernichten.
+# Diese sieben bleiben damit unauthentifiziert erreichbar; ein Shared-Secret waere
+# der naechste Schritt, kostet aber ein Neuflashen von Manager, CatCam, CatIdent.
+UI_PREFIX = os.environ.get("UI_PREFIX", "/Tristan").rstrip("/")
+
+# (Methode, Pfad) EXAKT - bewusst kein startswith, denn zwei Pfade sind geteilt:
+#   /maps/<typ>  GET = Manager holt Karte  |  POST = Karten-Editor im Browser
+#   /photo       POST = CatCam-Upload      |  GET /photo/<id> = Bildanzeige Browser
+DEVICE_ROUTES = {
+    ("POST", "/ingest"),                # Manager   gatewayProc.ino:324
+    ("GET",  "/commands"),              # Manager   gatewayProc.ino:370
+    ("POST", "/mapsync"),               # Manager   gatewayProc.ino:239
+    ("POST", "/photo"),                 # CatCam    CatCam6_3_0.ino:315
+    ("GET",  "/aparams.csv"),           # CatIdent  catTrack.ino:119
+    ("GET",  "/coverage_export.csv"),   # CatIdent  catTrack.ino:245
+}
+
+
+def _is_device_request(method, path):
+    """True fuer die Endpunkte, die ein ESP32 am Wurzelpfad aufruft."""
+    if (method, path) in DEVICE_ROUTES:
+        return True
+    # GET /maps/<typ> - Manager holt die pending Karte (gatewayProc.ino:255).
+    # Genau EIN Pfadsegment, damit nichts anderes unter /maps/ mitrutscht.
+    return method == "GET" and path.startswith("/maps/") and "/" not in path[6:]
+
 # --- Karten-Spiegel (MapConcept.md) ------------------------------------------------
 # Kein GitHub-Regex-Fetch mehr (frueher NOSHOT_URL -> Manager6_3_0.ino parsen bzw.
 # MAP_URL auf die Meter-RasenKarte): der VPS zeigt nur noch, was der Manager per
@@ -491,6 +526,55 @@ def map_status(map_type):
 
 
 app = Flask(__name__, static_folder="static")
+
+
+class _PrefixMiddleware:
+    """Serviert die Oberflaeche nur unter UI_PREFIX, Wurzelpfad = 404.
+
+    Bewusst WSGI-Ebene statt Flask-Blueprint: so bleiben alle 46 Routen-
+    Dekoratoren unveraendert. PATH_INFO wird um das Praefix gekuerzt, BEVOR
+    Flask routet - dadurch stimmt request.path in no_cache() weiterhin
+    ("/photo/<id>"), und url_for() bekommt das Praefix ueber SCRIPT_NAME.
+    """
+
+    def __init__(self, wsgi_app, prefix):
+        self.wsgi_app = wsgi_app
+        self.prefix   = prefix
+
+    def _plain(self, start_response, status):
+        start_response(status, [("Content-Type", "text/plain; charset=utf-8"),
+                                ("Content-Length", "0")])
+        return [b""]
+
+    def __call__(self, environ, start_response):
+        if not self.prefix:                      # UI_PREFIX="" -> altes Verhalten
+            return self.wsgi_app(environ, start_response)
+        path   = environ.get("PATH_INFO", "") or "/"
+        method = environ.get("REQUEST_METHOD", "GET")
+
+        if path == self.prefix:
+            # Ohne abschliessenden Slash wuerden die RELATIVEN URLs der Seite
+            # (static/analysis.js, state, events, ...) auf dem Wurzelpfad landen
+            # und dort 404 bekommen -> Umleitung erzwingen.
+            loc = self.prefix + "/"
+            if environ.get("QUERY_STRING"):
+                loc += "?" + environ["QUERY_STRING"]
+            start_response("301 Moved Permanently",
+                           [("Location", loc), ("Content-Length", "0")])
+            return [b""]
+
+        if path.startswith(self.prefix + "/"):
+            environ["SCRIPT_NAME"] = environ.get("SCRIPT_NAME", "") + self.prefix
+            environ["PATH_INFO"]   = path[len(self.prefix):]
+            return self.wsgi_app(environ, start_response)
+
+        if _is_device_request(method, path):     # ESP32 -> unveraendert am Root
+            return self.wsgi_app(environ, start_response)
+
+        return self._plain(start_response, "404 Not Found")
+
+
+app.wsgi_app = _PrefixMiddleware(app.wsgi_app, UI_PREFIX)
 
 
 @app.after_request
