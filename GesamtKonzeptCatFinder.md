@@ -697,12 +697,22 @@ Rasen-Weltkoordinaten (mm) abbildet:
   Pi = Weitwinkel-Erkennung + Lokalisierung.
 
 ### Software-Stack (Festlegungen)
-- **OS: Raspberry Pi OS Bullseye (Legacy) 64-bit Lite (Python 3.9), ohne Desktop.**
-  Bewusst nicht Bookworm/Python 3.11 — der Coral-Stack (`pycoral`/`libedgetpu`)
-  ist an ältere Python-Versionen gebunden; Bullseye hat offizielle Wheels und
-  vermeidet die größte Setup-Falle des Projekts.
+- **OS: Raspberry Pi OS Bookworm 64-bit Lite (Debian 12, Python 3.11), ohne Desktop**
+  (umgesetzt am 2026-08-18; ersetzt die frühere Bullseye-Festlegung). Grund der
+  Änderung: seit der Trixie-Umstellung bietet der Raspberry Pi Imager Bullseye
+  nicht mehr an („Legacy" = Bookworm), und die befürchtete Coral-Falle lässt sich
+  auf Bookworm sauber umgehen — siehe Inferenz-Punkt. Bullseye bliebe nur über ein
+  Archiv-Image ohne regulären Support erreichbar.
 - **Kamera:** `picamera2`/libcamera (OV5647).
-- **Inferenz:** `pycoral` + `tflite-runtime` + `libedgetpu`; Startmodell
+- **Inferenz:** `libedgetpu` + `tflite-runtime` (+ optional `pycoral`), **alle drei
+  gegen dieselbe TF-Version gebaut** — verifizierte Kombination auf Python 3.11:
+  `libedgetpu1-std 16.0tf2.17.1` + `tflite_runtime 2.17.1` + `pycoral 2.0.3`
+  (Community-Builds von `github.com/feranick`, weil Googles Wheels bei Python 3.9
+  enden) und **`numpy<2`** im venv (tflite_runtime ist gegen numpy 1.x gebaut).
+  Googles eigenes `libedgetpu1-std 16.0` (gegen TF 2.5) **segfaultet** mit
+  `tflite-runtime 2.14` — das ist die eigentliche Falle, nicht die Python-Version.
+  Gemessen auf dem Pi 4: 13,5 ms/Inferenz (SSD MobileNet v2 COCO, 300x300).
+  Startmodell
   **COCO-vortrainiert (Klasse „cat"), Edge-TPU-kompiliert (int8)**. Nachtbetrieb
   (IR-Graubild) erkennt COCO anfangs schlecht → **IR-Nachttraining später**
   (anspruchsvoll, iterativ; siehe Phase 7).
@@ -738,6 +748,15 @@ Nachtbilder ist gleichmäßige IR-Ausleuchtung wichtiger als maximale Mittenhell
    (Hostname, WLAN, SSH-Key, User). Danach übernimmt Claude per SSH: OS, Kamera
    und Coral einrichten, Grundcheck der Steuerbarkeit. (SD-Beschreiben und
    Kamera-/IR-Verkabelung sind die manuellen Teile.)
+   **ERLEDIGT 2026-08-18:** Pi 4 (2 GB) mit Bookworm 64-bit Lite, Hostname
+   `kivision`, User `pi` (SSH-Key, sudo ohne Passwort), feste IP
+   **192.168.0.186/24** (NetworkManager-Profil `preconfigured`, WLAN-Powersave
+   aus), Zeitzone Europe/Zurich. Kamera OV5647 erkannt (bis 2592x1944),
+   `python3-picamera2` aus apt. Python-Umgebung: `~/kivision/venv`
+   (`--system-site-packages`, damit picamera2 sichtbar ist), Coral-Stack wie oben,
+   Testskripte `~/kivision/test/{coral_test.py,cam_test.py}`, Testmodell in
+   `~/kivision/models/`. Verifiziert: Katze auf Coral-Testbild mit 0.96 erkannt,
+   13,5 ms/Inferenz; Kamera liefert 1280x960-Bilder.
 2. **Kamera-Test + Webserver.** Livebild + Kamerasteuerung im Browser. Der Nutzer
    sucht den optimalen Montageort (ganzer Rasen im Blick — vermutlich Kamera 90°
    gedreht, da der Rasen länger als breit ist) und testet Objektive sowie
