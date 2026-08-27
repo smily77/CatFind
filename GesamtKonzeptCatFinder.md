@@ -773,7 +773,18 @@ Nachtbilder ist gleichmäßige IR-Ausleuchtung wichtiger als maximale Mittenhell
    Gemessen: 10 fps bei 1280×960, Erkennung 110 ms (ganzes Bild) bzw. 143 ms
    (2 Kacheln), CPU 40 °C ohne Throttling. Erste Beobachtungen: deutlicher
    **Magenta-Stich** (IR-Sperrfilter steht nicht im Strahlengang) und starke
-   **Tonnenverzeichnung** — beides vor Phase 4 zu klären.
+   **Tonnenverzeichnung** — beide sind Sache der endgültigen Kamera und werden
+   mit ihr in Phase 4 behandelt (die Testkamera hat keinen IR-Filter, die
+   vorgesehenen haben einen).
+   **Engpass ist das WLAN, nicht der Pi:** 2,4 GHz, −60 dBm, real nur 2–3 Mbit/s
+   nutzbar, während 1280×960/85/10 fps 14,9 Mbit/s erzeugt. Das Livebild lief
+   dadurch rund 2 s nach (TCP-Sendepuffer voll). Behoben durch begrenzten
+   Sendepuffer (96 kB), Bildnummern-basiertes Überspringen und Encoder nur bei
+   Zuschauern: 0,8 → 4,4 Bilder/s, Rückstand 2 s wachsend → 0,5 s stabil, im
+   Sparmodus (640×480) 0,0 s. Details in `KIVisionCatLocator/README.md`.
+   **Fürs Netz-Konzept ab Phase 5 wichtig:** eine dauerhafte Bildübertragung
+   zum VPS muss zu diesen 2–3 Mbit/s passen — Einzelbilder bei Ereignis, kein
+   Dauerstream.
 3. **Netz-Integration.** Claude macht den Pi zum Busgerät `KIVisionCatLocator`
    (Python-xCom, HB, `settingsReport`, Steuerbarkeit im VPS).
 4. **Pose / Homographie (assistiert).** Die Kamera lernt Standort und Ausrichtung

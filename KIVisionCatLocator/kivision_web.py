@@ -12,6 +12,7 @@ Bewusst eigenstaendig: keine Bus-Anbindung, kein VPS - das kommt in Phase 3.
 import io
 import json
 import os
+import socket
 import subprocess
 import threading
 import time
@@ -56,9 +57,12 @@ CONTROL_SPEC = [
 ]
 
 DEFAULTS = {
-    "size": [1280, 960],
+    # Sparsam voreingestellt: das 2,4-GHz-WLAN des Pi traegt gemessen nur rund
+    # 2-3 Mbit/s, und 1280x960/85 braeuchte 15. Wer mehr will, dreht in der
+    # Oberflaeche hoch - fuer Detailfragen ist aber ein Schnappschuss besser.
+    "size": [640, 480],
     "fps": 10,
-    "quality": 85,
+    "quality": 50,
     "hflip": False,
     "vflip": False,
     "rotate": 0,          # nur Browser-Anzeige (der ISP kann kein 90-Grad)
@@ -98,13 +102,19 @@ def save_config(cfg):
 
 
 class StreamingOutput(io.BufferedIOBase):
-    """Nimmt die JPEGs des Encoders entgegen und weckt die wartenden Clients."""
+    """Nimmt die JPEGs des Encoders entgegen und weckt die wartenden Clients.
+
+    Gepuffert wird immer nur das *neueste* Bild. Ein Client, der nicht
+    hinterherkommt (schwaches WLAN), ueberspringt damit Bilder, statt einen
+    Rueckstau aufzubauen - Ruckeln ist besser als Verzoegerung.
+    """
 
     def __init__(self):
         self.frame = None
         self.condition = threading.Condition()
         self.count = 0
         self.last_times = []
+        self.last_bytes = []
 
     def write(self, buf):
         now = time.monotonic()
@@ -112,27 +122,40 @@ class StreamingOutput(io.BufferedIOBase):
             self.frame = buf
             self.count += 1
             self.last_times.append(now)
+            self.last_bytes.append(len(buf))
             if len(self.last_times) > 30:
                 self.last_times.pop(0)
+                self.last_bytes.pop(0)
             self.condition.notify_all()
+
+    def _span(self):
+        if len(self.last_times) < 2:
+            return 0.0
+        return self.last_times[-1] - self.last_times[0]
 
     def fps(self):
         with self.condition:
-            times = list(self.last_times)
-        if len(times) < 2:
-            return 0.0
-        span = times[-1] - times[0]
-        return round((len(times) - 1) / span, 1) if span > 0 else 0.0
+            span, n = self._span(), len(self.last_times)
+        return round((n - 1) / span, 1) if span > 0 else 0.0
 
-    def wait(self, timeout=5.0):
+    def mbit(self):
+        """Wieviel der Stream gerade erzeugen wuerde, in Mbit/s."""
         with self.condition:
-            if not self.condition.wait(timeout):
-                return None
-            return self.frame
+            span, total = self._span(), sum(self.last_bytes[1:])
+        return round(total * 8 / span / 1e6, 1) if span > 0 else 0.0
+
+    def wait(self, last_seq, timeout=5.0):
+        """Liefert (Bild, Nummer). Ist schon ein neueres da, sofort."""
+        with self.condition:
+            if self.count == last_seq:
+                self.condition.wait(timeout)
+            return self.frame, self.count
 
 
 class Camera:
     """Haelt die Picamera2 und kapselt Start/Stop/Umkonfigurieren."""
+
+    IDLE_STOP = 5.0          # Sekunden ohne Zuschauer, dann Encoder aus
 
     def __init__(self, cfg):
         self.cfg = cfg
@@ -141,6 +164,9 @@ class Camera:
         self.picam = Picamera2()
         self.limits = self._read_limits()
         self.running = False
+        self.encoder = None
+        self.viewers = 0
+        self.idle_timer = None
         self.start()
 
     # -- intern ----------------------------------------------------------
@@ -193,14 +219,55 @@ class Camera:
                 main={"size": size, "format": "RGB888"},
                 transform=self._transform(),
                 controls=self._build_controls(),
-                buffer_count=4,
+                buffer_count=3,   # weniger Puffer = weniger Verzoegerung
             )
             self.picam.configure(config)
-            self.picam.start_encoder(JpegEncoder(q=int(self.cfg["quality"])),
-                                     FileOutput(self.output))
             self.picam.start()
             self.running = True
+            if self.viewers > 0:
+                self._encoder_start()
             print("[web] Kamera laeuft: %dx%d @ %s fps" % (size[0], size[1], self.cfg["fps"]))
+
+    # -- Encoder laeuft nur, solange jemand zuschaut ----------------------
+    def _encoder_start(self):
+        with self.lock:
+            if self.encoder is not None or not self.running:
+                return
+            self.encoder = JpegEncoder(q=int(self.cfg["quality"]))
+            self.picam.start_encoder(self.encoder, FileOutput(self.output))
+
+    def _encoder_stop(self):
+        with self.lock:
+            if self.encoder is None:
+                return
+            try:
+                self.picam.stop_encoder()
+            except Exception:
+                pass
+            self.encoder = None
+
+    def add_viewer(self):
+        with self.lock:
+            self.viewers += 1
+            if self.idle_timer is not None:
+                self.idle_timer.cancel()
+                self.idle_timer = None
+            self._encoder_start()
+
+    def remove_viewer(self):
+        with self.lock:
+            self.viewers = max(0, self.viewers - 1)
+            if self.viewers == 0 and self.idle_timer is None:
+                self.idle_timer = threading.Timer(self.IDLE_STOP, self._idle_stop)
+                self.idle_timer.daemon = True
+                self.idle_timer.start()
+
+    def _idle_stop(self):
+        with self.lock:
+            self.idle_timer = None
+            if self.viewers == 0:
+                self._encoder_stop()
+                print("[web] kein Zuschauer - Encoder aus")
 
     def _transform(self):
         from libcamera import Transform
@@ -211,10 +278,7 @@ class Camera:
         with self.lock:
             if not self.running:
                 return
-            try:
-                self.picam.stop_encoder()
-            except Exception:
-                pass
+            self._encoder_stop()
             self.picam.stop()
             self.running = False
 
@@ -497,12 +561,21 @@ def index():
 @app.route("/stream.mjpg")
 def stream():
     def generate():
-        while True:
-            frame = camera.output.wait()
-            if frame is None:
-                continue
-            yield (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
-                   + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n")
+        camera.add_viewer()
+        seq = -1
+        try:
+            while True:
+                frame, seq = camera.output.wait(seq)
+                if frame is None:
+                    continue
+                # X-Seq erlaubt es, den Rueckstand zu messen: der Vergleich mit
+                # "frames" aus /api/state sagt, wieviele Bilder der Client
+                # hinterherhinkt - ohne auf synchrone Uhren angewiesen zu sein.
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\nX-Seq: "
+                       + str(seq).encode() + b"\r\nContent-Length: "
+                       + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n")
+        finally:
+            camera.remove_viewer()
     return Response(generate(),
                     mimetype="multipart/x-mixed-replace; boundary=frame")
 
@@ -517,6 +590,9 @@ def api_state():
         "limits": camera.limits,
         "models": Detector.available_models(),
         "fps": camera.output.fps(),
+        "mbit": camera.output.mbit(),
+        "frames": camera.output.count,
+        "viewers": camera.viewers,
         "system": system_info(),
         "meta": {
             "ExposureTime": meta.get("ExposureTime"),
@@ -647,5 +723,13 @@ def snapshot_delete(name):
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("KIVISION_PORT", 8080)),
-            threaded=True, use_reloader=False)
+    from werkzeug.serving import make_server
+
+    port = int(os.environ.get("KIVISION_PORT", 8080))
+    server = make_server("0.0.0.0", port, app, threaded=True)
+    # Kleiner Sendepuffer: bei schwachem WLAN blockiert das Schreiben schnell,
+    # der Stream ueberspringt dann Bilder, statt sekundenlang nachzuhinken.
+    # Angenommene Verbindungen erben die Puffergroesse vom Listener.
+    server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 96 * 1024)
+    print("[web] Server auf Port %d, Sendepuffer 96 kB" % port)
+    server.serve_forever()

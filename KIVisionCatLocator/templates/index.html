@@ -64,6 +64,7 @@
   <div class="stats">
     <span>Bild <b id="sRes">-</b></span>
     <span><b id="sFps">-</b> fps</span>
+    <span>Netz <b id="sMbit">-</b></span>
     <span>Bel. <b id="sExp">-</b></span>
     <span>Gain <b id="sGain">-</b></span>
     <span>Lux <b id="sLux">-</b></span>
@@ -113,6 +114,11 @@
         <input type="range" id="fQual" min="30" max="95" step="5">
         <span class="val" id="vQual"></span>
       </div>
+      <div class="row">
+        <button class="wide" id="bEco">Sparmodus (flüssig)</button>
+        <button class="wide" id="bStd">Detail (ruckelt)</button>
+      </div>
+      <div class="msg" id="netHint"></div>
     </div>
 
     <div class="card">
@@ -325,6 +331,14 @@ function applyState(s, first) {
   }
   $('sRes').textContent = c.size[0] + '×' + c.size[1];
   $('sFps').textContent = s.fps;
+  $('sMbit').textContent = (s.mbit || 0) + ' Mbit/s';
+  // Das WLAN des Pi traegt erfahrungsgemaess ~5 Mbit/s; darueber staut sich
+  // der Stream und das Bild laeuft der Wirklichkeit hinterher.
+  const heavy = (s.mbit || 0) > 5, warm = (s.mbit || 0) > 3.5;
+  $('sMbit').style.color = heavy ? 'var(--bad)' : (warm ? 'var(--warn)' : '');
+  $('netHint').textContent = heavy
+    ? 'Zu viel fürs WLAN — Bild läuft nach. Sparmodus oder Qualität/Bildrate senken.'
+    : '';
   $('sExp').textContent = s.meta.ExposureTime ? (s.meta.ExposureTime / 1000).toFixed(1) + ' ms' : '-';
   $('sGain').textContent = s.meta.AnalogueGain || '-';
   $('sLux').textContent = s.meta.Lux ?? '-';
@@ -414,6 +428,22 @@ $('fQual').onchange = (e) => {
   say('Qualität wird umgestellt …');
   post('/api/config', {quality: Number(e.target.value)}).then(() => { reloadStream(); say(''); });
 };
+function preset(size, quality, fps, name) {
+  say(name + ' wird gesetzt …');
+  post('/api/config', {size: size, quality: quality, fps: fps}).then(() => {
+    state.config.size = size;
+    $('fSize').value = size[0] + 'x' + size[1];
+    $('fQual').value = quality; $('vQual').textContent = quality;
+    $('fFps').value = fps; $('vFps').textContent = fps + ' fps';
+    reloadStream(); layout(); say(name + ' aktiv');
+  });
+}
+// Gemessen im Heim-WLAN des Pi (2,4 GHz, ~2-3 Mbit/s nutzbar): der Sparmodus
+// laeuft ohne Rueckstand, alles Groessere hinkt hinterher. Fuer Detailfragen
+// lieber einen Schnappschuss machen als den Stream hochdrehen.
+$('bEco').onclick = () => preset([640, 480], 50, 8, 'Sparmodus');
+$('bStd').onclick = () => preset([1280, 960], 55, 3, 'Detailmodus');
+
 $('bReset').onclick = () => post('/api/reset_controls').then(() => {
   reloadStream(); refreshState(true); say('Kamera-Werte zurückgesetzt');
 });
