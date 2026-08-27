@@ -1,0 +1,17 @@
+[Unit]
+Description=KIVisionCatLocator Webserver (Phase 2: Kamera-Test)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/kivision/web
+Environment=KIVISION_PORT=8080
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/pi/kivision/venv/bin/python /home/pi/kivision/web/kivision_web.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

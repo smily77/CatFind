@@ -761,6 +761,19 @@ Nachtbilder ist gleichmäßige IR-Ausleuchtung wichtiger als maximale Mittenhell
    sucht den optimalen Montageort (ganzer Rasen im Blick — vermutlich Kamera 90°
    gedreht, da der Rasen länger als breit ist) und testet Objektive sowie
    Tag-/Nachtfähigkeit.
+   **ERLEDIGT 2026-08-27:** Weboberfläche unter **http://192.168.0.186:8080/**
+   (Quellcode `KIVisionCatLocator/`, auf dem Pi `~/kivision/web/`, systemd-Dienst
+   `kivision-web` mit Autostart). MJPEG-Livebild, Anzeige-Drehung 0/90/180/270°,
+   Spiegeln, Raster, Auflösung 640×480…2592×1944, Bildrate, JPEG-Qualität,
+   Belichtung/Gain/Weißabgleich/Bildregler, Schnappschuss (Stream oder volle
+   5 MP) mit Galerie, und ein **zuschaltbarer Coral-Test** mit den Kachel-
+   Ausschnitten des Konzepts (1…3×2, 15 % Überlappung) — damit lässt sich am
+   Montageort direkt prüfen, ob die KI von dort erkennt. Kopfzeile zeigt Lux,
+   Belichtungszeit, Gain, **FocusFoM** (Scharfstellhilfe) und CPU-Temperatur.
+   Gemessen: 10 fps bei 1280×960, Erkennung 110 ms (ganzes Bild) bzw. 143 ms
+   (2 Kacheln), CPU 40 °C ohne Throttling. Erste Beobachtungen: deutlicher
+   **Magenta-Stich** (IR-Sperrfilter steht nicht im Strahlengang) und starke
+   **Tonnenverzeichnung** — beides vor Phase 4 zu klären.
 3. **Netz-Integration.** Claude macht den Pi zum Busgerät `KIVisionCatLocator`
    (Python-xCom, HB, `settingsReport`, Steuerbarkeit im VPS).
 4. **Pose / Homographie (assistiert).** Die Kamera lernt Standort und Ausrichtung

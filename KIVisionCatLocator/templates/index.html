@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#12161c">
+<title>KIVision Kamera</title>
+<style>
+  :root {
+    --bg: #12161c; --panel: #1b212a; --line: #2c3542; --fg: #e6ebf2;
+    --dim: #93a1b3; --accent: #4ea3ff; --ok: #46c46a; --warn: #ffb547; --bad: #ff5f56;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; background: #12161cef;
+           border-bottom: 1px solid var(--line); padding: 8px 12px;
+           display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .stats { margin-left: auto; display: flex; gap: 10px; flex-wrap: wrap;
+           font-size: 12px; color: var(--dim); }
+  .stats b { color: var(--fg); font-weight: 600; }
+  main { padding: 12px; display: grid; gap: 12px; grid-template-columns: 1fr;
+         max-width: 1500px; margin: 0 auto; }
+  @media (min-width: 1000px) { main { grid-template-columns: minmax(0,1fr) 380px; align-items: start; } }
+  #stage { position: relative; width: 100%; background: #000; border-radius: 10px;
+           overflow: hidden; border: 1px solid var(--line); }
+  #rot { position: absolute; left: 50%; top: 50%; transform-origin: center center; }
+  #live { width: 100%; height: 100%; display: block; }
+  #ov { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+          padding: 10px 12px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+             color: var(--dim); margin: 0 0 8px; }
+  .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+  .row label { flex: 1 1 130px; font-size: 13px; color: var(--dim); }
+  .row .val { font-variant-numeric: tabular-nums; min-width: 62px; text-align: right;
+              font-size: 13px; }
+  input[type=range] { flex: 2 1 160px; accent-color: var(--accent); }
+  select, input[type=number] { background: #10151b; color: var(--fg);
+          border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+  button { background: #263140; color: var(--fg); border: 1px solid var(--line);
+           border-radius: 8px; padding: 9px 12px; font: inherit; cursor: pointer; }
+  button:hover { background: #2f3d4f; }
+  button.on { background: var(--accent); border-color: var(--accent); color: #06101c; font-weight: 600; }
+  button.wide { flex: 1 1 120px; }
+  .seg { display: flex; gap: 4px; flex-wrap: wrap; }
+  .seg button { padding: 7px 10px; }
+  .chk { display: flex; align-items: center; gap: 8px; }
+  .chk input { width: 18px; height: 18px; accent-color: var(--accent); }
+  .gal { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+  .gal figure { margin: 0; position: relative; }
+  .gal img { width: 100%; border-radius: 6px; display: block; border: 1px solid var(--line); }
+  .gal figcaption { font-size: 11px; color: var(--dim); margin-top: 2px;
+                    display: flex; justify-content: space-between; gap: 4px; }
+  .gal .del { background: none; border: 0; color: var(--bad); cursor: pointer; padding: 0; font-size: 11px; }
+  .msg { font-size: 12px; color: var(--warn); min-height: 16px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>KIVision Kamera</h1>
+  <div class="stats">
+    <span>Bild <b id="sRes">-</b></span>
+    <span><b id="sFps">-</b> fps</span>
+    <span>Bel. <b id="sExp">-</b></span>
+    <span>Gain <b id="sGain">-</b></span>
+    <span>Lux <b id="sLux">-</b></span>
+    <span>Schärfe <b id="sFocus">-</b></span>
+    <span>CPU <b id="sTemp">-</b></span>
+  </div>
+</header>
+
+<main>
+  <div>
+    <div id="stage"><div id="rot">
+      <img id="live" src="/stream.mjpg" alt="Livebild">
+      <svg id="ov" viewBox="0 0 1000 1000" preserveAspectRatio="none"></svg>
+    </div></div>
+    <div class="card" style="margin-top:12px">
+      <div class="row">
+        <div class="seg">
+          <button id="bRot">Drehen 0°</button>
+          <button id="bGrid">Raster</button>
+          <button id="bHflip">Spiegeln ⇄</button>
+          <button id="bVflip">Spiegeln ⇅</button>
+        </div>
+      </div>
+      <div class="row">
+        <button class="wide" id="bSnap">Schnappschuss</button>
+        <button class="wide" id="bSnapFull">Voll 5 MP</button>
+        <button class="wide" id="bFull">Vollbild</button>
+      </div>
+      <div class="msg" id="msg"></div>
+    </div>
+  </div>
+
+  <div style="display:grid; gap:12px">
+    <div class="card">
+      <h2>Stream</h2>
+      <div class="row">
+        <label for="fSize">Auflösung</label>
+        <select id="fSize"></select>
+      </div>
+      <div class="row">
+        <label for="fFps">Bildrate</label>
+        <input type="range" id="fFps" min="1" max="30" step="1">
+        <span class="val" id="vFps"></span>
+      </div>
+      <div class="row">
+        <label for="fQual">JPEG-Qualität</label>
+        <input type="range" id="fQual" min="30" max="95" step="5">
+        <span class="val" id="vQual"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Kamera</h2>
+      <div id="ctrls"></div>
+      <div class="row"><button id="bReset">Kamera-Werte zurücksetzen</button></div>
+    </div>
+
+    <div class="card">
+      <h2>KI-Test (Coral)</h2>
+      <div class="row">
+        <button id="bDet" class="wide">Erkennung aus</button>
+        <span class="val" id="vDetMs"></span>
+      </div>
+      <div class="row">
+        <label for="fModel">Modell</label>
+        <select id="fModel"></select>
+      </div>
+      <div class="row">
+        <label for="fTiles">Ausschnitte</label>
+        <select id="fTiles">
+          <option value="1x1">1 (ganzes Bild)</option>
+          <option value="2x1">2 nebeneinander</option>
+          <option value="3x1">3 nebeneinander</option>
+          <option value="2x2">2 × 2</option>
+          <option value="3x2">3 × 2</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="fThr">Mindest-Sicherheit</label>
+        <input type="range" id="fThr" min="5" max="90" step="5">
+        <span class="val" id="vThr"></span>
+      </div>
+      <div class="row">
+        <label for="fInt">Takt</label>
+        <input type="range" id="fInt" min="1" max="20" step="1">
+        <span class="val" id="vInt"></span>
+      </div>
+      <div class="row chk">
+        <input type="checkbox" id="fCat"><label for="fCat">nur Katzen zeigen</label>
+      </div>
+      <div class="msg" id="detErr"></div>
+    </div>
+
+    <div class="card">
+      <h2>Schnappschüsse</h2>
+      <div class="gal" id="gal"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+let state = null, rot = 0, grid = true, detOn = false;
+
+const $ = (id) => document.getElementById(id);
+const post = (url, body) => fetch(url, {
+  method: 'POST', headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify(body || {})
+}).then(r => r.json());
+
+function say(text) {
+  $('msg').textContent = text;
+  if (text) setTimeout(() => { if ($('msg').textContent === text) $('msg').textContent = ''; }, 4000);
+}
+
+/* ---------- Anzeige / Drehung ---------------------------------------- */
+function layout() {
+  if (!state) return;
+  const [w, h] = state.config.size, ar = w / h;
+  const stage = $('stage'), W = stage.clientWidth;
+  let rw, rh;
+  if (rot % 180 === 0) { rw = W; rh = W / ar; } else { rh = W; rw = W * ar; }
+  const el = $('rot');
+  el.style.width = rw + 'px';
+  el.style.height = rh + 'px';
+  el.style.transform = 'translate(-50%,-50%) rotate(' + rot + 'deg)';
+  stage.style.height = (rot % 180 === 0 ? W / ar : W * ar) + 'px';
+}
+window.addEventListener('resize', layout);
+
+function drawOverlay(det) {
+  const parts = [];
+  if (grid) {
+    for (let i = 1; i < 3; i++) {
+      const p = i * 1000 / 3;
+      parts.push('<line x1="' + p + '" y1="0" x2="' + p + '" y2="1000" stroke="#ffffff40" stroke-width="2"/>');
+      parts.push('<line x1="0" y1="' + p + '" x2="1000" y2="' + p + '" stroke="#ffffff40" stroke-width="2"/>');
+    }
+    parts.push('<line x1="500" y1="480" x2="500" y2="520" stroke="#ffffff90" stroke-width="3"/>');
+    parts.push('<line x1="480" y1="500" x2="520" y2="500" stroke="#ffffff90" stroke-width="3"/>');
+  }
+  if (det && detOn) {
+    (det.tiles || []).forEach(t => {
+      if ((det.tiles || []).length < 2) return;
+      parts.push('<rect x="' + t.x * 1000 + '" y="' + t.y * 1000 + '" width="' + t.w * 1000 +
+                 '" height="' + t.h * 1000 + '" fill="none" stroke="#4ea3ff55" stroke-width="2" stroke-dasharray="8 8"/>');
+    });
+    (det.boxes || []).forEach(b => {
+      parts.push('<rect x="' + b.x * 1000 + '" y="' + b.y * 1000 + '" width="' + b.w * 1000 +
+                 '" height="' + b.h * 1000 + '" fill="none" stroke="#46c46a" stroke-width="4"/>');
+      parts.push('<text x="' + (b.x * 1000 + 6) + '" y="' + (b.y * 1000 - 8) +
+                 '" fill="#46c46a" font-size="28" font-family="sans-serif">' +
+                 b.label + ' ' + Math.round(b.score * 100) + '%</text>');
+    });
+  }
+  $('ov').innerHTML = parts.join('');
+}
+
+/* ---------- Kamera-Controls ------------------------------------------ */
+function needsMet(spec) {
+  if (!spec.needs) return true;
+  return Object.entries(spec.needs).every(([name, want]) => {
+    const cur = state.config.controls[name];
+    const def = (state.limits[name] || {}).default;
+    const eff = cur === undefined ? (def === undefined ? true : !!def) : !!cur;
+    return eff === want;
+  });
+}
+
+function buildControls() {
+  const box = $('ctrls');
+  box.innerHTML = '';
+  let group = '';
+  state.controls.forEach(spec => {
+    const lim = state.limits[spec.name];
+    if (!lim) return;
+    if (spec.group !== group) {
+      group = spec.group;
+      const h = document.createElement('div');
+      h.style.cssText = 'font-size:11px;color:#6d7c8f;margin:10px 0 2px;letter-spacing:.06em';
+      h.textContent = group.toUpperCase();
+      box.appendChild(h);
+    }
+    const cur = state.config.controls[spec.name];
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.dataset.name = spec.name;
+    if (!needsMet(spec)) row.style.opacity = '.4';
+
+    if (spec.type === 'bool') {
+      const val = cur === undefined ? !!lim.default : !!cur;
+      row.innerHTML = '<div class="chk"><input type="checkbox" ' + (val ? 'checked' : '') +
+                      '><label>' + spec.label + '</label></div>';
+      row.querySelector('input').onchange = (e) =>
+        sendControl(spec.name, e.target.checked);
+    } else if (spec.type === 'enum') {
+      const val = cur === undefined ? Number(lim.default || 0) : Number(cur);
+      const opts = spec.options.map((o, i) =>
+        '<option value="' + i + '"' + (i === val ? ' selected' : '') + '>' + o + '</option>').join('');
+      row.innerHTML = '<label>' + spec.label + '</label><select>' + opts + '</select>';
+      row.querySelector('select').onchange = (e) => sendControl(spec.name, Number(e.target.value));
+    } else {
+      const isInt = spec.type === 'int';
+      let min = Number(lim.min), max = Number(lim.max);
+      if (spec.name === 'ExposureTime') { min = Math.max(min, 100); max = Math.min(max, 200000); }
+      if (spec.name === 'AnalogueGain') { max = Math.min(max, 16); }
+      const def = cur === undefined ? Number(lim.default ?? min) : Number(cur);
+      const step = isInt ? Math.max(1, Math.round((max - min) / 500)) : (max - min) / 200;
+      row.innerHTML = '<label>' + spec.label + '</label>' +
+        '<input type="range" min="' + min + '" max="' + max + '" step="' + step + '" value="' + def + '">' +
+        '<span class="val">' + fmt(def, isInt) + '</span>';
+      const slider = row.querySelector('input');
+      slider.oninput = (e) => { row.querySelector('.val').textContent = fmt(Number(e.target.value), isInt); };
+      slider.onchange = (e) => sendControl(spec.name, isInt ? Math.round(Number(e.target.value)) : Number(e.target.value));
+    }
+    box.appendChild(row);
+  });
+}
+
+const fmt = (v, isInt) => isInt ? String(Math.round(v)) : (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(2));
+
+function sendControl(name, value) {
+  state.config.controls[name] = value;
+  post('/api/control', {[name]: value}).then(() => {
+    // Abhaengige Regler (z.B. Belichtungszeit bei Automatik) neu bewerten
+    state.controls.forEach(spec => {
+      const row = document.querySelector('#ctrls .row[data-name="' + spec.name + '"]');
+      if (row) row.style.opacity = needsMet(spec) ? '1' : '.4';
+    });
+  });
+}
+
+/* ---------- Zustand -------------------------------------------------- */
+function applyState(s, first) {
+  state = s;
+  const c = s.config;
+  if (first) {
+    $('fSize').innerHTML = s.sizes.map(sz =>
+      '<option value="' + sz[0] + 'x' + sz[1] + '">' + sz[0] + ' × ' + sz[1] + '</option>').join('');
+    $('fModel').innerHTML = s.models.map(m => '<option>' + m + '</option>').join('') ||
+      '<option value="">kein Modell</option>';
+    $('fSize').value = c.size[0] + 'x' + c.size[1];
+    $('fFps').value = c.fps; $('vFps').textContent = c.fps + ' fps';
+    $('fQual').value = c.quality; $('vQual').textContent = c.quality;
+    $('fTiles').value = c.detect.tiles;
+    if (c.detect.model) $('fModel').value = c.detect.model;
+    $('fThr').value = Math.round(c.detect.threshold * 100);
+    $('vThr').textContent = Math.round(c.detect.threshold * 100) + ' %';
+    $('fInt').value = Math.round(c.detect.interval * 10);
+    $('vInt').textContent = c.detect.interval.toFixed(1) + ' s';
+    $('fCat').checked = c.detect.cat_only;
+    rot = c.rotate || 0; grid = c.grid !== false; detOn = !!c.detect.enabled;
+    $('bRot').textContent = 'Drehen ' + rot + '°';
+    $('bGrid').classList.toggle('on', grid);
+    $('bHflip').classList.toggle('on', !!c.hflip);
+    $('bVflip').classList.toggle('on', !!c.vflip);
+    setDetButton();
+    buildControls();
+    layout();
+  }
+  $('sRes').textContent = c.size[0] + '×' + c.size[1];
+  $('sFps').textContent = s.fps;
+  $('sExp').textContent = s.meta.ExposureTime ? (s.meta.ExposureTime / 1000).toFixed(1) + ' ms' : '-';
+  $('sGain').textContent = s.meta.AnalogueGain || '-';
+  $('sLux').textContent = s.meta.Lux ?? '-';
+  $('sFocus').textContent = s.meta.FocusFoM ?? '-';
+  $('sTemp').textContent = s.system.temp ? s.system.temp + ' °C' : '-';
+  $('sTemp').style.color = (s.system.temp || 0) > 75 ? 'var(--bad)' : '';
+}
+
+const refreshState = (first) => fetch('/api/state').then(r => r.json()).then(s => applyState(s, first));
+
+function pollDetections() {
+  if (!detOn) { drawOverlay(null); return; }
+  fetch('/api/detections').then(r => r.json()).then(d => {
+    drawOverlay(d);
+    $('vDetMs').textContent = d.ms ? d.ms + ' ms' : '';
+    $('detErr').textContent = d.error || '';
+  }).catch(() => {});
+}
+
+function setDetButton() {
+  $('bDet').textContent = detOn ? 'Erkennung an' : 'Erkennung aus';
+  $('bDet').classList.toggle('on', detOn);
+  if (!detOn) { $('vDetMs').textContent = ''; $('detErr').textContent = ''; }
+  drawOverlay(null);
+}
+
+/* ---------- Schnappschuesse ------------------------------------------ */
+function loadGallery() {
+  fetch('/api/snapshots').then(r => r.json()).then(list => {
+    $('gal').innerHTML = list.map(f =>
+      '<figure><a href="/snapshots/' + f.name + '" target="_blank">' +
+      '<img src="/snapshots/' + f.name + '" loading="lazy"></a>' +
+      '<figcaption><span>' + f.name.slice(9, 15).replace(/(..)(..)(..)/, '$1:$2:$3') + '</span>' +
+      '<button class="del" data-n="' + f.name + '">löschen</button></figcaption></figure>').join('');
+    $('gal').querySelectorAll('.del').forEach(b => b.onclick = () =>
+      fetch('/api/snapshots/' + b.dataset.n, {method: 'DELETE'}).then(loadGallery));
+  });
+}
+
+/* ---------- Bedienung ------------------------------------------------ */
+$('bRot').onclick = () => {
+  rot = (rot + 90) % 360;
+  $('bRot').textContent = 'Drehen ' + rot + '°';
+  layout();
+  post('/api/config', {rotate: rot});
+};
+$('bGrid').onclick = () => {
+  grid = !grid;
+  $('bGrid').classList.toggle('on', grid);
+  drawOverlay(null); pollDetections();
+  post('/api/config', {grid: grid});
+};
+$('bHflip').onclick = () => flip('hflip', $('bHflip'));
+$('bVflip').onclick = () => flip('vflip', $('bVflip'));
+function flip(key, btn) {
+  const value = !state.config[key];
+  btn.classList.toggle('on', value);
+  say('Bild wird umgestellt …');
+  post('/api/config', {[key]: value}).then(() => { reloadStream(); refreshState(false); say(''); });
+}
+$('bFull').onclick = () => {
+  const el = $('stage');
+  if (document.fullscreenElement) document.exitFullscreen();
+  else el.requestFullscreen && el.requestFullscreen();
+};
+$('bSnap').onclick = () => snap(false);
+$('bSnapFull').onclick = () => snap(true);
+function snap(full) {
+  say(full ? 'Vollbild wird aufgenommen (Stream pausiert kurz) …' : 'Schnappschuss …');
+  post('/api/snapshot', {full: full}).then(r => {
+    if (r.ok) { say('Gespeichert: ' + r.name); if (full) reloadStream(); loadGallery(); }
+    else say('Fehler: ' + r.error);
+  });
+}
+
+$('fSize').onchange = (e) => {
+  const size = e.target.value.split('x').map(Number);
+  say('Auflösung wird umgestellt …');
+  post('/api/config', {size: size}).then(() => {
+    state.config.size = size; reloadStream(); layout(); say('');
+  });
+};
+$('fFps').oninput = (e) => $('vFps').textContent = e.target.value + ' fps';
+$('fFps').onchange = (e) => post('/api/config', {fps: Number(e.target.value)});
+$('fQual').oninput = (e) => $('vQual').textContent = e.target.value;
+$('fQual').onchange = (e) => {
+  say('Qualität wird umgestellt …');
+  post('/api/config', {quality: Number(e.target.value)}).then(() => { reloadStream(); say(''); });
+};
+$('bReset').onclick = () => post('/api/reset_controls').then(() => {
+  reloadStream(); refreshState(true); say('Kamera-Werte zurückgesetzt');
+});
+
+$('bDet').onclick = () => {
+  detOn = !detOn;
+  setDetButton();
+  post('/api/detect', {enabled: detOn, model: $('fModel').value});
+};
+$('fModel').onchange = (e) => post('/api/detect', {model: e.target.value});
+$('fTiles').onchange = (e) => post('/api/detect', {tiles: e.target.value});
+$('fThr').oninput = (e) => $('vThr').textContent = e.target.value + ' %';
+$('fThr').onchange = (e) => post('/api/detect', {threshold: Number(e.target.value) / 100});
+$('fInt').oninput = (e) => $('vInt').textContent = (Number(e.target.value) / 10).toFixed(1) + ' s';
+$('fInt').onchange = (e) => post('/api/detect', {interval: Number(e.target.value) / 10});
+$('fCat').onchange = (e) => post('/api/detect', {cat_only: e.target.checked});
+
+function reloadStream() {
+  $('live').src = '/stream.mjpg?t=' + Date.now();
+}
+
+refreshState(true).then(loadGallery);
+setInterval(() => refreshState(false), 2000);
+setInterval(pollDetections, 300);
+</script>
+</body>
+</html>
