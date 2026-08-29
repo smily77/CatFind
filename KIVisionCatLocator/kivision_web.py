@@ -48,6 +48,13 @@ CONTROL_SPEC = [
     {"name": "AwbMode", "label": "Weissabgleich-Modus", "type": "enum", "group": "Farbe",
      "options": ["Auto", "Gluehlampe", "Leuchtstoff", "Neonlicht", "Tageslicht", "Bewoelkt", "Custom"],
      "needs": {"AwbEnable": True}},
+    # ColourGains ist ein Paar; libcamera meldet dafuer Tupel-Grenzen, mit denen
+    # die Oberflaeche nichts anfangen kann. Darum zwei eigene Regler mit fest
+    # angegebenem Bereich, die _build_controls wieder zum Paar zusammensetzt.
+    {"name": "ColourGainRed", "label": "Rot-Verstaerkung (manuell)", "type": "float", "group": "Farbe",
+     "needs": {"AwbEnable": False}, "range": [0.5, 4.0], "default": 1.8},
+    {"name": "ColourGainBlue", "label": "Blau-Verstaerkung (manuell)", "type": "float", "group": "Farbe",
+     "needs": {"AwbEnable": False}, "range": [0.5, 4.0], "default": 1.6},
     {"name": "Brightness", "label": "Helligkeit", "type": "float", "group": "Bild"},
     {"name": "Contrast", "label": "Kontrast", "type": "float", "group": "Bild"},
     {"name": "Saturation", "label": "Farbsaettigung", "type": "float", "group": "Bild"},
@@ -57,16 +64,19 @@ CONTROL_SPEC = [
 ]
 
 DEFAULTS = {
-    # Sparsam voreingestellt: das 2,4-GHz-WLAN des Pi traegt gemessen nur rund
-    # 2-3 Mbit/s, und 1280x960/85 braeuchte 15. Wer mehr will, dreht in der
-    # Oberflaeche hoch - fuer Detailfragen ist aber ein Schnappschuss besser.
+    # Nachgemessen (20-MB-Download vom Pi): das WLAN traegt rund 29 Mbit/s -
+    # die frueher angenommenen 2-3 Mbit/s waren in Wirklichkeit der Stream
+    # selbst, nicht die Leitung. Die Bildrate darf deshalb hoch: jede Stufe der
+    # Kette (Sensor, Encoder, Browser) kostet ein *Bild*, bei 8 fps also je
+    # 125 ms. Mehr fps ist hier das wirksamste Mittel gegen die Verzoegerung.
     "size": [640, 480],
-    "fps": 10,
-    "quality": 50,
+    "fps": 20,
+    "quality": 60,
     "hflip": False,
     "vflip": False,
     "rotate": 0,          # nur Browser-Anzeige (der ISP kann kein 90-Grad)
     "grid": True,
+    "tuning": "auto",     # auto | normal | noir (NoIR-Modul: Magenta bei Tag)
     "controls": {},
     "detect": {
         "enabled": False,
@@ -157,11 +167,17 @@ class Camera:
 
     IDLE_STOP = 5.0          # Sekunden ohne Zuschauer, dann Encoder aus
 
+    # Ein Modul ohne IR-Sperrfilter (NoIR) sieht bei Tageslicht magenta: das
+    # Infrarot faellt vor allem auf die roten Pixel. Die normale Tuning-Datei
+    # zwingt den Weissabgleich auf die Farbtemperatur-Kurve und kann das nicht
+    # ausgleichen; die NoIR-Datei laesst ihm die noetige Freiheit.
+    TUNINGS = {"auto": None, "normal": "ov5647.json", "noir": "ov5647_noir.json"}
+
     def __init__(self, cfg):
         self.cfg = cfg
         self.lock = threading.RLock()
         self.output = StreamingOutput()
-        self.picam = Picamera2()
+        self.picam = self._open()
         self.limits = self._read_limits()
         self.running = False
         self.encoder = None
@@ -170,6 +186,33 @@ class Camera:
         self.start()
 
     # -- intern ----------------------------------------------------------
+    def _open(self):
+        name = self.TUNINGS.get(self.cfg.get("tuning", "auto"))
+        if not name:
+            return Picamera2()
+        try:
+            cam = Picamera2(tuning=Picamera2.load_tuning_file(name))
+            print("[web] Tuning-Datei: %s" % name)
+            return cam
+        except Exception as exc:
+            print("[web] Tuning %s nicht ladbar (%s) - Standard" % (name, exc))
+            return Picamera2()
+
+    def set_tuning(self, name):
+        """Tuning wird beim Oeffnen gelesen - also Kamera neu aufmachen."""
+        with self.lock:
+            if name not in self.TUNINGS or name == self.cfg.get("tuning"):
+                return
+            self.cfg["tuning"] = name
+            self.stop()
+            try:
+                self.picam.close()
+            except Exception:
+                pass
+            self.picam = self._open()
+            self.limits = self._read_limits()
+            self.start()
+
     def _read_limits(self):
         limits = {}
         for name, values in self.picam.camera_controls.items():
@@ -180,6 +223,11 @@ class Camera:
             if isinstance(low, (list, tuple)) or isinstance(high, (list, tuple)):
                 continue
             limits[name] = {"min": low, "max": high, "default": default}
+        for spec in CONTROL_SPEC:
+            if "range" in spec:                      # eigene Regler (s. o.)
+                limits[spec["name"]] = {"min": spec["range"][0],
+                                        "max": spec["range"][1],
+                                        "default": spec["default"]}
         return limits
 
     def _build_controls(self):
@@ -205,8 +253,14 @@ class Camera:
             ctrl.pop("AnalogueGain", None)
         else:
             ctrl.pop("ExposureValue", None)
-        if not ctrl.get("AwbEnable", True):
+        red = ctrl.pop("ColourGainRed", None)
+        blue = ctrl.pop("ColourGainBlue", None)
+        if ctrl.get("AwbEnable", True):
+            pass                                     # Automatik macht die Gains
+        else:
             ctrl.pop("AwbMode", None)
+            if red is not None and blue is not None:
+                ctrl["ColourGains"] = (float(red), float(blue))
         return ctrl
 
     # -- oeffentlich ------------------------------------------------------
@@ -298,9 +352,16 @@ class Camera:
 
     def metadata(self):
         try:
-            return dict(self.picam.capture_metadata())
+            meta = dict(self.picam.capture_metadata())
         except Exception:
             return {}
+        stamp = meta.get("SensorTimestamp")
+        if stamp:
+            # Wie alt ist das eben fertig gewordene Bild, wenn es hier ankommt?
+            # Das ist die Verzoegerung Sensor -> Anwendung, ganz ohne WLAN und
+            # ohne Browser - und damit die Antwort auf "haengt es am WLAN?".
+            meta["_lag_ms"] = round((time.monotonic_ns() - stamp) / 1e6, 1)
+        return meta
 
     def capture_array(self):
         """Aktuelles Bild als RGB-Array (picamera2 liefert RGB888 als BGR)."""
@@ -450,17 +511,29 @@ class Detector:
                 continue
             common.set_input(self.interpreter, self._resize(crop, self.input_size))
             self.interpreter.invoke()
-            scale_x = tw / self.input_size[0]
-            scale_y = th / self.input_size[1]
-            for obj in detect.get_objects(self.interpreter, threshold, (scale_x, scale_y)):
+            # get_objects rechnet intern sx = Eingangsbreite / image_scale_x.
+            # Der frueher uebergebene Massstab (Kachel/Tensor) war damit gerade
+            # verkehrt herum und quetschte alle Rahmen in eine Ecke. Da die
+            # Kachel den Tensor vollstaendig ausfuellt, ist image_scale hier
+            # (1,1): die Rahmen kommen in Tensor-Pixeln, und wir rechnen sie
+            # selbst auf die Kachel hoch und schieben sie an ihren Platz.
+            sx = tw / self.input_size[0]
+            sy = th / self.input_size[1]
+            for obj in detect.get_objects(self.interpreter, threshold):
                 label = self.labels.get(obj.id, str(obj.id))
                 if cat_only and "cat" not in label.lower():
                     continue
+                x0 = clamp01((tx + obj.bbox.xmin * sx) / width)
+                y0 = clamp01((ty + obj.bbox.ymin * sy) / height)
+                x1 = clamp01((tx + obj.bbox.xmax * sx) / width)
+                y1 = clamp01((ty + obj.bbox.ymax * sy) / height)
+                if x1 <= x0 or y1 <= y0:
+                    continue
                 boxes.append({
-                    "x": max(0.0, (tx + obj.bbox.xmin) / width),
-                    "y": max(0.0, (ty + obj.bbox.ymin) / height),
-                    "w": min(1.0, (obj.bbox.xmax - obj.bbox.xmin) / width),
-                    "h": min(1.0, (obj.bbox.ymax - obj.bbox.ymin) / height),
+                    "x": round(x0, 4),
+                    "y": round(y0, 4),
+                    "w": round(x1 - x0, 4),
+                    "h": round(y1 - y0, 4),
                     "score": round(float(obj.score), 3),
                     "label": label,
                 })
@@ -506,6 +579,10 @@ class Detector:
             data["error"] = self.error
         data["running"] = self.thread is not None and self.thread.is_alive()
         return data
+
+
+def clamp01(value):
+    return max(0.0, min(1.0, value))
 
 
 def prune_snapshots():
@@ -600,7 +677,9 @@ def api_state():
             "DigitalGain": round(meta.get("DigitalGain") or 0, 2),
             "Lux": round(meta.get("Lux") or 0, 1),
             "ColourTemperature": meta.get("ColourTemperature"),
+            "ColourGains": [round(v, 2) for v in (meta.get("ColourGains") or [])],
             "FocusFoM": meta.get("FocusFoM"),
+            "lag_ms": meta.get("_lag_ms"),
         },
     })
 
@@ -630,6 +709,9 @@ def api_config():
     for key in ("rotate", "grid"):
         if key in data:
             cfg[key] = data[key]
+    if "tuning" in data and data["tuning"] != cfg.get("tuning"):
+        camera.set_tuning(str(data["tuning"]))
+        restart = False          # set_tuning startet schon neu
     if restart:
         camera.restart()
     else:

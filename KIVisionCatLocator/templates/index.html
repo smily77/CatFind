@@ -65,8 +65,10 @@
     <span>Bild <b id="sRes">-</b></span>
     <span><b id="sFps">-</b> fps</span>
     <span>Netz <b id="sMbit">-</b></span>
+    <span>Verz. <b id="sLag">-</b></span>
     <span>Bel. <b id="sExp">-</b></span>
     <span>Gain <b id="sGain">-</b></span>
+    <span>WB <b id="sWb">-</b></span>
     <span>Lux <b id="sLux">-</b></span>
     <span>Schärfe <b id="sFocus">-</b></span>
     <span>CPU <b id="sTemp">-</b></span>
@@ -115,14 +117,22 @@
         <span class="val" id="vQual"></span>
       </div>
       <div class="row">
-        <button class="wide" id="bEco">Sparmodus (flüssig)</button>
-        <button class="wide" id="bStd">Detail (ruckelt)</button>
+        <button class="wide" id="bEco">Flüssig (wenig Verzug)</button>
+        <button class="wide" id="bStd">Detail (mehr Pixel)</button>
       </div>
       <div class="msg" id="netHint"></div>
     </div>
 
     <div class="card">
       <h2>Kamera</h2>
+      <div class="row">
+        <label for="fTuning">Farbprofil</label>
+        <select id="fTuning">
+          <option value="auto">automatisch</option>
+          <option value="normal">Standard (mit IR-Filter)</option>
+          <option value="noir">NoIR (ohne IR-Filter)</option>
+        </select>
+      </div>
       <div id="ctrls"></div>
       <div class="row"><button id="bReset">Kamera-Werte zurücksetzen</button></div>
     </div>
@@ -199,6 +209,8 @@ function layout() {
 }
 window.addEventListener('resize', layout);
 
+const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
+
 function drawOverlay(det) {
   const parts = [];
   if (grid) {
@@ -217,11 +229,22 @@ function drawOverlay(det) {
                  '" height="' + t.h * 1000 + '" fill="none" stroke="#4ea3ff55" stroke-width="2" stroke-dasharray="8 8"/>');
     });
     (det.boxes || []).forEach(b => {
-      parts.push('<rect x="' + b.x * 1000 + '" y="' + b.y * 1000 + '" width="' + b.w * 1000 +
-                 '" height="' + b.h * 1000 + '" fill="none" stroke="#46c46a" stroke-width="4"/>');
-      parts.push('<text x="' + (b.x * 1000 + 6) + '" y="' + (b.y * 1000 - 8) +
-                 '" fill="#46c46a" font-size="28" font-family="sans-serif">' +
-                 b.label + ' ' + Math.round(b.score * 100) + '%</text>');
+      const x = b.x * 1000, y = b.y * 1000, w = b.w * 1000, h = b.h * 1000;
+      parts.push('<rect x="' + x + '" y="' + y + '" width="' + w +
+                 '" height="' + h + '" fill="none" stroke="#46c46a" stroke-width="4"/>');
+      // Schild ueber den Rahmen; am oberen Bildrand klappt es nach innen, seitlich
+      // rutscht es zurueck ins Bild - sonst steht die Beschriftung ausserhalb des
+      // sichtbaren Bereichs und man liest nicht, was erkannt wurde.
+      const txt = b.label + ' ' + Math.round(b.score * 100) + '%';
+      const fs = 26, pad = 6;
+      const tw = Math.min(1000, txt.length * fs * 0.58 + 2 * pad), th = fs + 2 * pad;
+      const tx = Math.max(0, Math.min(x, 1000 - tw));
+      const ty = (y - th - 3 < 0) ? Math.min(y + 3, 1000 - th) : y - th - 3;
+      parts.push('<rect x="' + tx + '" y="' + ty + '" width="' + tw + '" height="' + th +
+                 '" rx="4" fill="#0d1f14e0" stroke="#46c46a" stroke-width="2"/>');
+      parts.push('<text x="' + (tx + pad) + '" y="' + (ty + th - pad - 3) +
+                 '" fill="#8ef0a8" font-size="' + fs + '" font-family="sans-serif">' +
+                 esc(txt) + '</text>');
     });
   }
   $('ov').innerHTML = parts.join('');
@@ -320,6 +343,7 @@ function applyState(s, first) {
     $('fInt').value = Math.round(c.detect.interval * 10);
     $('vInt').textContent = c.detect.interval.toFixed(1) + ' s';
     $('fCat').checked = c.detect.cat_only;
+    $('fTuning').value = c.tuning || 'auto';
     rot = c.rotate || 0; grid = c.grid !== false; detOn = !!c.detect.enabled;
     $('bRot').textContent = 'Drehen ' + rot + '°';
     $('bGrid').classList.toggle('on', grid);
@@ -332,15 +356,21 @@ function applyState(s, first) {
   $('sRes').textContent = c.size[0] + '×' + c.size[1];
   $('sFps').textContent = s.fps;
   $('sMbit').textContent = (s.mbit || 0) + ' Mbit/s';
-  // Das WLAN des Pi traegt erfahrungsgemaess ~5 Mbit/s; darueber staut sich
-  // der Stream und das Bild laeuft der Wirklichkeit hinterher.
-  const heavy = (s.mbit || 0) > 5, warm = (s.mbit || 0) > 3.5;
+  // Nachgemessen traegt das WLAN rund 29 Mbit/s. Erst ab etwa der Haelfte
+  // lohnt eine Warnung - darunter ist ein Nachlaufen nicht das Netz.
+  const heavy = (s.mbit || 0) > 20, warm = (s.mbit || 0) > 12;
   $('sMbit').style.color = heavy ? 'var(--bad)' : (warm ? 'var(--warn)' : '');
   $('netHint').textContent = heavy
-    ? 'Zu viel fürs WLAN — Bild läuft nach. Sparmodus oder Qualität/Bildrate senken.'
+    ? 'Nahe an der WLAN-Grenze (~29 Mbit/s) — Qualität oder Bildrate senken.'
     : '';
+  // Sensor -> Anwendung, auf dem Pi selbst gemessen: was darueber hinausgeht,
+  // liegt an Netz und Browser. Trennt WLAN-Verdacht von Kamera-Wirklichkeit.
+  $('sLag').textContent = s.meta.lag_ms != null ? s.meta.lag_ms + ' ms' : '-';
+  $('sLag').style.color = (s.meta.lag_ms || 0) > 250 ? 'var(--warn)' : '';
   $('sExp').textContent = s.meta.ExposureTime ? (s.meta.ExposureTime / 1000).toFixed(1) + ' ms' : '-';
   $('sGain').textContent = s.meta.AnalogueGain || '-';
+  const cg = s.meta.ColourGains || [];
+  $('sWb').textContent = cg.length === 2 ? 'R' + cg[0] + ' B' + cg[1] : '-';
   $('sLux').textContent = s.meta.Lux ?? '-';
   $('sFocus').textContent = s.meta.FocusFoM ?? '-';
   $('sTemp').textContent = s.system.temp ? s.system.temp + ' °C' : '-';
@@ -438,11 +468,19 @@ function preset(size, quality, fps, name) {
     reloadStream(); layout(); say(name + ' aktiv');
   });
 }
-// Gemessen im Heim-WLAN des Pi (2,4 GHz, ~2-3 Mbit/s nutzbar): der Sparmodus
-// laeuft ohne Rueckstand, alles Groessere hinkt hinterher. Fuer Detailfragen
-// lieber einen Schnappschuss machen als den Stream hochdrehen.
-$('bEco').onclick = () => preset([640, 480], 50, 8, 'Sparmodus');
-$('bStd').onclick = () => preset([1280, 960], 55, 3, 'Detailmodus');
+// Nachgemessen traegt das WLAN des Pi rund 29 Mbit/s - viel mehr als frueher
+// angenommen. Weil jede Stufe der Kette ein *Bild* Verzoegerung kostet, ist eine
+// hohe Bildrate das wirksamste Mittel gegen das Nachlaufen; "fluessig" darf
+// deshalb auf 25 fps (rund 5 Mbit/s), "Detail" bleibt bei 1280x960.
+$('bEco').onclick = () => preset([640, 480], 60, 25, 'Flüssig-Modus');
+$('bStd').onclick = () => preset([1280, 960], 65, 12, 'Detailmodus');
+
+$('fTuning').onchange = (e) => {
+  say('Farbprofil wird umgestellt (Kamera startet neu) …');
+  post('/api/config', {tuning: e.target.value}).then(() => {
+    reloadStream(); refreshState(false); say('Farbprofil: ' + e.target.value);
+  });
+};
 
 $('bReset').onclick = () => post('/api/reset_controls').then(() => {
   reloadStream(); refreshState(true); say('Kamera-Werte zurückgesetzt');

@@ -34,17 +34,20 @@ gespeicherte Einstellungen in `~/kivision/web_config.json`.
 - **Vollbild** — Stage im Vollbild, praktisch auf dem Handy.
 
 **Stream** — Auflösung (640×480 bis 2592×1944), Bildrate, JPEG-Qualität, dazu
-zwei Voreinstellungen: **Sparmodus** (640×480/50/8 fps) und **Detail**
-(1280×960/55/3 fps). In der Kopfzeile steht laufend, wieviel der Stream gerade
-braucht (**Mbit/s**, gelb ab 3,5, rot ab 5). Siehe „Verzögerung" unten.
+zwei Voreinstellungen: **Flüssig** (640×480/60/25 fps) und **Detail**
+(1280×960/65/12 fps). In der Kopfzeile steht laufend, wieviel der Stream gerade
+braucht (**Mbit/s**, gelb ab 12, rot ab 20) und die gemessene **Verzögerung**
+vom Sensor bis zur Anwendung. Siehe „Verzögerung" unten.
 
-**Kamera** — Belichtungsautomatik an/aus, feste Belichtungszeit und Gain
-(für den Nachttest), EV-Korrektur, Weißabgleich, Helligkeit, Kontrast,
+**Kamera** — **Farbprofil** (siehe „Farbstich" unten), Belichtungsautomatik
+an/aus, feste Belichtungszeit und Gain (für den Nachttest), EV-Korrektur,
+Weißabgleich — automatisch oder von Hand über **Rot-/Blau-Verstärkung**
+(`ColourGains`, nur bei abgeschalteter Automatik) —, Helligkeit, Kontrast,
 Sättigung, Schärfe, Rauschunterdrückung. Regler, die gerade wirkungslos sind
 (z.B. Belichtungszeit bei aktiver Automatik), werden ausgegraut.
-Kopfzeile zeigt laufend Belichtungszeit, Gain, **Lux**, **Schärfe (FocusFoM)**
-und CPU-Temperatur — FocusFoM hilft beim Scharfstellen des Objektivs: je höher,
-desto schärfer.
+Kopfzeile zeigt laufend Verzögerung, Belichtungszeit, Gain, **WB** (die gerade
+wirksamen Rot-/Blau-Gains), **Lux**, **Schärfe (FocusFoM)** und CPU-Temperatur
+— FocusFoM hilft beim Scharfstellen des Objektivs: je höher, desto schärfer.
 
 **Schnappschuss** — in Stream-Auflösung (sofort) oder **Voll 5 MP**
 (2592×1944; der Stream pausiert dafür rund 2 s). Galerie unten, Bilder einzeln
@@ -59,6 +62,12 @@ kann man sich zum Testen selbst ins Bild stellen (`person`).
 
 Gemessen am Schreibtisch: 110 ms je Durchlauf über das ganze Bild, 143 ms mit
 2 Kacheln (inkl. Bildabholung und Skalierung), CPU 40 °C, kein Throttling.
+
+Der grüne Rahmen sitzt seit 2026-08-29 auf dem erkannten Objekt: `get_objects`
+rechnet intern `Eingangsbreite / image_scale_x`, der übergebene Maßstab war
+also gerade verkehrt herum und quetschte jeden Rahmen in eine Bildecke. Die
+Beschriftung sitzt jetzt als Schild am Rahmen und klappt am Bildrand nach
+innen, statt außerhalb des sichtbaren Bereichs zu landen.
 
 ## Verzögerung im Livebild (gemessen 2026-08-27)
 
@@ -88,16 +97,68 @@ Ergebnis über WLAN, unverändert 1280×960/85:
 | Rückstand | ~2 s, wachsend | 0,5 s, stabil |
 
 Im **Sparmodus** (640×480/50) sind es 2,1 Mbit/s, 8,5 Bilder/s und **0,00 s
-Rückstand** — also echtes Livebild. Das ist die Einstellung fürs Herumlaufen
-mit dem Handy; für Detailfragen lieber einen Schnappschuss machen, als den
-Stream hochzudrehen.
+Rückstand** — also echtes Livebild.
 
 Zur Kopfzeile: **Rückstand messbar** über den Header `X-Seq` je Bild im
 Vergleich zu `frames` aus `/api/state` — das braucht keine synchronen Uhren.
 
-Falls es am endgültigen Montageort weiter klemmt: die SSID gibt es auch auf
+### Nachgemessen (2026-08-29): es liegt *nicht* am WLAN
+
+Die Restverzögerung ließ sich auf drei Stellen aufteilen und einzeln messen —
+das Ergebnis widerlegt die WLAN-These von oben:
+
+| Was | Wie gemessen | Ergebnis |
+|---|---|---|
+| WLAN-Kapazität | 20-MB-Datei vom Pi geladen | **29 Mbit/s** (3,6 MB/s), nicht 2–3 |
+| Ping zum Pi | 20 Pakete | 4 ms im Mittel, 0 % Verlust |
+| Sensor → Anwendung | `SensorTimestamp` gegen `monotonic` | 64 ms bei 8 fps, **27 ms bei 25 fps** |
+| Encoder → Client | `X-Seq` gegen `frames` | konstant **1 Bild** — über WLAN *und* über localhost identisch |
+
+Weil localhost und WLAN dieselben Werte liefern, kostet das Netz praktisch
+nichts. Die verbleibende Verzögerung ist eine **Kette aus ganzen Bildern**:
+Sensor, Encoder-Rückstand und der Browser puffern je rund ein Bild. Bei 8 fps
+ist ein Bild 125 ms — die Bildrate war also selbst die Hauptursache.
+
+Deshalb ist **die Bildrate hochzudrehen das wirksamste Mittel**, nicht sie zu
+senken: 640×480/60 bei 25 fps braucht 5,5 Mbit/s (19 % der Leitung), die
+Sensor-Verzögerung fällt von 64 auf 27 ms und der Rückstand von 125 auf 40 ms.
+Zur Kontrolle mit der früher als unmöglich notierten Einstellung geprüft:
+1280×960/85/10 fps läuft heute mit vollen 9,9 fps, 10,1 Mbit/s und stabil
+einem Bild Rückstand.
+
+Die Maßnahmen 1.–3. von oben bleiben trotzdem richtig: sie sorgen dafür, dass
+bei knapper Leitung *Bilder übersprungen* statt gestapelt werden. Sie sind das
+Sicherheitsnetz, nicht die Bremse. Was der Browser selbst puffert (`<img>` mit
+MJPEG, rund ein Bild), lässt sich nur mit einem anderen Transportweg
+(WebSocket + Canvas oder WebRTC) beseitigen — lohnt sich hier nicht.
+
+Falls es am endgültigen Montageort doch klemmt: die SSID gibt es auch auf
 **5 GHz** (am Schreibtisch nur −78 dBm, am Montageort evtl. besser), sonst
 Repeater oder LAN-Kabel.
+
+## Farbstich: das Modul ist eine NoIR-Kamera (gemessen 2026-08-29)
+
+Der Magenta-Stich bei Tageslicht ist kein Weißabgleich-Fehler, sondern ein
+fehlender IR-Sperrfilter. Nachweis über die Kanalmittelwerte eines
+Schnappschusses derselben Szene:
+
+| Farbprofil | R/G | B/G | Gains, die der Weißabgleich setzt |
+|---|---|---|---|
+| `ov5647.json` (Standard) | **1,94** | 1,13 | R 1,68 / B 1,18, CT 6492 K |
+| `ov5647_noir.json` | **1,01** | 0,99 | R 0,89 / B 1,27, CT 4500 K |
+
+Entscheidend ist die **rote Verstärkung unter 1,0**: das Rot kommt schon zu
+stark aus dem Sensor, weil Infrarot vor allem auf die roten Pixel fällt. Die
+Standard-Tuning-Datei hält den Weißabgleich auf der Farbtemperatur-Kurve und
+*darf* diese Korrektur gar nicht fahren; die NoIR-Datei lässt ihm die Freiheit
+— und das Bild ist damit neutral.
+
+Umschaltbar in der Oberfläche unter **Kamera → Farbprofil** (die Kamera wird
+dafür neu geöffnet, Tuning wird nur beim Öffnen gelesen). Steht jetzt auf
+`noir`. Für die endgültige Kamera gilt: hat sie einen IR-Sperrfilter, gehört
+das Profil auf `normal`/`auto`. Ohne Filter ist der Stich der Preis für
+Nachtsicht — dann bleibt `noir` richtig, und für den Nachtbetrieb mit
+IR-Strahler ist das ohnehin die gewünschte Bauform.
 
 ## Dienst
 
@@ -119,9 +180,8 @@ ssh pi@192.168.0.186 sudo systemctl restart kivision-web
 
 ## Beobachtungen vom ersten Test (2026-08-27)
 
-- Das Modul zeigt einen deutlichen **Magenta-Stich** bei Kunstlicht — typisch,
-  wenn kein IR-Sperrfilter im Strahlengang steht (IR-CUT in Nachtstellung bzw.
-  NoIR-Variante). Für den Tagbetrieb muss der IR-CUT-Filter einschwenken, sonst
-  stimmen die Farben nicht und COCO erkennt schlechter.
+- Das Modul zeigt einen deutlichen **Magenta-Stich**, auch bei Tageslicht.
+  Am 2026-08-29 als fehlender IR-Sperrfilter nachgewiesen und mit der
+  NoIR-Tuning-Datei behoben — siehe „Farbstich" oben.
 - Starke **Tonnenverzeichnung** (Weitwinkel) — wie im Konzept erwartet. Vor der
   Homographie in Phase 4 muss die Verzeichnung korrigiert werden.
