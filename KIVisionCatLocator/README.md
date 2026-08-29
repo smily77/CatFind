@@ -132,6 +132,56 @@ Sicherheitsnetz, nicht die Bremse. Was der Browser selbst puffert (`<img>` mit
 MJPEG, rund ein Bild), lässt sich nur mit einem anderen Transportweg
 (WebSocket + Canvas oder WebRTC) beseitigen — lohnt sich hier nicht.
 
+### Schwache Clients (Handy) — Sendepuffer und Nagle
+
+Auf dem Handy blieb mehr Verzögerung übrig als am PC. Zwei Stellen im Server
+wirken genau dort, wo die Strecke schmal ist:
+
+- **Sendepuffer auf ein knappes Bild verkleinert** (`SO_SNDBUF` 96 → 24 kB
+  Wunsch, der Kernel verdoppelt intern auf 48 kB). Was im Puffer liegt, ist
+  beim Ankommen schon alt; der Puffer muss nur den *Weg* füllen
+  (Bandbreite × Laufzeit ≈ 15 kB bei 30 Mbit/s und 4 ms), nicht ganze Bilder
+  stapeln. Bleibt er unter einer Bildgröße, blockiert das Schreiben früh, der
+  Stream überspringt Bilder — und der Client bekommt das *neueste* statt eines
+  alten aus der Schlange.
+- **Nagle abgeschaltet** (`disable_nagle_algorithm`, setzt `TCP_NODELAY`).
+  Sonst hält der Kernel das letzte Teilstück jedes Bildes zurück, bis die
+  vorige Sendung bestätigt ist; zusammen mit der verzögerten Bestätigung des
+  Empfängers kostet das bis zu 40 ms je Bild. Bei einem Strom aus fertigen
+  Bildern bringt das Bündeln ohnehin nichts.
+
+Gemessen mit einem Client, dessen **Empfangsfenster** klein ist (`SO_RCVBUF`
+8 kB) — der bremst den Server per TCP-Flusskontrolle aus, so wie es eine
+schwache Funkstrecke tut. Bloß langsam *lesen* taugt als Test nicht, das füllt
+nur den eigenen Empfangspuffer. Szene: 1280×960/65 bei 12 fps.
+
+| | vorher (192 kB, Nagle an) | nachher (48 kB, Nagle aus) |
+|---|---|---|
+| Rückstand, Median | 4 Bilder | **1 Bild** |
+| Rückstand, schlimmster Fall | 20 Bilder (~1,7 s) | **4 Bilder (~0,3 s)** |
+| angekommene Bilder | 6,7 /s | **9,1 /s** |
+
+Der schnelle Client verliert dabei nichts: unverändert 11,8 von 12 fps bei
+6,8 Mbit/s und 1–2 Bildern Rückstand. Der kleine Puffer kostet erst dann
+Durchsatz, wenn er unter Bandbreite × Laufzeit fällt — davon ist er hier weit
+entfernt.
+
+**Was auf dem Handy am meisten bringt, ist trotzdem die Bildgröße:** im
+Detailmodus ist ein Bild rund 70 kB, im Flüssig-Modus rund 25 kB. Auf einer
+schmalen Strecke ist die reine Übertragungszeit eines Bildes Verzögerung —
+bei 4 Mbit/s sind das 140 ms gegenüber 50 ms. Fürs Herumlaufen mit dem Handy
+also **Flüssig**; der Detailmodus ist zum Beurteilen der Schärfe am großen
+Schirm da.
+
+Dazu kommt ein Effekt, der sich von hier aus nicht messen lässt (die Messungen
+oben liefen über **Ethernet**, `192.168.0.60`): der Pi funkt selbst, und das
+Handy funkt auf demselben Kanal noch einmal. Die Strecke Pi → Router → Handy
+belegt die Luft also zweimal und teilt sich dieselbe Sendezeit, während der
+Weg zum verkabelten PC nur eine Funkstrecke hat. Das Handy sieht daher
+grundsätzlich weniger Bandbreite als die 29 Mbit/s der Messung — plausibel,
+aber nicht nachgemessen. Passend dazu schwankt die Strecke: bei −54 dBm waren
+29 Mbit/s drin, bei −60 dBm nur noch rund 15.
+
 Falls es am endgültigen Montageort doch klemmt: die SSID gibt es auch auf
 **5 GHz** (am Schreibtisch nur −78 dBm, am Montageort evtl. besser), sonst
 Repeater oder LAN-Kabel.

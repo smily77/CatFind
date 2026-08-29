@@ -805,13 +805,26 @@ def snapshot_delete(name):
 
 
 if __name__ == "__main__":
-    from werkzeug.serving import make_server
+    from werkzeug.serving import WSGIRequestHandler, make_server
+
+    # Nagle aus. Sonst haelt der Kernel das letzte Teilstueck eines Bildes
+    # zurueck, bis die vorige Sendung bestaetigt ist - zusammen mit der
+    # verzoegerten Bestaetigung des Empfaengers kostet das bis zu 40 ms pro
+    # Bild. Bei einem Strom aus fertigen Bildern bringt das Buendeln nichts.
+    WSGIRequestHandler.disable_nagle_algorithm = True
 
     port = int(os.environ.get("KIVISION_PORT", 8080))
     server = make_server("0.0.0.0", port, app, threaded=True)
-    # Kleiner Sendepuffer: bei schwachem WLAN blockiert das Schreiben schnell,
-    # der Stream ueberspringt dann Bilder, statt sekundenlang nachzuhinken.
-    # Angenommene Verbindungen erben die Puffergroesse vom Listener.
-    server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 96 * 1024)
-    print("[web] Server auf Port %d, Sendepuffer 96 kB" % port)
+    # Kleiner Sendepuffer: was hier drinsteht, ist beim Ankommen schon alt.
+    # Auf einer schwachen Funkstrecke ist der Puffer die Verzoegerung - er
+    # braucht nur den Weg zu fuellen (Bandbreite x Laufzeit, hier rund 15 kB
+    # bei 30 Mbit/s und 4 ms), nicht ganze Bilder zu stapeln. Bleibt er unter
+    # einer Bildgroesse, blockiert das Schreiben frueh, der Stream ueberspringt
+    # Bilder und der Client bekommt immer das neueste statt eines alten aus der
+    # Schlange. Linux verdoppelt den Wunschwert intern.
+    server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 24 * 1024)
+    actual = server.socket.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
+    print("[web] Server auf Port %d, Sendepuffer %d kB (Kernel), Nagle %s"
+          % (port, actual // 1024,
+             "aus" if WSGIRequestHandler.disable_nagle_algorithm else "an"))
     server.serve_forever()
