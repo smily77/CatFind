@@ -55,6 +55,10 @@
                     display: flex; justify-content: space-between; gap: 4px; }
   .gal .del { background: none; border: 0; color: var(--bad); cursor: pointer; padding: 0; font-size: 11px; }
   .msg { font-size: 12px; color: var(--warn); min-height: 16px; }
+  .hint { font-size: 12px; color: var(--dim); margin: 4px 0 2px; }
+  .tag { color: var(--dim); font-weight: 400; letter-spacing: 0; text-transform: none; }
+  .gal .score { color: var(--ok); }
+  .gal figure.fresh img { border-color: var(--ok); }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -170,7 +174,30 @@
       <div class="row chk">
         <input type="checkbox" id="fCat"><label for="fCat">nur Katzen zeigen</label>
       </div>
+      <div class="row">
+        <label for="fSnapMode">Treffer festhalten</label>
+        <select id="fSnapMode">
+          <option value="off">aus</option>
+          <option value="cat">nur Katzen</option>
+          <option value="all">alles Erkannte</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="fGap">Abstand der Bilder</label>
+        <input type="range" id="fGap" min="10" max="300" step="10">
+        <span class="val" id="vGap"></span>
+      </div>
+      <div class="hint">Eigener Filter, unabhängig vom Livebild: nachts meldet das
+        Modell auf dem Infrarotbild gern ein bildfüllendes „horse“. Rahmen,
+        Uhrzeit und Lichtwerte stehen fest im gespeicherten Bild.</div>
       <div class="msg" id="detErr"></div>
+    </div>
+
+    <div class="card">
+      <h2>Treffer-Bilder <span id="hitCount" class="tag"></span></h2>
+      <div class="msg" id="hitState"></div>
+      <div class="gal" id="galHits"></div>
+      <div class="row"><button id="bHitClear">Alle Treffer löschen</button></div>
     </div>
 
     <div class="card">
@@ -181,7 +208,7 @@
 </main>
 
 <script>
-let state = null, rot = 0, grid = true, detOn = false;
+let state = null, rot = 0, grid = true, detOn = false, hits = null;
 
 const $ = (id) => document.getElementById(id);
 const post = (url, body) => fetch(url, {
@@ -343,6 +370,9 @@ function applyState(s, first) {
     $('fInt').value = Math.round(c.detect.interval * 10);
     $('vInt').textContent = c.detect.interval.toFixed(1) + ' s';
     $('fCat').checked = c.detect.cat_only;
+    $('fSnapMode').value = c.detect.snap_mode || 'cat';
+    $('fGap').value = c.detect.snap_gap || 60;
+    $('vGap').textContent = ($('fGap').value) + ' s';
     $('fTuning').value = c.tuning || 'auto';
     rot = c.rotate || 0; grid = c.grid !== false; detOn = !!c.detect.enabled;
     $('bRot').textContent = 'Drehen ' + rot + '°';
@@ -380,11 +410,19 @@ function applyState(s, first) {
 const refreshState = (first) => fetch('/api/state').then(r => r.json()).then(s => applyState(s, first));
 
 function pollDetections() {
-  if (!detOn) { drawOverlay(null); return; }
+  if (!detOn) { drawOverlay(null); $('hitState').textContent = ''; return; }
   fetch('/api/detections').then(r => r.json()).then(d => {
     drawOverlay(d);
     $('vDetMs').textContent = d.ms ? d.ms + ' ms' : '';
     $('detErr').textContent = d.error || '';
+    // Der Zaehler kommt vom Pi: steigt er, liegt ein neues Bild bereit. So
+    // muss die Galerie nicht im Sekundentakt nachfragen.
+    if (hits !== null && d.hits > hits) loadHits();
+    hits = d.hits;
+    const mode = state ? (state.config.detect.snap_mode || 'cat') : 'cat';
+    $('hitState').textContent = mode === 'off' ? 'Festhalten ist aus.'
+      : (d.hit_wait ? 'Nächstes Bild frühestens in ' + d.hit_wait + ' s.'
+                    : 'Bereit' + (mode === 'cat' ? ' für die nächste Katze.' : ' für den nächsten Treffer.'));
   }).catch(() => {});
 }
 
@@ -406,6 +444,28 @@ function loadGallery() {
     $('gal').querySelectorAll('.del').forEach(b => b.onclick = () =>
       fetch('/api/snapshots/' + b.dataset.n, {method: 'DELETE'}).then(loadGallery));
   });
+}
+
+function loadHits() {
+  fetch('/api/hits').then(r => r.json()).then(d => {
+    const list = d.files || [];
+    $('hitCount').textContent = list.length + ' / ' + d.max;
+    $('galHits').innerHTML = list.length ? list.map((f, i) =>
+      '<figure' + (i === 0 ? ' class="fresh"' : '') + '><a href="/hits/' + f.name + '" target="_blank">' +
+      '<img src="/hits/' + f.name + '" loading="lazy"></a>' +
+      '<figcaption><span>' + clock(f.ts) +
+      (f.score != null ? ' <span class="score">' + f.score + '%</span>' : '') + '</span>' +
+      '<button class="del" data-n="' + f.name + '">löschen</button></figcaption></figure>').join('')
+      : '<div class="hint">Noch kein Treffer. Die Kamera legt hier von selbst ein ' +
+        'Bild ab, sobald sie etwas erkennt.</div>';
+    $('galHits').querySelectorAll('.del').forEach(b => b.onclick = () =>
+      fetch('/api/hits/' + b.dataset.n, {method: 'DELETE'}).then(loadHits));
+  });
+}
+
+function clock(ts) {
+  const d = new Date(ts * 1000), z = (n) => String(n).padStart(2, '0');
+  return z(d.getHours()) + ':' + z(d.getMinutes()) + ':' + z(d.getSeconds());
 }
 
 /* ---------- Bedienung ------------------------------------------------ */
@@ -498,12 +558,25 @@ $('fThr').onchange = (e) => post('/api/detect', {threshold: Number(e.target.valu
 $('fInt').oninput = (e) => $('vInt').textContent = (Number(e.target.value) / 10).toFixed(1) + ' s';
 $('fInt').onchange = (e) => post('/api/detect', {interval: Number(e.target.value) / 10});
 $('fCat').onchange = (e) => post('/api/detect', {cat_only: e.target.checked});
+$('fSnapMode').onchange = (e) => {
+  state.config.detect.snap_mode = e.target.value;
+  post('/api/detect', {snap_mode: e.target.value});
+};
+$('fGap').oninput = (e) => $('vGap').textContent = e.target.value + ' s';
+$('fGap').onchange = (e) => {
+  state.config.detect.snap_gap = Number(e.target.value);
+  post('/api/detect', {snap_gap: Number(e.target.value)});
+};
+$('bHitClear').onclick = () => {
+  if (!confirm('Alle Treffer-Bilder löschen?')) return;
+  post('/api/hits/clear').then(r => { say(r.deleted + ' Treffer gelöscht'); loadHits(); });
+};
 
 function reloadStream() {
   $('live').src = '/stream.mjpg?t=' + Date.now();
 }
 
-refreshState(true).then(loadGallery);
+refreshState(true).then(() => { loadGallery(); loadHits(); });
 setInterval(() => refreshState(false), 2000);
 setInterval(pollDetections, 300);
 </script>
