@@ -20,7 +20,8 @@ Homographie — das kommt in Phase 3/4.
 
 Auf dem Pi liegt alles unter `~/kivision/web/`, Schnappschüsse unter
 `~/kivision/snapshots/` (max. 200, danach werden die ältesten gelöscht),
-gespeicherte Einstellungen in `~/kivision/web_config.json`.
+Treffer-Bilder unter `~/kivision/hits/` (max. 60), gespeicherte Einstellungen
+in `~/kivision/web_config.json`.
 
 ## Bedienung
 
@@ -52,6 +53,28 @@ wirksamen Rot-/Blau-Gains), **Lux**, **Schärfe (FocusFoM)** und CPU-Temperatur
 **Schnappschuss** — in Stream-Auflösung (sofort) oder **Voll 5 MP**
 (2592×1944; der Stream pausiert dafür rund 2 s). Galerie unten, Bilder einzeln
 löschbar.
+
+**Treffer-Bilder** — beim Justieren läuft niemand mit einer Katze durchs Bild,
+also hält die Kamera selbst fest, was sie gesehen hat: bei jeder Erkennung
+legt sie ein Bild in `~/kivision/hits/` ab, mit **eingezeichnetem Rahmen**,
+Klasse, Sicherheit und einer Fußzeile aus Uhrzeit, Lux, Belichtungszeit und
+Gain — daran sieht man hinterher, ob der Treffer aus der Tag- oder der
+Infrarot-Lage stammt. Zwei Bremsen gegen das Überlaufen:
+
+- **Abstand der Bilder** (10–300 s, voreingestellt 60 s). Er zählt ab der
+  letzten *Aufnahme*, nicht ab dem letzten Treffer: eine Katze, die zehn
+  Minuten im Bild sitzt, liefert zehn Bilder, nicht tausend. Die Oberfläche
+  schreibt mit, wieviel Sperrzeit noch läuft.
+- **max. 60 Bilder** auf der Karte, danach fällt das älteste heraus — bei einer
+  Minute Abstand also mindestens eine Stunde Rückschau. Einzeln löschbar,
+  dazu ein Knopf für „alle löschen".
+
+**Treffer festhalten** hat einen *eigenen* Filter (`aus | nur Katzen | alles
+Erkannte`), unabhängig von „nur Katzen zeigen" im Livebild. Das ist nicht
+Kosmetik: nachts meldet das COCO-Modell auf dem kontrastarmen Infrarotbild
+dauerhaft ein bildfüllendes `horse` mit ~56 % (nachgemessen 2026-09-28). Wer
+sich so etwas im Livebild ansehen will, soll sich davon nicht jede Minute die
+Galerie zumüllen lassen.
 
 **KI-Test (Coral)** — Erkennung an/aus, Modellauswahl aus `~/kivision/models/`,
 Mindest-Sicherheit, Takt, und **Ausschnitte** (1, 2, 3, 2×2, 3×2 mit 15 %
@@ -209,6 +232,16 @@ dafür neu geöffnet, Tuning wird nur beim Öffnen gelesen). Steht jetzt auf
 das Profil auf `normal`/`auto`. Ohne Filter ist der Stich der Preis für
 Nachtsicht — dann bleibt `noir` richtig, und für den Nachtbetrieb mit
 IR-Strahler ist das ohnehin die gewünschte Bauform.
+
+**Probemontage (2026-09-28):** das montierte Modul hat einen *schaltenden*
+IR-Sperrfilter, der sich nach Helligkeit selbst ein- und aushängt. Damit hat
+die Kamera zwei Farblagen statt einer, und ein Tuning kann nur für eine davon
+stimmen: am Tag (Filter drin) passt `normal`, nachts (Filter draußen, Bild
+ohnehin nahezu grau) passt `noir`. Weil die Nachtlage die ist, in der es auf
+Erkennung ankommt, und ein grauer Kanal keinen Weißabgleich braucht, bleibt
+`noir` stehen; stört der Tagesstich beim Justieren, kurz auf `normal` stellen.
+Die Fußzeile der Treffer-Bilder (Lux, Belichtungszeit, Gain) sagt im Nachhinein,
+in welcher Lage das Bild entstanden ist — nachts gemessen: Lux 13, 67 ms, Gain 8.
 
 ## Dienst
 

@@ -28,9 +28,14 @@ from picamera2.outputs import FileOutput
 BASE = Path(__file__).resolve().parent
 HOME = Path(os.environ.get("KIVISION_HOME", Path.home() / "kivision"))
 SNAP_DIR = HOME / "snapshots"
+HIT_DIR = HOME / "hits"
 MODEL_DIR = HOME / "models"
 CONFIG_FILE = HOME / "web_config.json"
 MAX_SNAPSHOTS = 200
+# Treffer-Bilder entstehen von selbst. Der Deckel ist deshalb knapp: 60 Bilder
+# sind bei einer Minute Mindestabstand rund eine Stunde Rueckschau, mehr will
+# beim Justieren niemand durchblaettern - das aelteste faellt danach raus.
+MAX_HITS = 60
 
 # Aufloesungen: OV5647 ist 4:3 (2592x1944 voll).
 SIZES = [(640, 480), (1280, 960), (1640, 1232), (2048, 1536), (2592, 1944)]
@@ -85,6 +90,16 @@ DEFAULTS = {
         "tiles": "1x1",
         "interval": 0.3,
         "cat_only": True,
+        # Beim Justieren laeuft niemand mit einer Katze durchs Bild: die Kamera
+        # muss selbst festhalten, was sie gesehen hat. Ein Bild pro Minute
+        # reicht dafuer und haelt Speicherkarte wie Galerie ueberschaubar.
+        #
+        # Eigener Filter, nicht der der Anzeige: nachts meldet das COCO-Modell
+        # auf dem kontrastarmen Infrarotbild gern ein bildfuellendes "horse".
+        # Wer sich das im Livebild ansehen will, soll sich davon nicht die
+        # Galerie zumuellen lassen. off | cat | all
+        "snap_mode": "cat",
+        "snap_gap": 60,
     },
 }
 
@@ -412,6 +427,10 @@ class Detector:
         self.stop_event = threading.Event()
         self.result = {"boxes": [], "ms": 0.0, "ts": 0.0, "tiles": []}
         self.error = ""
+        self.hit_at = None          # monotonic der letzten Aufnahme
+        self.hit_error = ""         # bleibt stehen, bis es wieder klappt
+        self.hit_count = 0          # zaehlt hoch: die Oberflaeche merkt daran,
+        self.hit_last = ""          # dass sie die Treffer-Galerie neu laden muss
         self.model_path = None
         self.interpreter = None
         self.labels = {}
@@ -542,6 +561,54 @@ class Detector:
                        "w": t[2] / width, "h": t[3] / height} for t in tiles]
         return {"boxes": boxes, "ms": ms, "ts": time.time(), "tiles": norm_tiles}
 
+    # -- Treffer festhalten ------------------------------------------------
+    @staticmethod
+    def _is_cat(label):
+        low = str(label).lower()
+        return "cat" in low or "katze" in low
+
+    def _maybe_hit(self, frame, result):
+        """Speichert hoechstens alle snap_gap Sekunden ein Bild eines Treffers.
+
+        Der Mindestabstand zaehlt ab der letzten Aufnahme, nicht ab dem letzten
+        Treffer: eine Katze, die zehn Minuten im Bild sitzt, liefert zehn
+        Bilder, keine tausend. Gezeichnet wird nur, was ausgeloest hat.
+        """
+        det = self.cfg["detect"]
+        mode = det.get("snap_mode", "cat")
+        if mode == "off" or not result["boxes"]:
+            return
+        boxes = (result["boxes"] if mode == "all"
+                 else [b for b in result["boxes"] if self._is_cat(b["label"])])
+        if not boxes:
+            return
+        gap = max(5.0, float(det.get("snap_gap", 60)))
+        now = time.monotonic()
+        if self.hit_at is not None and now - self.hit_at < gap:
+            return
+        meta = self.camera.metadata()
+        note = "Lux %s  Bel. %s ms  Gain %s" % (
+            round(meta.get("Lux") or 0, 1),
+            round((meta.get("ExposureTime") or 0) / 1000.0, 1),
+            round(meta.get("AnalogueGain") or 0, 1))
+        try:
+            path = save_hit(frame, boxes, note)
+        except Exception as exc:
+            # Ein missgluecktes Treffer-Bild darf die Erkennung nicht anhalten.
+            # Die Meldung bleibt aber stehen - sonst uebermalt sie der naechste
+            # geglueckte Durchlauf, und niemand erfaehrt vom fehlenden Bild.
+            with self.lock:
+                self.hit_error = "Treffer-Bild: %s" % exc
+                self.hit_at = now
+            print("[web] Treffer-Bild fehlgeschlagen: %s" % exc)
+            return
+        with self.lock:
+            self.hit_at = now
+            self.hit_count += 1
+            self.hit_last = path.name
+            self.hit_error = ""
+        print("[web] Treffer festgehalten: %s (%d Rahmen)" % (path.name, len(boxes)))
+
     # -- Thread ----------------------------------------------------------
     def _run(self):
         while not self.stop_event.is_set():
@@ -555,6 +622,7 @@ class Detector:
                 with self.lock:
                     self.result = result
                     self.error = ""
+                self._maybe_hit(frame, result)
             except Exception as exc:
                 with self.lock:
                     self.error = "%s: %s" % (type(exc).__name__, exc)
@@ -574,9 +642,16 @@ class Detector:
                 self.result = {"boxes": [], "ms": 0.0, "ts": 0.0, "tiles": []}
 
     def snapshot_state(self):
+        gap = max(5.0, float(self.cfg["detect"].get("snap_gap", 60)))
         with self.lock:
             data = dict(self.result)
-            data["error"] = self.error
+            data["error"] = self.error or self.hit_error
+            data["hits"] = self.hit_count
+            data["hit_last"] = self.hit_last
+            # Wieviel Sperrzeit noch laeuft - damit die Oberflaeche erklaeren
+            # kann, warum ein sichtbarer Rahmen gerade kein Bild ergibt.
+            data["hit_wait"] = (0 if self.hit_at is None
+                                else max(0, round(gap - (time.monotonic() - self.hit_at))))
         data["running"] = self.thread is not None and self.thread.is_alive()
         return data
 
@@ -585,13 +660,71 @@ def clamp01(value):
     return max(0.0, min(1.0, value))
 
 
-def prune_snapshots():
-    files = sorted(SNAP_DIR.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
-    for old in files[MAX_SNAPSHOTS:]:
+def prune_dir(directory, keep):
+    files = sorted(directory.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in files[keep:]:
         try:
             old.unlink()
         except OSError:
             pass
+
+
+def prune_snapshots():
+    prune_dir(SNAP_DIR, MAX_SNAPSHOTS)
+
+
+def _font(px):
+    from PIL import ImageFont
+    try:
+        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", px)
+    except OSError:
+        pass
+    try:
+        return ImageFont.load_default(size=px)
+    except TypeError:                       # aeltere Pillow: nur Bitmap-Font
+        return ImageFont.load_default()
+
+
+def save_hit(frame, boxes, note):
+    """Legt das Bild ab, in dem gerade etwas erkannt wurde - mit Rahmen drin.
+
+    Der Rahmen wird fest eingezeichnet, nicht als Overlay nachgereicht: beim
+    Justieren zaehlt, *wo* im Bild die Katze stand und wie gross sie dort war.
+    Die Fusszeile haelt Uhrzeit und Lichtverhaeltnisse fest - daran sieht man
+    hinterher, ob der Treffer aus der Tag- oder der Infrarot-Lage stammt.
+    """
+    from PIL import Image, ImageDraw
+
+    img = Image.fromarray(frame)
+    width, height = img.size
+    draw = ImageDraw.Draw(img)
+    line = max(2, round(width / 400))
+    font = _font(max(12, round(width / 45)))
+    green, dark = (90, 235, 130), (8, 24, 14)
+    best = 0.0
+    for box in boxes:
+        x0, y0 = box["x"] * width, box["y"] * height
+        x1, y1 = (box["x"] + box["w"]) * width, (box["y"] + box["h"]) * height
+        draw.rectangle([x0, y0, x1, y1], outline=green, width=line)
+        best = max(best, box["score"])
+        tag = "%s %d%%" % (box["label"], round(box["score"] * 100))
+        tw = draw.textlength(tag, font=font)
+        th = font.size + 6 if hasattr(font, "size") else 18
+        ty = y0 - th - line if y0 - th - line >= 0 else y0 + line
+        tx = min(max(0.0, x0), max(0.0, width - tw - 8))
+        draw.rectangle([tx, ty, tx + tw + 8, ty + th], fill=dark, outline=green, width=1)
+        draw.text((tx + 4, ty + 2), tag, font=font, fill=green)
+    stamp = datetime.now()
+    foot = stamp.strftime("%d.%m. %H:%M:%S") + "  " + note
+    fh = (font.size if hasattr(font, "size") else 14) + 8
+    draw.rectangle([0, height - fh, width, height], fill=(0, 0, 0))
+    draw.text((6, height - fh + 3), foot, font=font, fill=(220, 230, 240))
+
+    HIT_DIR.mkdir(parents=True, exist_ok=True)
+    path = HIT_DIR / ("%s_%02d.jpg" % (stamp.strftime("%Y%m%d_%H%M%S"), round(best * 100)))
+    img.save(path, "JPEG", quality=80)
+    prune_dir(HIT_DIR, MAX_HITS)
+    return path
 
 
 def system_info():
@@ -616,6 +749,7 @@ def system_info():
 
 cfg = load_config()
 SNAP_DIR.mkdir(parents=True, exist_ok=True)
+HIT_DIR.mkdir(parents=True, exist_ok=True)
 camera = Camera(cfg)
 detector = Detector(camera, cfg)
 if cfg["detect"].get("enabled"):
@@ -760,6 +894,10 @@ def api_detect():
         det["interval"] = max(0.05, min(5.0, float(data["interval"])))
     if "cat_only" in data:
         det["cat_only"] = bool(data["cat_only"])
+    if "snap_mode" in data and str(data["snap_mode"]) in ("off", "cat", "all"):
+        det["snap_mode"] = str(data["snap_mode"])
+    if "snap_gap" in data:
+        det["snap_gap"] = max(5, min(3600, int(data["snap_gap"])))
     if "enabled" in data:
         det["enabled"] = bool(data["enabled"])
     detector.set_enabled(det["enabled"])
@@ -788,6 +926,48 @@ def api_snapshots():
     return jsonify([{"name": p.name,
                      "size": p.stat().st_size,
                      "ts": int(p.stat().st_mtime)} for p in files[:60]])
+
+
+@app.route("/api/hits")
+def api_hits():
+    """Die von selbst entstandenen Treffer-Bilder, neueste zuerst."""
+    files = sorted(HIT_DIR.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+    out = []
+    for path in files[:MAX_HITS]:
+        # Name ist <datum>_<zeit>_<prozent>.jpg - die Sicherheit steht mit drin,
+        # damit die Galerie sie ohne zweite Datei je Bild anzeigen kann.
+        part = path.stem.rsplit("_", 1)[-1]
+        out.append({"name": path.name,
+                    "size": path.stat().st_size,
+                    "ts": int(path.stat().st_mtime),
+                    "score": int(part) if part.isdigit() else None})
+    return jsonify({"max": MAX_HITS, "files": out})
+
+
+@app.route("/hits/<path:name>")
+def hit_file(name):
+    return send_from_directory(HIT_DIR, name)
+
+
+@app.route("/api/hits/<path:name>", methods=["DELETE"])
+def hit_delete(name):
+    target = (HIT_DIR / name).resolve()
+    if target.parent != HIT_DIR.resolve() or not target.exists():
+        return jsonify({"ok": False}), 404
+    target.unlink()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/hits/clear", methods=["POST"])
+def hits_clear():
+    count = 0
+    for path in HIT_DIR.glob("*.jpg"):
+        try:
+            path.unlink()
+            count += 1
+        except OSError:
+            pass
+    return jsonify({"ok": True, "deleted": count})
 
 
 @app.route("/snapshots/<path:name>")
