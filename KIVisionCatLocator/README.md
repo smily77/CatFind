@@ -1,4 +1,4 @@
-# KIVisionCatLocator — Phase 2: Kamera-Test und Webserver
+# KIVisionCatLocator — Kamera-Webserver (Phase 2) und Busgerät (Phase 3)
 
 Weboberfläche auf dem Pi `kivision` (192.168.0.186), mit der der Montageort der
 Kamera gesucht wird: Livebild im Browser, alle wichtigen Kamera-Parameter
@@ -7,8 +7,8 @@ ob die KI von diesem Standort aus überhaupt etwas erkennt.
 
 **Aufruf: <http://192.168.0.186:8080/>** (auch vom Handy im Heim-WLAN).
 
-Phase 2 ist bewusst eigenständig: keine Bus-Anbindung, kein VPS, keine
-Homographie — das kommt in Phase 3/4.
+Seit Phase 3 ist derselbe Prozess zugleich **Gerät #20 `KIVision`** auf dem
+CatFinder-Bus (siehe unten „Busgerät"). Homographie/Pose folgt in Phase 4.
 
 ## Dateien
 
@@ -17,6 +17,29 @@ Homographie — das kommt in Phase 3/4.
 | `kivision_web.py` | Flask-Server: MJPEG-Stream, Kamera-Controls, Schnappschüsse, Coral-Test |
 | `templates/index.html` | Weboberfläche (eine Seite, kein Build, handytauglich) |
 | `kivision-web.service` | systemd-Dienst (Autostart) |
+| `xcom.py` | xCom-6.3-Protokoll in Python, **zur Laufzeit aus `xComDef6_3.h` geparst** |
+| `kivision_bus.py` | das Busgerät: HB, settingsReport, poseReport, Kommandos |
+| `xComDef6_3.h` | wird beim Ausrollen aus `Controller/Manager6_3_0/` daneben kopiert |
+
+## Busgerät (Phase 3)
+
+- **ID 20, Name `KIVision`, Typ `VisionLocator`**, IP .186 (Eintrag in `device[]` der
+  `xComDef6_3.h`, `deviceCount` 21). Geräte mit alter Firmware (`deviceCount` 20)
+  verwerfen Pakete von #20 — wer #20 kennen muss (Manager, CatIdent,
+  Bedienungs-Display), braucht einen Neubau.
+- **Protokoll ohne zweite Quelle:** `xcom.py` liest beim Start `#define`s,
+  `constexpr`s und alle `__attribute__((packed))`-Structs aus `xComDef6_3.h`
+  (auch eingebettete wie `hbPayload hb;`). Protokolländerung = Header neu kopieren.
+- **Sendet:** HB alle 10 s (`hbPayload`), `settingsReport` (Start, auf Anfrage, nach
+  jeder Änderung — auch wenn die Erkennung hier im Browser umgeschaltet wird),
+  `poseReport` (bis Phase 4 `validWorldPose=0`), Debug-Text → VPS-Debugfenster.
+- **Settings:** `stgCamAi` = Coral-Erkennung (dieselbe wie der Knopf „Erkennung";
+  persistiert in `web_config.json`), `stgActive` = Ruhemodus (Erkennung und
+  Trefferbilder aus, HB läuft; nicht persistiert — nach Neustart wieder aktiv).
+- **Kommandos:** `cmdSetSetting`, `cmdReboot` (beendet den Prozess, systemd startet
+  ihn in ~10 s neu — Kamera/Coral werden sauber freigegeben, der Pi bootet nicht).
+- Kopfzeile der Weboberfläche: **Bus** `#20 ok` / `still` (seit 30 s nichts
+  empfangen) / `Ruhemodus`; Tooltip mit Zählern und letztem Kommando.
 
 Auf dem Pi liegt alles unter `~/kivision/web/`, Schnappschüsse unter
 `~/kivision/snapshots/` (max. 200, danach werden die ältesten gelöscht),
@@ -256,7 +279,7 @@ Der Dienst ist `enabled`, startet also nach jedem Stromausfall von selbst.
 ## Neu ausrollen
 
 ```bash
-scp kivision_web.py pi@192.168.0.186:~/kivision/web/
+scp kivision_web.py xcom.py kivision_bus.py ../Controller/Manager6_3_0/xComDef6_3.h pi@192.168.0.186:~/kivision/web/
 scp templates/index.html pi@192.168.0.186:~/kivision/web/templates/
 ssh pi@192.168.0.186 sudo systemctl restart kivision-web
 ```
