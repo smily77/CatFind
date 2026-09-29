@@ -414,8 +414,7 @@ function applyState(s, first) {
     $('sBus').textContent = '#' + b.id + (b.active ? '' : ' Ruhemodus') + (quiet ? ' still' : ' ok');
     $('sBus').style.color = !b.active || quiet ? 'var(--warn)' : '';
     $('sBus').title = 'gesendet ' + b.tx + ', empfangen ' + b.rx + ', Geraete ' + b.peers
-      + (b.last_cmd ? '
-letztes Kommando: ' + b.last_cmd : '');
+      + (b.last_cmd ? ' | letztes Kommando: ' + b.last_cmd : '');
     if (!first && b.ai !== detOn && Date.now() - detClickAt > 4000) { detOn = b.ai; setDetButton(); }
   }
 }
