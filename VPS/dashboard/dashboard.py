@@ -293,6 +293,7 @@ FALLBACK_DEVICES = {
     14:("Simulator","MananagementDevice",0,0,0,0), 15:("Laser_Marker","Marker",0,0,0,0),
     16:("PowerActor1_1","PowerActor",2,0,0,0), 17:("LidarC1","Lidar",0,-180,180,12000),
     18:("Cat_Identifier","Detector",0,0,0,0), 19:("Cat_Cam","Kamera",0,-31,31,8000),
+    20:("KIVision","VisionLocator",0,-50,50,15000),
 }
 
 # ------------------------------------------------- Gerätetabelle aus xComDef6_3.h
@@ -363,7 +364,7 @@ def dev_group(sid):
 # bekommen eine Spur; kuenftige Sensortypen hier ergaenzen. Hinweis: LD06 sendet Stand
 # heute gar keinen HB (CF3_LD06_Lidar/LD06_6_3_0/REVIEW_6_3.md) - seine Spur bleibt
 # grau ("keine Daten"), bis die Firmware einen HB bekommt.
-HB_SENSOR_PERIOD_S = {"HLK": 5, "Lidar": 10, "Kamera": 10}
+HB_SENSOR_PERIOD_S = {"HLK": 5, "Lidar": 10, "Kamera": 10, "VisionLocator": 10}
 _hb_zero_minute = [0]            # zuletzt mit 0-Zeilen angelegte Minute (Liste = mutabel)
 
 _lock = threading.Lock()

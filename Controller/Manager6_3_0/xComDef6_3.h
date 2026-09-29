@@ -77,6 +77,7 @@ struct stationDefinitions {
 #define LidarC1 17
 #define CatIdent 18   // Cat Identifier: Erkennungsmodell in Echtzeit (catmodel-Port), sendet catDetected
 #define CatCam 19     // XIAO Vision AI Camera: Foto bei catDetected + eigene KI-Katzenerkennung
+#define KIVision 20   // KIVisionCatLocator: Raspberry Pi 4 + Coral, Weitwinkel-KI + Boden-Homographie (Python-xCom)
 //Types
 #define MananagementDevice 1
 #define HLK 2
@@ -88,10 +89,11 @@ struct stationDefinitions {
 #define Marker 8
 #define Detector 9   // Erkennungsgeraet: konsumiert catObserved, produziert catDetected
 #define Kamera 10    // Vision-KI-Kamera: Fotos an den VPS, catObserved bei KI-Katzenerkennung
+#define VisionLocator 11  // Pi-Kamera mit Welt-Lokalisierung (Homographie): catObserved mit worldValid=1
 // Anzahl Eintraege in device[] - ueberall statt hartem "18"/"19" verwenden
-#define deviceCount 20
+#define deviceCount 21
 //  {MananagementDevice,180,0x01},
-stationDefinitions device[20] = {
+stationDefinitions device[deviceCount] = {
   {MananagementDevice,180,0x01,groupNone, "Manager_Dev", 0,0,0},        //Manager
   {HLK,0,0,testGroup,  "Dome",         -60, 60, 7000},                  //Dome
   {HLK,0,0,groupPA1_1, "Mini_Dome",    -60, 60, 7000},                  //MiniDome  -> Gruppe PA1_1
@@ -111,7 +113,8 @@ stationDefinitions device[20] = {
   {PowerActor,183,0x04,groupPA1_1, "PowerActor1_1", 0,0,0},             //PA1_1 (älterer PA mit Stepper/PCF8574/A4988, feste IP .183) -> Gruppe PA1_1
   {Lidar,0,0,groupNone, "LidarC1",    -180, 180, 12000},                //LidarC1 (RPLidar C1, welt-fähig via VPS-Lokalisierung, DHCP)
   {Detector,184,0x05,groupNone, "Cat_Identifier", 0,0,0},               //CatIdent: Echtzeit-Katzenerkennung auf dem Bus (feste IP .184), Modellparameter vom VPS
-  {Kamera,185,0x06,groupNone, "Cat_Cam",    -31, 31, 8000}              //CatCam: XIAO Vision AI Camera (OV5647 62 Grad; feste IP .185), Fotos -> VPS
+  {Kamera,185,0x06,groupNone, "Cat_Cam",    -31, 31, 8000},             //CatCam: XIAO Vision AI Camera (OV5647 62 Grad; feste IP .185), Fotos -> VPS
+  {VisionLocator,186,0x07,groupNone, "KIVision", -50, 50, 15000}         //KIVisionCatLocator: Pi 4 + Coral (feste IP .186), Python-xCom (KIVisionCatLocator/xcom.py); Bereich nominell bis zur Homographie
 };
 
 // call -> device[ident].type

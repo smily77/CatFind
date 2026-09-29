@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""KIVisionCatLocator - Phase 2: Kamera-Test und Webserver.
+"""KIVisionCatLocator - Kamera-Webserver (Phase 2) und Busgeraet (Phase 3).
 
 Liefert ein MJPEG-Livebild der OV5647 im Browser, erlaubt das Verstellen der
 wichtigsten Kamera-Parameter, macht Schnappschuesse (Stream-Aufloesung oder
 volle 5 MP) und kann optional den Coral zuschalten, um direkt am Montageort zu
 pruefen, ob eine Katze von dort ueberhaupt erkannt wird.
 
-Bewusst eigenstaendig: keine Bus-Anbindung, kein VPS - das kommt in Phase 3.
+Seit Phase 3 ist dasselbe Programm auch Geraet 20 ("KIVision") auf dem
+CatFinder-Bus (kivision_bus.py / xcom.py): HB, settingsReport, Steuerung aus
+dem VPS-Tab "Steuerung" (KI an/aus, Ruhemodus, Neustart).
 """
 
 import io
@@ -752,8 +754,53 @@ SNAP_DIR.mkdir(parents=True, exist_ok=True)
 HIT_DIR.mkdir(parents=True, exist_ok=True)
 camera = Camera(cfg)
 detector = Detector(camera, cfg)
-if cfg["detect"].get("enabled"):
-    detector.set_enabled(True)
+
+# -- Busgeraet (Phase 3) ------------------------------------------------------
+# Die KI laeuft nur, wenn sie eingeschaltet ist (detect.enabled, auch vom VPS
+# als stgCamAi schaltbar) UND das Geraet nicht im Ruhemodus steht (stgActive).
+_bus_active = [True]
+
+
+def apply_detect():
+    detector.set_enabled(bool(cfg["detect"].get("enabled")) and _bus_active[0])
+
+
+def _bus_set_ai(on):
+    cfg["detect"]["enabled"] = bool(on)
+    save_config(cfg)
+    apply_detect()
+
+
+def _bus_on_active(on):
+    _bus_active[0] = bool(on)
+    apply_detect()
+
+
+def _start_bus():
+    # xComDef6_3.h liegt beim Ausrollen neben diesem Skript; im Repo eine Ebene
+    # hoeher beim Manager. Ohne Header laeuft die Kamera trotzdem, nur ohne Bus.
+    for cand in (BASE / "xComDef6_3.h",
+                 BASE.parent / "Controller" / "Manager6_3_0" / "xComDef6_3.h"):
+        if cand.is_file():
+            break
+    else:
+        print("[bus] xComDef6_3.h nicht gefunden - ohne Busanbindung")
+        return None
+    try:
+        from xcom import XComDef
+        from kivision_bus import BusNode
+        node = BusNode(XComDef(cand), lambda: bool(cfg["detect"].get("enabled")),
+                       _bus_set_ai, _bus_on_active)
+        node.start()
+        print("[bus] Geraet %d auf dem Bus, IP %s" % (node.id, node.bus.ip))
+        return node
+    except Exception as exc:                                  # noqa: BLE001
+        print("[bus] Start fehlgeschlagen: %s" % exc)
+        return None
+
+
+apply_detect()
+node = _start_bus()
 
 app = Flask(__name__, template_folder=str(BASE / "templates"))
 
@@ -805,6 +852,7 @@ def api_state():
         "frames": camera.output.count,
         "viewers": camera.viewers,
         "system": system_info(),
+        "bus": node.status() if node else None,
         "meta": {
             "ExposureTime": meta.get("ExposureTime"),
             "AnalogueGain": round(meta.get("AnalogueGain") or 0, 2),
@@ -898,10 +946,13 @@ def api_detect():
         det["snap_mode"] = str(data["snap_mode"])
     if "snap_gap" in data:
         det["snap_gap"] = max(5, min(3600, int(data["snap_gap"])))
+    was = bool(det.get("enabled"))
     if "enabled" in data:
         det["enabled"] = bool(data["enabled"])
-    detector.set_enabled(det["enabled"])
+    apply_detect()
     save_config(cfg)
+    if node and was != bool(det["enabled"]):
+        node.settings_changed()          # VPS-Steuertab sofort nachziehen
     return jsonify({"ok": True, "detect": det})
 
 
