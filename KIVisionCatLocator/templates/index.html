@@ -76,6 +76,7 @@
     <span>Lux <b id="sLux">-</b></span>
     <span>Schärfe <b id="sFocus">-</b></span>
     <span>CPU <b id="sTemp">-</b></span>
+    <span title="CatFinder-Bus: Geraet #20">Bus <b id="sBus">-</b></span>
   </div>
 </header>
 
@@ -208,7 +209,7 @@
 </main>
 
 <script>
-let state = null, rot = 0, grid = true, detOn = false, hits = null;
+let state = null, rot = 0, grid = true, detOn = false, hits = null, detClickAt = 0;
 
 const $ = (id) => document.getElementById(id);
 const post = (url, body) => fetch(url, {
@@ -405,6 +406,18 @@ function applyState(s, first) {
   $('sFocus').textContent = s.meta.FocusFoM ?? '-';
   $('sTemp').textContent = s.system.temp ? s.system.temp + ' °C' : '-';
   $('sTemp').style.color = (s.system.temp || 0) > 75 ? 'var(--bad)' : '';
+  // Bus: der VPS kann KI und Ruhemodus umschalten - dann hier nachziehen.
+  const b = s.bus;
+  if (!b) { $('sBus').textContent = 'aus'; $('sBus').style.color = 'var(--bad)'; }
+  else {
+    const quiet = b.rx_age == null || b.rx_age > 30;
+    $('sBus').textContent = '#' + b.id + (b.active ? '' : ' Ruhemodus') + (quiet ? ' still' : ' ok');
+    $('sBus').style.color = !b.active || quiet ? 'var(--warn)' : '';
+    $('sBus').title = 'gesendet ' + b.tx + ', empfangen ' + b.rx + ', Geraete ' + b.peers
+      + (b.last_cmd ? '
+letztes Kommando: ' + b.last_cmd : '');
+    if (!first && b.ai !== detOn && Date.now() - detClickAt > 4000) { detOn = b.ai; setDetButton(); }
+  }
 }
 
 const refreshState = (first) => fetch('/api/state').then(r => r.json()).then(s => applyState(s, first));
@@ -547,7 +560,7 @@ $('bReset').onclick = () => post('/api/reset_controls').then(() => {
 });
 
 $('bDet').onclick = () => {
-  detOn = !detOn;
+  detOn = !detOn; detClickAt = Date.now();
   setDetButton();
   post('/api/detect', {enabled: detOn, model: $('fModel').value});
 };
