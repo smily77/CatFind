@@ -787,6 +787,19 @@ Nachtbilder ist gleichmäßige IR-Ausleuchtung wichtiger als maximale Mittenhell
    Dauerstream.
 3. **Netz-Integration.** Claude macht den Pi zum Busgerät `KIVisionCatLocator`
    (Python-xCom, HB, `settingsReport`, Steuerbarkeit im VPS).
+   **ERLEDIGT 2026-09-29:** Gerät **#20 `KIVision`**, Typ **`VisionLocator` (11)**, feste
+   IP .186, `deviceCount` 20 → **21** (Manager + CatIdent per OTA neu geflasht; das
+   Touch-Display `Bedienung_Einstellungen` war offline und kennt #20 erst nach dem
+   nächsten Flashen). Das Busmodul läuft **im selben Prozess** wie der Kamera-Webserver
+   (`kivision_bus.py`), das Protokoll (`xcom.py`) wird **zur Laufzeit direkt aus
+   `xComDef6_3.h` geparst** — `#define`s und alle `packed`-Structs, keine zweite Kopie;
+   die Datei wird mit ausgerollt. Der Pi sendet HB (10 s), `settingsReport`
+   (`stgCamAi` = KI-Erkennung, persistiert als `detect.enabled`; `stgActive` =
+   Ruhemodus, nicht persistiert), `poseReport` (bis Phase 4 `validWorldPose=0`) und
+   Debug-Text; er befolgt `cmdSetSetting` und `cmdReboot` (= Programm-Neustart über
+   systemd, nicht Pi-Reboot, ~10 s). Erfassungsbereich in der Tabelle vorläufig
+   nominell (−50/+50°, 15 m), bis die Homographie steht. Verifiziert über den VPS:
+   HB-Liste, Steuerungs-Tab, Ruhemodus hin/zurück (KI stoppt/startet), Neustart.
 4. **Pose / Homographie (assistiert).** Die Kamera lernt Standort und Ausrichtung
    als Boden-Homographie über RasenKarten-Referenzpunkte (Web-UI-Klicks; VPS falls
    nötig).

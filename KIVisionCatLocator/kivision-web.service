@@ -1,5 +1,5 @@
 [Unit]
-Description=KIVisionCatLocator Webserver (Phase 2: Kamera-Test)
+Description=KIVisionCatLocator (Kamera-Webserver + Busgeraet #20)
 After=network-online.target
 Wants=network-online.target
 
