@@ -160,6 +160,9 @@
           <option value="3x1">3 nebeneinander</option>
           <option value="2x2">2 × 2</option>
           <option value="3x2">3 × 2</option>
+          <option value="3x3">3 × 3</option>
+          <option value="4x3">4 × 3 (Katze auf dem Rasen)</option>
+          <option value="4x4">4 × 4</option>
         </select>
       </div>
       <div class="row">
@@ -180,6 +183,7 @@
         <select id="fSnapMode">
           <option value="off">aus</option>
           <option value="cat">nur Katzen</option>
+          <option value="animal">Tiere (Katze, Hund, Bär …)</option>
           <option value="all">alles Erkannte</option>
         </select>
       </div>
@@ -190,7 +194,9 @@
       </div>
       <div class="hint">Eigener Filter, unabhängig vom Livebild: nachts meldet das
         Modell auf dem Infrarotbild gern ein bildfüllendes „horse“. Rahmen,
-        Uhrzeit und Lichtwerte stehen fest im gespeicherten Bild.</div>
+        Uhrzeit und Lichtwerte stehen fest im gespeicherten Bild. Rahmen, die mehr
+        als 40&nbsp;% ihres Ausschnitts bedecken, werden verworfen. „Tiere“ hält
+        auch dog/bear/sheep fest: auf dem Graubild verwechselt das Modell Katzen leicht.</div>
       <div class="msg" id="detErr"></div>
     </div>
 
@@ -371,7 +377,7 @@ function applyState(s, first) {
     $('fInt').value = Math.round(c.detect.interval * 10);
     $('vInt').textContent = c.detect.interval.toFixed(1) + ' s';
     $('fCat').checked = c.detect.cat_only;
-    $('fSnapMode').value = c.detect.snap_mode || 'cat';
+    $('fSnapMode').value = c.detect.snap_mode || 'animal';
     $('fGap').value = c.detect.snap_gap || 60;
     $('vGap').textContent = ($('fGap').value) + ' s';
     $('fTuning').value = c.tuning || 'auto';
@@ -431,10 +437,11 @@ function pollDetections() {
     // muss die Galerie nicht im Sekundentakt nachfragen.
     if (hits !== null && d.hits > hits) loadHits();
     hits = d.hits;
-    const mode = state ? (state.config.detect.snap_mode || 'cat') : 'cat';
+    const mode = state ? (state.config.detect.snap_mode || 'animal') : 'animal';
     $('hitState').textContent = mode === 'off' ? 'Festhalten ist aus.'
       : (d.hit_wait ? 'Nächstes Bild frühestens in ' + d.hit_wait + ' s.'
-                    : 'Bereit' + (mode === 'cat' ? ' für die nächste Katze.' : ' für den nächsten Treffer.'));
+                    : 'Bereit' + (mode === 'cat' ? ' für die nächste Katze.'
+                               : mode === 'animal' ? ' für das nächste Tier.' : ' für den nächsten Treffer.'));
   }).catch(() => {});
 }
 

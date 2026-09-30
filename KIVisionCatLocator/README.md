@@ -92,12 +92,26 @@ Infrarot-Lage stammt. Zwei Bremsen gegen das Überlaufen:
   Minute Abstand also mindestens eine Stunde Rückschau. Einzeln löschbar,
   dazu ein Knopf für „alle löschen".
 
-**Treffer festhalten** hat einen *eigenen* Filter (`aus | nur Katzen | alles
-Erkannte`), unabhängig von „nur Katzen zeigen" im Livebild. Das ist nicht
+**Treffer festhalten** hat einen *eigenen* Filter (`aus | nur Katzen | Tiere |
+alles Erkannte`), unabhängig von „nur Katzen zeigen" im Livebild. Das ist nicht
 Kosmetik: nachts meldet das COCO-Modell auf dem kontrastarmen Infrarotbild
 dauerhaft ein bildfüllendes `horse` mit ~56 % (nachgemessen 2026-09-28). Wer
 sich so etwas im Livebild ansehen will, soll sich davon nicht jede Minute die
 Galerie zumüllen lassen.
+
+**Katzenerkennung nachgeschärft (2026-09-30).** Bis dahin wurde keine einzige
+echte Katze erkannt, dafür gab es zwei Fehlalarme mit *bildfüllendem* „cat“
+(44/50 %, Dämmerung, IR). Ursache: Mit Ausschnitt 1 wird das 1640×1232-Bild
+auf 300×300 geschrumpft, eine Katze auf dem Rasen hat dann nur noch 10–15 Pixel.
+Das ist weit unter dem, was SSD-MobileNet findet. Seither gilt:
+- **Ausschnitte 4×3** (Standard): Die Katze hat dann ~40 Pixel. Den Mäher findet das
+  Modell damit sofort als `car`, vorher sah es ihn gar nicht. Kosten: ~0,4 s je
+  Runde (Coral an USB 3, die Zeit geht in die Vorverarbeitung).
+- **`max_area` 0,4**: Rahmen, die mehr als 40 % ihres Ausschnitts bedecken,
+  werden verworfen. Das trifft genau die bildfüllenden Fehlalarme.
+- **Treffer-Filter „Tiere“** (Standard): Er hält auch `dog/bear/sheep/horse/cow/
+  teddy bear` fest, weil das Modell auf dem Graubild Katzen leicht verwechselt.
+  So sammeln sich echte Katzenbilder, an denen man weiter abstimmen kann.
 
 **KI-Test (Coral)** — Erkennung an/aus, Modellauswahl aus `~/kivision/models/`,
 Mindest-Sicherheit, Takt, und **Ausschnitte** (1, 2, 3, 2×2, 3×2 mit 15 %
