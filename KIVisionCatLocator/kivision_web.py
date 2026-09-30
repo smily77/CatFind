@@ -89,7 +89,16 @@ DEFAULTS = {
         "enabled": False,
         "model": "",
         "threshold": 0.4,
-        "tiles": "1x1",
+        # Das ganze 1640er-Bild auf 300x300 geschrumpft macht eine Katze auf
+        # dem Rasen 10-15 Pixel gross - weit unter dem, was SSD-MobileNet noch
+        # findet (2026-09-30: keine einzige echte Katze erkannt). 4x3 Kacheln
+        # holen sie auf ~40 Pixel; die Coral braucht dafuer ~0,4 s je Runde.
+        "tiles": "4x3",
+        # Rahmen, die mehr als diesen Anteil ihrer Kachel bedecken, verwerfen:
+        # auf dem dunklen IR-Bild haelt das Modell gern die ganze Szene fuer
+        # "cat"/"horse" (beide Fehlalarme vom 2026-09-29 waren bildfuellend).
+        # Eine echte Katze fuellt selbst ganz vorn keine halbe Kachel.
+        "max_area": 0.4,
         "interval": 0.3,
         "cat_only": True,
         # Beim Justieren laeuft niemand mit einer Katze durchs Bild: die Kamera
@@ -99,11 +108,19 @@ DEFAULTS = {
         # Eigener Filter, nicht der der Anzeige: nachts meldet das COCO-Modell
         # auf dem kontrastarmen Infrarotbild gern ein bildfuellendes "horse".
         # Wer sich das im Livebild ansehen will, soll sich davon nicht die
-        # Galerie zumuellen lassen. off | cat | all
-        "snap_mode": "cat",
+        # Galerie zumuellen lassen. off | cat | animal | all
+        #
+        # "animal": auf dem Graubild verwechselt COCO eine Katze leicht mit
+        # dog/bear/sheep - zum Sammeln echter Katzenbilder zaehlt jedes Tier.
+        "snap_mode": "animal",
         "snap_gap": 60,
     },
 }
+
+
+# COCO-Tierklassen, die eine Katze auf dem Rasen sein koennten (Vogel/Giraffe
+# & Co. bewusst nicht). Dient nur dem Festhalten, nicht der Anzeige.
+ANIMALS = ("cat", "katze", "dog", "bear", "teddy bear", "sheep", "horse", "cow")
 
 
 def load_config():
@@ -511,7 +528,9 @@ class Detector:
     def _resize(tile, size):
         try:
             from PIL import Image
-            return Image.fromarray(tile).resize(size, Image.BILINEAR)
+            # reducing_gap: erst ganzzahlig verkleinern, dann fein skalieren -
+            # beim 1640er-Vollbild ein Vielfaches schneller, kaum schlechter.
+            return Image.fromarray(tile).resize(size, Image.BILINEAR, reducing_gap=2.0)
         except ImportError:
             import numpy as np
             ys = (np.linspace(0, tile.shape[0] - 1, size[1])).astype(int)
@@ -524,6 +543,8 @@ class Detector:
         tiles = self._tile_boxes(self.cfg["detect"].get("tiles", "1x1"), width, height)
         threshold = float(self.cfg["detect"].get("threshold", 0.4))
         cat_only = bool(self.cfg["detect"].get("cat_only", True))
+        max_area = float(self.cfg["detect"].get("max_area", 0.4))
+        tensor_area = float(self.input_size[0] * self.input_size[1])
         boxes = []
         started = time.monotonic()
         for (tx, ty, tw, th) in tiles:
@@ -543,6 +564,9 @@ class Detector:
             for obj in detect.get_objects(self.interpreter, threshold):
                 label = self.labels.get(obj.id, str(obj.id))
                 if cat_only and "cat" not in label.lower():
+                    continue
+                # Die Koordinaten sind Tensor-Pixel, der Tensor ist die Kachel.
+                if (obj.bbox.width * obj.bbox.height) / tensor_area > max_area:
                     continue
                 x0 = clamp01((tx + obj.bbox.xmin * sx) / width)
                 y0 = clamp01((ty + obj.bbox.ymin * sy) / height)
@@ -569,6 +593,10 @@ class Detector:
         low = str(label).lower()
         return "cat" in low or "katze" in low
 
+    @staticmethod
+    def _is_animal(label):
+        return str(label).lower() in ANIMALS
+
     def _maybe_hit(self, frame, result):
         """Speichert hoechstens alle snap_gap Sekunden ein Bild eines Treffers.
 
@@ -580,8 +608,8 @@ class Detector:
         mode = det.get("snap_mode", "cat")
         if mode == "off" or not result["boxes"]:
             return
-        boxes = (result["boxes"] if mode == "all"
-                 else [b for b in result["boxes"] if self._is_cat(b["label"])])
+        keep = {"all": lambda label: True, "animal": self._is_animal}.get(mode, self._is_cat)
+        boxes = [b for b in result["boxes"] if keep(b["label"])]
         if not boxes:
             return
         gap = max(5.0, float(det.get("snap_gap", 60)))
@@ -942,7 +970,9 @@ def api_detect():
         det["interval"] = max(0.05, min(5.0, float(data["interval"])))
     if "cat_only" in data:
         det["cat_only"] = bool(data["cat_only"])
-    if "snap_mode" in data and str(data["snap_mode"]) in ("off", "cat", "all"):
+    if "max_area" in data:
+        det["max_area"] = max(0.05, min(1.0, float(data["max_area"])))
+    if "snap_mode" in data and str(data["snap_mode"]) in ("off", "cat", "animal", "all"):
         det["snap_mode"] = str(data["snap_mode"])
     if "snap_gap" in data:
         det["snap_gap"] = max(5, min(3600, int(data["snap_gap"])))
