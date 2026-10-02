@@ -25,13 +25,17 @@ REJOIN_S = 60            # Multicast-Mitgliedschaft auffrischen (WLAN-Abrisse)
 
 
 class BusNode:
-    def __init__(self, defs, get_ai, set_ai, on_active):
+    def __init__(self, defs, get_ai, set_ai, on_active, on_target=None):
         """get_ai()/set_ai(bool): KI-Erkennung lesen/setzen (persistiert die
-        Web-Konfiguration). on_active(bool): Ruhemodus umschalten."""
+        Web-Konfiguration). on_active(bool): Ruhemodus umschalten.
+        on_target(msg, kind, payload): ein Sensor meldet ein Ziel (kind
+        "observed", posPayload) bzw. das Modell eine Katze ("detected",
+        catDetectedPayload) - daraus entstehen die Radar-Bilder."""
         self.x = defs
         self.id = defs.KIVision
         self.bus = Bus(defs, self.id)
         self._get_ai, self._set_ai, self._on_active = get_ai, set_ai, on_active
+        self._on_target = on_target
         self.active = True
         self.supported = (1 << defs.stgCamAi) | (1 << defs.stgActive)
         self.actions = 0
@@ -93,6 +97,12 @@ class BusNode:
             self.send_settings()
         elif m.code == x.poseRequest:
             self.send_pose()
+        elif m.code in (x.catObserved, x.catDetected) and self._on_target:
+            kind, name = (("observed", "posPayload") if m.code == x.catObserved
+                          else ("detected", "catDetectedPayload"))
+            p = x.unpack_prefix(name, m.payload)
+            if p:
+                self._on_target(m, kind, p)
         elif m.code == x.commandMsg:
             c = x.unpack("cmdPayload", m.payload)
             if c:

@@ -31,6 +31,7 @@ BASE = Path(__file__).resolve().parent
 HOME = Path(os.environ.get("KIVISION_HOME", Path.home() / "kivision"))
 SNAP_DIR = HOME / "snapshots"
 HIT_DIR = HOME / "hits"
+RADAR_DIR = HOME / "radar"
 MODEL_DIR = HOME / "models"
 CONFIG_FILE = HOME / "web_config.json"
 MAX_SNAPSHOTS = 200
@@ -38,6 +39,19 @@ MAX_SNAPSHOTS = 200
 # sind bei einer Minute Mindestabstand rund eine Stunde Rueckschau, mehr will
 # beim Justieren niemand durchblaettern - das aelteste faellt danach raus.
 MAX_HITS = 60
+# Radar-Bilder: ausgeloest vom Bus (catObserved/catDetected), NICHT vom Modell.
+# Sie zeigen, ob die Katze, die das Radar gerade verfolgt, ueberhaupt im Bild
+# war und was das Modell dort sah - auch wenn es weit unter der Schwelle lag.
+# Hoechstens WIT_SHOTS Bilder je Radar-Episode, im Abstand WIT_EVERY.
+MAX_RADAR = 150
+WIT_THRESHOLD = 0.2       # alles ab hier einzeichnen, egal welches Label
+WIT_EP_GAP = 8.0          # so lange Funkstille -> naechste Meldung ist neue Episode
+WIT_EP_MAX = 120.0        # Dauermeldung (Maeher, Geist) zaehlt danach als neue Episode
+WIT_SHOTS = 4
+WIT_EVERY = 2.0
+WIT_HOLD = 3.0            # nur fotografieren, solange das Radar noch meldet
+SENDER_NAMES = {0: "Manager", 1: "Dome", 2: "MiniDome", 3: "CompactDome",
+                17: "LidarC1", 18: "CatIdent", 19: "CatCam"}
 
 # Aufloesungen: OV5647 ist 4:3 (2592x1944 voll).
 SIZES = [(640, 480), (1280, 960), (1640, 1232), (2048, 1536), (2592, 1944)]
@@ -450,6 +464,15 @@ class Detector:
         self.hit_error = ""         # bleibt stehen, bis es wieder klappt
         self.hit_count = 0          # zaehlt hoch: die Oberflaeche merkt daran,
         self.hit_last = ""          # dass sie die Treffer-Galerie neu laden muss
+        # Radar-Episode (siehe MAX_RADAR), Zeiten in time.monotonic()
+        self.ep_start = None
+        self.ep_last = 0.0
+        self.ep_shots = 0
+        self.ep_next = 0.0
+        self.ep_force = False
+        self.ep_info = ""
+        self.ep_busy = False
+        self.radar_count = 0
         self.model_path = None
         self.interpreter = None
         self.labels = {}
@@ -546,6 +569,8 @@ class Detector:
         max_area = float(self.cfg["detect"].get("max_area", 0.4))
         tensor_area = float(self.input_size[0] * self.input_size[1])
         boxes = []
+        raw = []                    # alles ab WIT_THRESHOLD, fuer Radar-Bilder
+        floor = min(threshold, WIT_THRESHOLD)
         started = time.monotonic()
         for (tx, ty, tw, th) in tiles:
             crop = frame[ty:ty + th, tx:tx + tw]
@@ -561,10 +586,8 @@ class Detector:
             # selbst auf die Kachel hoch und schieben sie an ihren Platz.
             sx = tw / self.input_size[0]
             sy = th / self.input_size[1]
-            for obj in detect.get_objects(self.interpreter, threshold):
+            for obj in detect.get_objects(self.interpreter, floor):
                 label = self.labels.get(obj.id, str(obj.id))
-                if cat_only and "cat" not in label.lower():
-                    continue
                 # Die Koordinaten sind Tensor-Pixel, der Tensor ist die Kachel.
                 if (obj.bbox.width * obj.bbox.height) / tensor_area > max_area:
                     continue
@@ -574,18 +597,24 @@ class Detector:
                 y1 = clamp01((ty + obj.bbox.ymax * sy) / height)
                 if x1 <= x0 or y1 <= y0:
                     continue
-                boxes.append({
+                box = {
                     "x": round(x0, 4),
                     "y": round(y0, 4),
                     "w": round(x1 - x0, 4),
                     "h": round(y1 - y0, 4),
                     "score": round(float(obj.score), 3),
                     "label": label,
-                })
+                }
+                raw.append(box)
+                if obj.score < threshold or (cat_only and "cat" not in label.lower()):
+                    continue
+                boxes.append(box)
         ms = round((time.monotonic() - started) * 1000, 1)
         norm_tiles = [{"x": t[0] / width, "y": t[1] / height,
                        "w": t[2] / width, "h": t[3] / height} for t in tiles]
-        return {"boxes": boxes, "ms": ms, "ts": time.time(), "tiles": norm_tiles}
+        raw.sort(key=lambda b: b["score"], reverse=True)
+        return {"boxes": boxes, "raw": raw[:12], "ms": ms, "ts": time.time(),
+                "tiles": norm_tiles}
 
     # -- Treffer festhalten ------------------------------------------------
     @staticmethod
@@ -639,6 +668,89 @@ class Detector:
             self.hit_error = ""
         print("[web] Treffer festgehalten: %s (%d Rahmen)" % (path.name, len(boxes)))
 
+    # -- Radar-Bilder ------------------------------------------------------
+    def radar_event(self, info, force=False):
+        """Vom Bus: ein Sensor meldet ein Ziel (catObserved) bzw. das Modell
+        hat eine Katze bestaetigt (catDetected, force=True -> sofort ein Bild).
+
+        Laeuft die KI, macht der Erkennungs-Thread das Bild beim naechsten
+        Durchlauf (mit allen Rahmen ab WIT_THRESHOLD). Ist sie aus, wird das
+        nackte Bild direkt abgelegt - es zeigt dann wenigstens, ob die Katze
+        im Bild war.
+        """
+        now = time.monotonic()
+        with self.lock:
+            if (self.ep_start is None or now - self.ep_last > WIT_EP_GAP
+                    or now - self.ep_start > WIT_EP_MAX):
+                self.ep_start = now
+                self.ep_shots = 0
+                self.ep_next = now
+            self.ep_last = now
+            self.ep_info = info
+            if force:
+                self.ep_force = True
+            running = self.thread is not None and self.thread.is_alive()
+            due = not running and not self.ep_busy and self._witness_due(now)
+            if due:
+                self.ep_busy = True
+        if due:
+            threading.Thread(target=self._witness_plain, daemon=True).start()
+
+    def _witness_due(self, now):
+        """Unter self.lock: soll jetzt ein Radar-Bild entstehen?"""
+        if self.ep_start is None or now - self.ep_last > WIT_HOLD:
+            return False
+        if self.ep_force:
+            return True
+        return self.ep_shots < WIT_SHOTS and now >= self.ep_next
+
+    def _witness_take(self, now):
+        """Unter self.lock: Episode weiterzaehlen, Text der Fusszeile liefern."""
+        self.ep_force = False
+        self.ep_shots += 1
+        self.ep_next = now + WIT_EVERY
+        return self.ep_info, self.ep_shots
+
+    def _witness_plain(self):
+        try:
+            frame = self.camera.capture_array()
+            if frame is not None:
+                with self.lock:
+                    info, shot = self._witness_take(time.monotonic())
+                self._save_witness(frame, None, info, shot)
+        finally:
+            with self.lock:
+                self.ep_busy = False
+
+    def _maybe_witness(self, frame, raw):
+        now = time.monotonic()
+        with self.lock:
+            if not self._witness_due(now):
+                return
+            info, shot = self._witness_take(now)
+        self._save_witness(frame, raw, info, shot)
+
+    def _save_witness(self, frame, raw, info, shot):
+        cats = [b["score"] for b in (raw or []) if self._is_cat(b["label"])]
+        best = max(cats) if cats else 0.0
+        if raw is None:
+            model = "KI aus"
+        elif raw:
+            model = "bestes: %s %d%%" % (raw[0]["label"], round(raw[0]["score"] * 100))
+        else:
+            model = "Modell: nichts ab %d%%" % round(WIT_THRESHOLD * 100)
+        note = "%s  Bild %d  %s" % (info, shot, model)
+        try:
+            # Der Name traegt die beste KATZEN-Sicherheit (0 = keine Katze),
+            # nicht die des staerksten Rahmens - danach sortiert man hinterher.
+            path = save_hit(frame, raw or [], note, RADAR_DIR, MAX_RADAR, name_score=best)
+        except Exception as exc:                              # noqa: BLE001
+            print("[web] Radar-Bild fehlgeschlagen: %s" % exc)
+            return
+        with self.lock:
+            self.radar_count += 1
+        print("[web] Radar-Bild: %s (%s)" % (path.name, note))
+
     # -- Thread ----------------------------------------------------------
     def _run(self):
         while not self.stop_event.is_set():
@@ -649,10 +761,12 @@ class Detector:
                     time.sleep(0.2)
                     continue
                 result = self._infer(frame)
+                raw = result.pop("raw", [])
                 with self.lock:
                     self.result = result
                     self.error = ""
                 self._maybe_hit(frame, result)
+                self._maybe_witness(frame, raw)
             except Exception as exc:
                 with self.lock:
                     self.error = "%s: %s" % (type(exc).__name__, exc)
@@ -678,6 +792,7 @@ class Detector:
             data["error"] = self.error or self.hit_error
             data["hits"] = self.hit_count
             data["hit_last"] = self.hit_last
+            data["radar"] = self.radar_count
             # Wieviel Sperrzeit noch laeuft - damit die Oberflaeche erklaeren
             # kann, warum ein sichtbarer Rahmen gerade kein Bild ergibt.
             data["hit_wait"] = (0 if self.hit_at is None
@@ -715,7 +830,7 @@ def _font(px):
         return ImageFont.load_default()
 
 
-def save_hit(frame, boxes, note):
+def save_hit(frame, boxes, note, directory=None, keep=MAX_HITS, name_score=None):
     """Legt das Bild ab, in dem gerade etwas erkannt wurde - mit Rahmen drin.
 
     Der Rahmen wird fest eingezeichnet, nicht als Overlay nachgereicht: beim
@@ -730,30 +845,36 @@ def save_hit(frame, boxes, note):
     draw = ImageDraw.Draw(img)
     line = max(2, round(width / 400))
     font = _font(max(12, round(width / 45)))
-    green, dark = (90, 235, 130), (8, 24, 14)
+    green, orange, dark = (90, 235, 130), (255, 170, 60), (8, 24, 14)
     best = 0.0
-    for box in boxes:
+    # Schwaechste zuerst zeichnen, damit die staerksten obenauf liegen.
+    for box in sorted(boxes, key=lambda b: b["score"]):
         x0, y0 = box["x"] * width, box["y"] * height
         x1, y1 = (box["x"] + box["w"]) * width, (box["y"] + box["h"]) * height
-        draw.rectangle([x0, y0, x1, y1], outline=green, width=line)
+        # Katze gruen, alles andere orange (nur in Radar-/Tier-Bildern sichtbar)
+        col = green if Detector._is_cat(box["label"]) else orange
+        draw.rectangle([x0, y0, x1, y1], outline=col, width=line)
         best = max(best, box["score"])
         tag = "%s %d%%" % (box["label"], round(box["score"] * 100))
         tw = draw.textlength(tag, font=font)
         th = font.size + 6 if hasattr(font, "size") else 18
         ty = y0 - th - line if y0 - th - line >= 0 else y0 + line
         tx = min(max(0.0, x0), max(0.0, width - tw - 8))
-        draw.rectangle([tx, ty, tx + tw + 8, ty + th], fill=dark, outline=green, width=1)
-        draw.text((tx + 4, ty + 2), tag, font=font, fill=green)
+        draw.rectangle([tx, ty, tx + tw + 8, ty + th], fill=dark, outline=col, width=1)
+        draw.text((tx + 4, ty + 2), tag, font=font, fill=col)
     stamp = datetime.now()
     foot = stamp.strftime("%d.%m. %H:%M:%S") + "  " + note
     fh = (font.size if hasattr(font, "size") else 14) + 8
     draw.rectangle([0, height - fh, width, height], fill=(0, 0, 0))
     draw.text((6, height - fh + 3), foot, font=font, fill=(220, 230, 240))
 
-    HIT_DIR.mkdir(parents=True, exist_ok=True)
-    path = HIT_DIR / ("%s_%02d.jpg" % (stamp.strftime("%Y%m%d_%H%M%S"), round(best * 100)))
+    directory = directory or HIT_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    if name_score is not None:
+        best = name_score
+    path = directory / ("%s_%02d.jpg" % (stamp.strftime("%Y%m%d_%H%M%S"), round(best * 100)))
     img.save(path, "JPEG", quality=80)
-    prune_dir(HIT_DIR, MAX_HITS)
+    prune_dir(directory, keep)
     return path
 
 
@@ -780,6 +901,7 @@ def system_info():
 cfg = load_config()
 SNAP_DIR.mkdir(parents=True, exist_ok=True)
 HIT_DIR.mkdir(parents=True, exist_ok=True)
+RADAR_DIR.mkdir(parents=True, exist_ok=True)
 camera = Camera(cfg)
 detector = Detector(camera, cfg)
 
@@ -804,6 +926,21 @@ def _bus_on_active(on):
     apply_detect()
 
 
+def _bus_on_target(m, kind, p):
+    """catObserved / catDetected vom Bus -> Radar-Bild (siehe MAX_RADAR)."""
+    if not _bus_active[0]:
+        return                      # Ruhemodus: keine Fotos
+    name = SENDER_NAMES.get(m.sender, "#%d" % m.sender)
+    if kind == "detected":
+        info = "KATZE bestaetigt (%s, %d%%) Welt %.1f/%.1f m" % (
+            name, p["score"], p["worldX"] / 1000.0, p["worldY"] / 1000.0)
+    elif p.get("worldValid"):
+        info = "%s Welt %.1f/%.1f m" % (name, p["worldX"] / 1000.0, p["worldY"] / 1000.0)
+    else:
+        info = "%s rel. %.1f/%.1f m" % (name, p["x"] / 1000.0, p["y"] / 1000.0)
+    detector.radar_event(info, force=(kind == "detected"))
+
+
 def _start_bus():
     # xComDef6_3.h liegt beim Ausrollen neben diesem Skript; im Repo eine Ebene
     # hoeher beim Manager. Ohne Header laeuft die Kamera trotzdem, nur ohne Bus.
@@ -818,7 +955,7 @@ def _start_bus():
         from xcom import XComDef
         from kivision_bus import BusNode
         node = BusNode(XComDef(cand), lambda: bool(cfg["detect"].get("enabled")),
-                       _bus_set_ai, _bus_on_active)
+                       _bus_set_ai, _bus_on_active, on_target=_bus_on_target)
         node.start()
         print("[bus] Geraet %d auf dem Bus, IP %s" % (node.id, node.bus.ip))
         return node
@@ -1009,12 +1146,18 @@ def api_snapshots():
                      "ts": int(p.stat().st_mtime)} for p in files[:60]])
 
 
-@app.route("/api/hits")
-def api_hits():
-    """Die von selbst entstandenen Treffer-Bilder, neueste zuerst."""
-    files = sorted(HIT_DIR.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+# Treffer (vom Modell ausgeloest) und Radar-Bilder (vom Bus ausgeloest) teilen
+# sich dieselben Endpunkte: /api/<art>, /<art>/<name>, DELETE, /api/<art>/clear.
+GALLERIES = {"hits": (HIT_DIR, MAX_HITS), "radar": (RADAR_DIR, MAX_RADAR)}
+
+
+@app.route("/api/<any(hits, radar):kind>")
+def api_hits(kind):
+    """Die von selbst entstandenen Bilder, neueste zuerst."""
+    directory, keep = GALLERIES[kind]
+    files = sorted(directory.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
     out = []
-    for path in files[:MAX_HITS]:
+    for path in files[:keep]:
         # Name ist <datum>_<zeit>_<prozent>.jpg - die Sicherheit steht mit drin,
         # damit die Galerie sie ohne zweite Datei je Bild anzeigen kann.
         part = path.stem.rsplit("_", 1)[-1]
@@ -1022,27 +1165,28 @@ def api_hits():
                     "size": path.stat().st_size,
                     "ts": int(path.stat().st_mtime),
                     "score": int(part) if part.isdigit() else None})
-    return jsonify({"max": MAX_HITS, "files": out})
+    return jsonify({"max": keep, "files": out})
 
 
-@app.route("/hits/<path:name>")
-def hit_file(name):
-    return send_from_directory(HIT_DIR, name)
+@app.route("/<any(hits, radar):kind>/<path:name>")
+def hit_file(kind, name):
+    return send_from_directory(GALLERIES[kind][0], name)
 
 
-@app.route("/api/hits/<path:name>", methods=["DELETE"])
-def hit_delete(name):
-    target = (HIT_DIR / name).resolve()
-    if target.parent != HIT_DIR.resolve() or not target.exists():
+@app.route("/api/<any(hits, radar):kind>/<path:name>", methods=["DELETE"])
+def hit_delete(kind, name):
+    directory = GALLERIES[kind][0]
+    target = (directory / name).resolve()
+    if target.parent != directory.resolve() or not target.exists():
         return jsonify({"ok": False}), 404
     target.unlink()
     return jsonify({"ok": True})
 
 
-@app.route("/api/hits/clear", methods=["POST"])
-def hits_clear():
+@app.route("/api/<any(hits, radar):kind>/clear", methods=["POST"])
+def hits_clear(kind):
     count = 0
-    for path in HIT_DIR.glob("*.jpg"):
+    for path in GALLERIES[kind][0].glob("*.jpg"):
         try:
             path.unlink()
             count += 1
