@@ -654,7 +654,11 @@ function manInit(){
 }
 setTimeout(manInit,0);
 
+let ticking = false;
 async function tick(){
+  // Antwortet der VPS langsam, darf sich der 1,5-s-Takt nicht aufstapeln.
+  if(ticking) return;
+  ticking = true;
   try{
     const st = await (await fetch("state")).json();
     renderDebug(st.debug); renderDevices(st.devices, st.now);
@@ -675,6 +679,7 @@ async function tick(){
     evNext = ev.base + ev.events.length;
     if(view!=="list") drawCurrent();
   }catch(e){ /* VPS kurz weg -> nächster Tick */ }
+  finally{ ticking = false; }
 }
 (async()=>{ try{ mapPoints=(await (await fetch("map")).json()).points; }catch(e){ mapPoints=[]; } tick(); setInterval(tick,1500); })();
 </script>
