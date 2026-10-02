@@ -208,6 +208,16 @@
     </div>
 
     <div class="card">
+      <h2>Radar-Bilder <span id="radarCount" class="tag"></span></h2>
+      <div class="hint">Ausgelöst vom Radar, nicht vom Modell: bei jeder Ziel-Meldung
+        auf dem Bus bis zu 4 Bilder im Abstand von 2&nbsp;s. Eingezeichnet ist alles,
+        was das Modell ab 20&nbsp;% sah – Katze grün, alles andere orange. Die Zahl
+        ist die beste Katzen-Sicherheit (0 = keine Katze erkannt).</div>
+      <div class="gal" id="galRadar"></div>
+      <div class="row"><button id="bRadarClear">Alle Radar-Bilder löschen</button></div>
+    </div>
+
+    <div class="card">
       <h2>Schnappschüsse</h2>
       <div class="gal" id="gal"></div>
     </div>
@@ -215,7 +225,7 @@
 </main>
 
 <script>
-let state = null, rot = 0, grid = true, detOn = false, hits = null, detClickAt = 0;
+let state = null, rot = 0, grid = true, detOn = false, hits = null, radarN = null, detClickAt = 0;
 
 const $ = (id) => document.getElementById(id);
 const post = (url, body) => fetch(url, {
@@ -437,6 +447,8 @@ function pollDetections() {
     // muss die Galerie nicht im Sekundentakt nachfragen.
     if (hits !== null && d.hits > hits) loadHits();
     hits = d.hits;
+    if (radarN !== null && d.radar > radarN) loadRadar();
+    radarN = d.radar;
     const mode = state ? (state.config.detect.snap_mode || 'animal') : 'animal';
     $('hitState').textContent = mode === 'off' ? 'Festhalten ist aus.'
       : (d.hit_wait ? 'Nächstes Bild frühestens in ' + d.hit_wait + ' s.'
@@ -465,22 +477,27 @@ function loadGallery() {
   });
 }
 
-function loadHits() {
-  fetch('/api/hits').then(r => r.json()).then(d => {
+// Treffer- und Radar-Galerie: gleiche Endpunkte, nur die Art unterscheidet sich.
+function loadAuto(kind, galId, countId, empty) {
+  const reload = () => loadAuto(kind, galId, countId, empty);
+  fetch('/api/' + kind).then(r => r.json()).then(d => {
     const list = d.files || [];
-    $('hitCount').textContent = list.length + ' / ' + d.max;
-    $('galHits').innerHTML = list.length ? list.map((f, i) =>
-      '<figure' + (i === 0 ? ' class="fresh"' : '') + '><a href="/hits/' + f.name + '" target="_blank">' +
-      '<img src="/hits/' + f.name + '" loading="lazy"></a>' +
+    $(countId).textContent = list.length + ' / ' + d.max;
+    $(galId).innerHTML = list.length ? list.map((f, i) =>
+      '<figure' + (i === 0 ? ' class="fresh"' : '') + '><a href="/' + kind + '/' + f.name + '" target="_blank">' +
+      '<img src="/' + kind + '/' + f.name + '" loading="lazy"></a>' +
       '<figcaption><span>' + clock(f.ts) +
       (f.score != null ? ' <span class="score">' + f.score + '%</span>' : '') + '</span>' +
       '<button class="del" data-n="' + f.name + '">löschen</button></figcaption></figure>').join('')
-      : '<div class="hint">Noch kein Treffer. Die Kamera legt hier von selbst ein ' +
-        'Bild ab, sobald sie etwas erkennt.</div>';
-    $('galHits').querySelectorAll('.del').forEach(b => b.onclick = () =>
-      fetch('/api/hits/' + b.dataset.n, {method: 'DELETE'}).then(loadHits));
+      : '<div class="hint">' + empty + '</div>';
+    $(galId).querySelectorAll('.del').forEach(b => b.onclick = () =>
+      fetch('/api/' + kind + '/' + b.dataset.n, {method: 'DELETE'}).then(reload));
   });
 }
+const loadHits = () => loadAuto('hits', 'galHits', 'hitCount',
+  'Noch kein Treffer. Die Kamera legt hier von selbst ein Bild ab, sobald sie etwas erkennt.');
+const loadRadar = () => loadAuto('radar', 'galRadar', 'radarCount',
+  'Noch kein Radar-Bild. Es entsteht, sobald ein Radar ein Ziel meldet.');
 
 function clock(ts) {
   const d = new Date(ts * 1000), z = (n) => String(n).padStart(2, '0');
@@ -586,6 +603,10 @@ $('fGap').onchange = (e) => {
   state.config.detect.snap_gap = Number(e.target.value);
   post('/api/detect', {snap_gap: Number(e.target.value)});
 };
+$('bRadarClear').onclick = () => {
+  if (!confirm('Alle Radar-Bilder löschen?')) return;
+  post('/api/radar/clear').then(r => { say(r.deleted + ' Radar-Bilder gelöscht'); loadRadar(); });
+};
 $('bHitClear').onclick = () => {
   if (!confirm('Alle Treffer-Bilder löschen?')) return;
   post('/api/hits/clear').then(r => { say(r.deleted + ' Treffer gelöscht'); loadHits(); });
@@ -595,7 +616,7 @@ function reloadStream() {
   $('live').src = '/stream.mjpg?t=' + Date.now();
 }
 
-refreshState(true).then(() => { loadGallery(); loadHits(); });
+refreshState(true).then(() => { loadGallery(); loadHits(); loadRadar(); });
 setInterval(() => refreshState(false), 2000);
 setInterval(pollDetections, 300);
 </script>

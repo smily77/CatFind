@@ -43,7 +43,8 @@ CatFinder-Bus (siehe unten „Busgerät"). Homographie/Pose folgt in Phase 4.
 
 Auf dem Pi liegt alles unter `~/kivision/web/`, Schnappschüsse unter
 `~/kivision/snapshots/` (max. 200, danach werden die ältesten gelöscht),
-Treffer-Bilder unter `~/kivision/hits/` (max. 60), gespeicherte Einstellungen
+Treffer-Bilder unter `~/kivision/hits/` (max. 60), Radar-Bilder unter
+`~/kivision/radar/` (max. 150), gespeicherte Einstellungen
 in `~/kivision/web_config.json`.
 
 ## Bedienung
@@ -112,6 +113,21 @@ Das ist weit unter dem, was SSD-MobileNet findet. Seither gilt:
 - **Treffer-Filter „Tiere“** (Standard): Er hält auch `dog/bear/sheep/horse/cow/
   teddy bear` fest, weil das Modell auf dem Graubild Katzen leicht verwechselt.
   So sammeln sich echte Katzenbilder, an denen man weiter abstimmen kann.
+
+**Radar-Bilder** (seit 2026-10-02) — die Treffer-Bilder sagen nur, was das
+Modell *gefunden* hat, nie, was es *verpasst* hat. Am 2026-10-02 lief die
+Kamera, und die Radar-Tracks 353280 (11:14) und 353283 (15:16, von Hand als
+Katze bewertet) ergaben kein einziges Bild, weil das Modell keine `cat` über
+der Schwelle sah — ob die Katze überhaupt im Bild war, blieb offen. Deshalb
+fotografiert der Pi jetzt zusätzlich *auf Zuruf vom Bus*: jede `catObserved`
+(Radare, Lidar, CatCam) startet eine Episode mit bis zu 4 Bildern im Abstand
+von 2 s (nur solange weiter gemeldet wird; 8 s Funkstille = neue Episode, eine
+Dauermeldung wie der Mäher zählt nach 120 s als neue Episode). `catDetected`
+vom CatIdent löst sofort ein Bild aus. Eingezeichnet wird alles, was das Modell
+im selben Durchlauf ab 20 % sah — Katze grün, alles andere orange; die Zahl im
+Dateinamen ist die beste *Katzen*-Sicherheit (0 = keine). Die Fußzeile nennt
+Sender und Welt-Position. Ist die KI aus, wird das nackte Bild abgelegt; im
+Ruhemodus gar nichts. Bilder in der eigenen Galerie „Radar-Bilder“.
 
 **KI-Test (Coral)** — Erkennung an/aus, Modellauswahl aus `~/kivision/models/`,
 Mindest-Sicherheit, Takt, und **Ausschnitte** (1, 2, 3, 2×2, 3×2 mit 15 %
