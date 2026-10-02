@@ -145,6 +145,19 @@ function anaScheduleFetch(){
 
 async function anaFetchWindow(){
   if(!ANA.win) return;
+  // Nie zwei Ladevorgaenge gleichzeitig: im Folgen-Modus kommt alle 5 s ein
+  // neuer, ein grosses Fenster braucht aber laenger - sie stapelten sich und
+  // hielten alle Server-Threads belegt. Waehrenddessen nur vormerken.
+  if(ANA.fetching){ ANA.fetchAgain = true; return; }
+  ANA.fetching = true;
+  try{ await anaFetchWindowOnce(); }
+  finally{
+    ANA.fetching = false;
+    if(ANA.fetchAgain){ ANA.fetchAgain = false; anaScheduleFetch(); }
+  }
+}
+
+async function anaFetchWindowOnce(){
   const q = `t0=${ANA.win.t0}&t1=${ANA.win.t1}`;
   try{ ANA.dens = await anaJson(`/density?${q}&bins=700`); }catch(e){ ANA.dens = null; }
   try{ ANA.hb = await anaJson(`/hbstats?${q}&bins=700`); }catch(e){ ANA.hb = null; }

@@ -67,7 +67,7 @@ der Geräte per /ingest ("poses", aus poseReport). Daraus baut catmodel.
 build_coverage_geo die Abdeckungs-Sektoren — nach dem Versetzen eines Sensors
 stimmt der Bereich sofort wieder. Fallback ohne Posen: empirische Abdeckung.
 """
-import os, re, time, json, base64, sqlite3, threading, hashlib, traceback, urllib.request, urllib.error, zoneinfo
+import contextlib, os, re, time, json, base64, sqlite3, threading, hashlib, traceback, urllib.request, urllib.error, zoneinfo
 from datetime import datetime
 from collections import deque, OrderedDict
 from flask import Flask, request, jsonify, send_from_directory, Response
@@ -399,6 +399,25 @@ _cmd_queue = []                  # [(target, cmd, info)]  Webinterface -> Manage
 
 _db_lock = threading.Lock()
 _db = None
+# Lese-Verbindung je Thread (WAL: Leser blockieren den Schreiber nicht und
+# umgekehrt). Die schweren Analyse-Abfragen ueber die ganze Aufnahme dauern
+# mehrere Sekunden; liefen sie unter _db_lock, stand so lange auch /ingest -
+# die 4 waitress-Threads liefen voll, die Warteschlange bis ans
+# Verbindungslimit (2026-10-02). Nur fuer reine SELECTs verwenden.
+_rdb_local = threading.local()
+
+
+@contextlib.contextmanager
+def _reading():
+    """with _reading() as db: ... - Lese-Verbindung dieses Threads."""
+    c = getattr(_rdb_local, "c", None)
+    if c is None:
+        c = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c.execute("PRAGMA query_only=1")
+        _rdb_local.c = c
+    yield c
+
+
 _rec_on = True                   # Aufnahme läuft (Pause/Append); persistent in meta
 
 
@@ -1036,12 +1055,23 @@ def _win_args(default_all=False):
     return t0, t1
 
 
+_rec_count = [0, 0.0]            # [Anzahl Events, Zeitpunkt der Zaehlung]
+
+
 @app.get("/rec")
 def rec_get():
-    with _db_lock:
-        row = _db.execute("SELECT COUNT(*),MIN(t),MAX(t) FROM events").fetchone()
+    # COUNT(*) ueber alle Events dauert bei 7 Mio. Zeilen ~0,7 s, der Analyse-
+    # Tab fragt alle 5 s - die Zahl ist nur Anzeige, eine Minute alt reicht.
+    # MIN(t) und MAX(t) kommen ueber den Index sofort - aber nur als zwei
+    # einzelne Abfragen; "SELECT MIN(t),MAX(t)" liest wieder die ganze Tabelle.
+    with _reading() as db:
+        if time.time() - _rec_count[1] > 60:
+            _rec_count[:] = [db.execute("SELECT COUNT(*) FROM events").fetchone()[0],
+                             time.time()]
+        t_min = db.execute("SELECT MIN(t) FROM events").fetchone()[0]
+        t_max = db.execute("SELECT MAX(t) FROM events").fetchone()[0]
     size = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
-    return jsonify(on=_rec_on, rows=row[0], t_min=row[1], t_max=row[2], bytes=size)
+    return jsonify(on=_rec_on, rows=_rec_count[0], t_min=t_min, t_max=t_max, bytes=size)
 
 
 @app.post("/rec")
@@ -1058,11 +1088,11 @@ def density():
     bins = min(max(int(request.args.get("bins", "600")), 10), 2000)
     span = max(t1 - t0, 1e-6)
     w = span / bins
-    with _db_lock:
-        rows = _db.execute(
+    with _reading() as db:
+        rows = db.execute(
             "SELECT CAST((t-?)/? AS INT) b, sender, COUNT(*) FROM events "
             "WHERE t>=? AND t<=? GROUP BY b, sender", (t0, w, t0, t1)).fetchall()
-        drows = _db.execute(
+        drows = db.execute(
             "SELECT CAST((t-?)/? AS INT) b, SUM(dropped) FROM drops "
             "WHERE t>=? AND t<=? GROUP BY b", (t0, w, t0, t1)).fetchall()
     per = {}
@@ -1076,9 +1106,9 @@ def density():
         b = min(int(b), bins - 1)
         if b >= 0:
             drops[b] += int(n or 0)
-    with _db_lock:
-        spans = _db.execute("SELECT t0,t1 FROM recspans WHERE t1>=? AND t0<=? "
-                            "ORDER BY t0", (t0, t1)).fetchall()
+    with _reading() as db:
+        spans = db.execute("SELECT t0,t1 FROM recspans WHERE t1>=? AND t0<=? "
+                           "ORDER BY t0", (t0, t1)).fetchall()
     return jsonify(t0=t0, t1=t1, bins=bins, per_sender=per, drops=drops,
                    spans=[[a, b] for a, b in spans])
 
@@ -1095,10 +1125,10 @@ def hbstats():
     bins = min(max(int(request.args.get("bins", "600")), 10), 2000)
     if t0 is None or t1 is None or t1 <= t0:
         return jsonify(t0=t0, t1=t1, bins=0, bin_s=0, senders=[])
-    with _db_lock:
-        rows = _db.execute("SELECT minute,sender,cnt FROM hb_minute "
-                           "WHERE minute>=? AND minute<=?",
-                           (int(t0 // 60), int(t1 // 60))).fetchall()
+    with _reading() as db:
+        rows = db.execute("SELECT minute,sender,cnt FROM hb_minute "
+                          "WHERE minute>=? AND minute<=?",
+                          (int(t0 // 60), int(t1 // 60))).fetchall()
     devtab = load_devices()
     lanes = [(sid, d) for sid, d in sorted(devtab.items())
              if d["type"] in HB_SENSOR_PERIOD_S]
@@ -1153,11 +1183,11 @@ def adata():
     if t0 is None or t1 is None:
         return jsonify(error="t0/t1 fehlen"), 400
     max_pts = min(int(request.args.get("max", "20000")), 60000)
-    with _db_lock:
-        total = _db.execute("SELECT COUNT(*) FROM events WHERE t>=? AND t<=?",
-                            (t0, t1)).fetchone()[0]
+    with _reading() as db:
+        total = db.execute("SELECT COUNT(*) FROM events WHERE t>=? AND t<=?",
+                           (t0, t1)).fetchone()[0]
         stride = max(1, (total + max_pts - 1) // max_pts)
-        rows = _db.execute(
+        rows = db.execute(
             "SELECT t,sender,sensor,wx,wy,wv,x,y,grp,speed FROM events "
             "WHERE t>=? AND t<=? AND (id % ?)=0 ORDER BY t", (t0, t1, stride)).fetchall()
     evs = [{"t": r[0], "sender": r[1], "sensor": r[2], "wx": r[3], "wy": r[4],
@@ -1628,15 +1658,15 @@ def _combine_tracks(members, params, devices, coverage, storms=None):
 def _served_tracks(t0, t1, params, devices, coverage):
     """Tracks eines Fensters (oder alle bei t0=None) aus der DB, Klebungen
     bereits zusammengefasst (Mitglieder ersetzt durch den kombinierten Track)."""
-    with _db_lock:
+    with _reading() as db:
         if t0 is None:
-            rows = _db.execute("SELECT id,key,data FROM tracks ORDER BY t0").fetchall()
+            rows = db.execute("SELECT id,key,data FROM tracks ORDER BY t0").fetchall()
         else:
-            rows = _db.execute("SELECT id,key,data FROM tracks "
-                               "WHERE t1>=? AND t0<=? ORDER BY t0",
-                               (t0, t1)).fetchall()
-        groups = _db.execute("SELECT id,keys FROM merges").fetchall()
-        srows = _db.execute("SELECT sender,t0,t1 FROM storm_iv").fetchall()
+            rows = db.execute("SELECT id,key,data FROM tracks "
+                              "WHERE t1>=? AND t0<=? ORDER BY t0",
+                              (t0, t1)).fetchall()
+        groups = db.execute("SELECT id,keys FROM merges").fetchall()
+        srows = db.execute("SELECT sender,t0,t1 FROM storm_iv").fetchall()
     storms = {}
     for sid, a, b in srows:
         storms.setdefault(int(sid), []).append([a, b])
@@ -1652,8 +1682,8 @@ def _served_tracks(t0, t1, params, devices, coverage):
             continue                    # Klebung liegt ganz ausserhalb des Fensters
         missing = [k for k in keys if k not in tracks]
         if missing:
-            with _db_lock:
-                more = _db.execute(
+            with _reading() as db:
+                more = db.execute(
                     "SELECT id,key,data FROM tracks WHERE key IN (%s)" %
                     ",".join("?" * len(missing)), missing).fetchall()
             for rid, key, data in more:
@@ -1694,20 +1724,20 @@ def amodel():
         truncated = len(tracks) - 600
         tracks = tracks[:600]
     tracks.sort(key=lambda t: t["t0"])
-    with _db_lock:
-        n_events = _db.execute(
+    with _reading() as db:
+        n_events = db.execute(
             "SELECT COUNT(*) FROM events WHERE t>=? AND t<=? AND wv=1",
             (t0, t1)).fetchone()[0]
-        mow = _db.execute("SELECT t0,t1 FROM labels WHERE label='Mäher' "
-                          "AND t1>=? AND t0<=?", (t0, t1)).fetchall()
+        mow = db.execute("SELECT t0,t1 FROM labels WHERE label='Mäher' "
+                         "AND t1>=? AND t0<=?", (t0, t1)).fetchall()
         n_excl = 0
         for a, b in mow:
-            n_excl += _db.execute(
+            n_excl += db.execute(
                 "SELECT COUNT(*) FROM events WHERE t>=? AND t<=? AND wv=1",
                 (max(a, t0), min(b, t1))).fetchone()[0]
-        srows = _db.execute("SELECT sender,t0,t1 FROM storm_iv "
-                            "WHERE t1>=? AND t0<=?", (t0, t1)).fetchall()
-        marks = _db.execute("SELECT key,mark FROM track_marks").fetchall()
+        srows = db.execute("SELECT sender,t0,t1 FROM storm_iv "
+                           "WHERE t1>=? AND t0<=?", (t0, t1)).fetchall()
+        marks = db.execute("SELECT key,mark FROM track_marks").fetchall()
     storms = {}
     for sid, a, b in srows:
         storms.setdefault(str(sid), []).append([a, b])
@@ -1766,8 +1796,8 @@ def _all_tracks_with_marks():
     devices = load_devices()
     cov = get_coverage(params)
     tracks = _served_tracks(None, None, params, devices, cov)
-    with _db_lock:
-        marks = dict(_db.execute("SELECT key,mark FROM track_marks").fetchall())
+    with _reading() as db:
+        marks = dict(db.execute("SELECT key,mark FROM track_marks").fetchall())
     for tr in tracks:
         tr["mark"] = marks.get(tr["key"], "")
     tracks.sort(key=lambda t: t["t0"])
@@ -1993,19 +2023,23 @@ def photos_list():
     limit = min(request.args.get("limit", type=int, default=120), 500)
     t0 = request.args.get("t0", type=float)
     t1 = request.args.get("t1", type=float)
-    with _db_lock:
+    with _reading() as db:
         if t0 is not None and t1 is not None:
-            rows = _db.execute("SELECT id,t,sender,trig,score,x,y FROM photos "
-                               "WHERE t>=? AND t<=? ORDER BY t DESC LIMIT ?",
-                               (t0, t1, limit)).fetchall()
+            rows = db.execute("SELECT id,t,sender,trig,score,x,y FROM photos "
+                              "WHERE t>=? AND t<=? ORDER BY t DESC LIMIT ?",
+                              (t0, t1, limit)).fetchall()
         else:
-            rows = _db.execute("SELECT id,t,sender,trig,score,x,y FROM photos "
-                               "ORDER BY t DESC LIMIT ?", (limit,)).fetchall()
+            rows = db.execute("SELECT id,t,sender,trig,score,x,y FROM photos "
+                              "ORDER BY t DESC LIMIT ?", (limit,)).fetchall()
+        # Nur "t0 <= t+2" laesst den Index ab dem allerersten Track laufen
+        # (200 Fotos x 85'000 Tracks = 3 s). Kein Track ist laenger als
+        # maxdur, also genuegt t0 ab t-2-maxdur - gleiches Ergebnis.
+        maxdur = db.execute("SELECT MAX(t1-t0) FROM tracks").fetchone()[0] or 0.0
         out = []
         for pid, t, sender, trig, score, x, y in rows:
-            tr = _db.execute("SELECT id,confirmed FROM tracks WHERE t0<=? AND t1>=? "
-                             "ORDER BY confirmed DESC, score DESC LIMIT 1",
-                             (t + 2.0, t - 2.0)).fetchone()
+            tr = db.execute("SELECT id,confirmed FROM tracks WHERE t0>=? AND t0<=? AND t1>=? "
+                            "ORDER BY confirmed DESC, score DESC LIMIT 1",
+                            (t - 2.0 - maxdur, t + 2.0, t - 2.0)).fetchone()
             out.append({"id": pid, "t": t, "sender": sender, "trigger": trig,
                         "score": score, "x": x, "y": y,
                         "track": tr[0] if tr else None,
