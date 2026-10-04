@@ -23,6 +23,7 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
+from kivision_motion import Motion
 from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
 from picamera2.outputs import FileOutput
@@ -44,12 +45,40 @@ MAX_HITS = 60
 # war und was das Modell dort sah - auch wenn es weit unter der Schwelle lag.
 # Hoechstens WIT_SHOTS Bilder je Radar-Episode, im Abstand WIT_EVERY.
 MAX_RADAR = 150
+# Bewegungs-Bilder: eins je bewegter Spur (mit eingezeichnetem Weg), zum
+# Nachjustieren der Bewegungserkennung. Hoechstens alle MOTION_GAP Sekunden,
+# sonst fuellt ein Vogelschwarm die Karte.
+MOTION_DIR = HOME / "motion"
+MAX_MOTION = 150
+MOTION_SNAP_AGE = 1.5
+MOTION_GAP = 10.0
+# Radar-Ziel <-> Kamera-Fusspunkt, gleichzeitig beobachtet: Rohstoff fuer die
+# Homographie (Phase 4). Eine Zeile JSON je Radar-Meldung mit Bewegung.
+PAIRS_FILE = HOME / "pairs.jsonl"
+PAIRS_MAX_BYTES = 20 * 1024 * 1024
 WIT_THRESHOLD = 0.2       # alles ab hier einzeichnen, egal welches Label
 WIT_EP_GAP = 8.0          # so lange Funkstille -> naechste Meldung ist neue Episode
 WIT_EP_MAX = 120.0        # Dauermeldung (Maeher, Geist) zaehlt danach als neue Episode
 WIT_SHOTS = 4
 WIT_EVERY = 2.0
 WIT_HOLD = 3.0            # nur fotografieren, solange das Radar noch meldet
+# Bewegungserkennung (kivision_motion.py) laeuft auf dem kleinen Zweitstrom
+# (lores, nur Graubild): 820x616 ist ein Viertel der Flaeche des 1640er-Bildes,
+# die Katze hinten am Rasen bleibt dort noch ~12x22 Pixel - genug fuer einen
+# Fleck. Kostet auf dem Pi 4 rund 40 ms je Bild.
+MOTION_SIZE = (820, 616)
+# Ausschnitt um eine bewegte Spur: so viel Mal ihre Groesse, mindestens
+# CROP_MIN Pixel des grossen Bildes. Nachgemessen: bei 2,5x sieht das Modell
+# die Katze am ehesten als Tier; bei 4x und mehr verliert sie sich wieder.
+CROP_FACTOR = 2.5
+CROP_MIN = 160
+CROP_MAX_TRACKS = 3
+# Was das COCO-Modell im Ausschnitt sagt, in Gruppen. "tier": auf kleinen oder
+# grauen Katzen nennt es gern bear/sheep/dog/cow - zaehlt als Hinweis.
+CATEGORY = {"cat": "katze", "dog": "tier", "bear": "tier", "teddy bear": "tier",
+            "sheep": "tier", "horse": "tier", "cow": "tier",
+            "person": "person", "car": "fahrzeug", "truck": "fahrzeug",
+            "bus": "fahrzeug", "motorcycle": "fahrzeug"}
 SENDER_NAMES = {0: "Manager", 1: "Dome", 2: "MiniDome", 3: "CompactDome",
                 17: "LidarC1", 18: "CatIdent", 19: "CatCam"}
 
@@ -317,8 +346,13 @@ class Camera:
             if self.running:
                 return
             size = tuple(self.cfg["size"])
+            # Zweitstrom fuer die Bewegungserkennung; darf nicht groesser als
+            # der Hauptstrom sein.
+            lo = (min(MOTION_SIZE[0], size[0]), min(MOTION_SIZE[1], size[1]))
+            self.lores_size = lo
             config = self.picam.create_video_configuration(
                 main={"size": size, "format": "RGB888"},
+                lores={"size": lo, "format": "YUV420"},
                 transform=self._transform(),
                 controls=self._build_controls(),
                 buffer_count=3,   # weniger Puffer = weniger Verzoegerung
@@ -419,6 +453,21 @@ class Camera:
             frame = self.picam.capture_array("main")
         return frame[:, :, ::-1]
 
+    def capture_pair(self):
+        """Hauptbild (RGB) und Graubild des Zweitstroms aus *derselben*
+        Aufnahme - so passen die Bewegungsrahmen exakt aufs grosse Bild."""
+        with self.lock:
+            if not self.running:
+                return None, None
+            req = self.picam.capture_request()
+            try:
+                main = req.make_array("main")
+                lores = req.make_array("lores")
+            finally:
+                req.release()
+        w, h = self.lores_size
+        return main[:, :, ::-1], lores[:h, :w]
+
     def snapshot(self, full_res=False):
         SNAP_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -449,6 +498,79 @@ class Camera:
         return path
 
 
+class FramePump:
+    """Holt jedes Kamerabild genau einmal ab, fuettert die Bewegungserkennung
+    mit dem Graubild und haelt das neueste grosse Bild samt Spuren bereit.
+
+    Der Detector wartet hier auf das naechste Bild, statt selbst zu holen:
+    so gehoeren Bewegungsrahmen und Bild sicher zur selben Aufnahme, und die
+    Kamera wird nicht von zwei Threads gleichzeitig angezapft.
+    """
+
+    def __init__(self, camera, motion):
+        self.camera = camera
+        self.motion = motion
+        self.cond = threading.Condition()
+        self.frame = None
+        self.tracks = []
+        self.seq = 0
+        self.error = ""
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        while True:
+            try:
+                frame, gray = self.camera.capture_pair()
+                if frame is None:
+                    time.sleep(0.2)
+                    continue
+                tracks = self.motion.update(gray) if self.motion.enabled else []
+                self._maybe_snap(frame)
+                with self.cond:
+                    self.frame, self.tracks = frame, tracks
+                    self.seq += 1
+                    self.error = ""
+                    self.cond.notify_all()
+            except Exception as exc:                          # noqa: BLE001
+                self.error = "%s: %s" % (type(exc).__name__, exc)
+                print("[web] Bildpumpe: %s" % self.error)
+                time.sleep(1.0)
+
+    last_snap = 0.0
+
+    def _maybe_snap(self, frame):
+        new = self.motion.claim_snap(MOTION_SNAP_AGE)
+        now = time.monotonic()
+        if not new or now - self.last_snap < MOTION_GAP:
+            return
+        self.last_snap = now
+        lux = (self.camera.metadata().get("Lux") or 0)
+        note = "Bewegung %s  Lux %d" % (
+            ", ".join("B%d %.1fs" % (t["id"], t["age"]) for t in new), round(lux))
+        # Speichern dauert ~0,1 s - nicht in der Pumpe, sonst fehlt ein Bild.
+        threading.Thread(target=self._snap, args=(frame, new, note), daemon=True).start()
+
+    @staticmethod
+    def _snap(frame, tracks, note):
+        try:
+            path = save_hit(frame, [], note, MOTION_DIR, MAX_MOTION, name_score=0.0,
+                            tracks=tracks)
+            print("[web] Bewegungs-Bild: %s" % path.name)
+        except Exception as exc:                              # noqa: BLE001
+            print("[web] Bewegungs-Bild fehlgeschlagen: %s" % exc)
+
+    def wait(self, last_seq, timeout=2.0):
+        """(Bild, Spuren, Nummer) - das naechste nach last_seq."""
+        with self.cond:
+            if self.seq == last_seq:
+                self.cond.wait(timeout)
+            return self.frame, self.tracks, self.seq
+
+    def latest(self):
+        with self.cond:
+            return self.frame, self.tracks
+
+
 class Detector:
     """Optionaler Coral-Check: laeuft nur, solange er eingeschaltet ist."""
 
@@ -477,6 +599,9 @@ class Detector:
         self.interpreter = None
         self.labels = {}
         self.input_size = (300, 300)
+        self.motion = None          # kivision_motion.Motion (vom FramePump)
+        self.pump = None            # FramePump: liefert Bild + Bewegungsspuren
+        self.loops = 0
 
     # -- Modell ----------------------------------------------------------
     @staticmethod
@@ -560,58 +685,94 @@ class Detector:
             xs = (np.linspace(0, tile.shape[1] - 1, size[0])).astype(int)
             return tile[ys][:, xs]
 
-    def _infer(self, frame):
+    def _detect_region(self, frame, tx, ty, tw, th, floor):
+        """Ein Rechteck des grossen Bildes durchs Modell; Rahmen normiert aufs
+        ganze Bild. Kacheln und Bewegungs-Ausschnitte laufen beide hierueber."""
         from pycoral.adapters import common, detect
         height, width = frame.shape[:2]
-        tiles = self._tile_boxes(self.cfg["detect"].get("tiles", "1x1"), width, height)
-        threshold = float(self.cfg["detect"].get("threshold", 0.4))
-        cat_only = bool(self.cfg["detect"].get("cat_only", True))
+        crop = frame[ty:ty + th, tx:tx + tw]
+        if crop.size == 0:
+            return []
+        common.set_input(self.interpreter, self._resize(crop, self.input_size))
+        self.interpreter.invoke()
+        # get_objects rechnet intern sx = Eingangsbreite / image_scale_x.
+        # Der frueher uebergebene Massstab (Kachel/Tensor) war damit gerade
+        # verkehrt herum und quetschte alle Rahmen in eine Ecke. Da die
+        # Kachel den Tensor vollstaendig ausfuellt, ist image_scale hier
+        # (1,1): die Rahmen kommen in Tensor-Pixeln, und wir rechnen sie
+        # selbst auf die Kachel hoch und schieben sie an ihren Platz.
+        sx = tw / self.input_size[0]
+        sy = th / self.input_size[1]
         max_area = float(self.cfg["detect"].get("max_area", 0.4))
         tensor_area = float(self.input_size[0] * self.input_size[1])
+        out = []
+        for obj in detect.get_objects(self.interpreter, floor):
+            label = self.labels.get(obj.id, str(obj.id))
+            # Die Koordinaten sind Tensor-Pixel, der Tensor ist die Kachel.
+            if (obj.bbox.width * obj.bbox.height) / tensor_area > max_area:
+                continue
+            x0 = clamp01((tx + obj.bbox.xmin * sx) / width)
+            y0 = clamp01((ty + obj.bbox.ymin * sy) / height)
+            x1 = clamp01((tx + obj.bbox.xmax * sx) / width)
+            y1 = clamp01((ty + obj.bbox.ymax * sy) / height)
+            if x1 <= x0 or y1 <= y0:
+                continue
+            out.append({"x": round(x0, 4), "y": round(y0, 4),
+                        "w": round(x1 - x0, 4), "h": round(y1 - y0, 4),
+                        "score": round(float(obj.score), 3), "label": label})
+        return out
+
+    @staticmethod
+    def _crop_rect(track, width, height):
+        """Quadratischer Ausschnitt (Pixel) um eine Bewegungsspur."""
+        side = max(CROP_MIN, CROP_FACTOR * max(track["w"] * width, track["h"] * height))
+        side = int(min(side, width, height))
+        cx = (track["x"] + track["w"] / 2) * width
+        cy = (track["y"] + track["h"] / 2) * height
+        x0 = int(min(max(0, cx - side / 2), width - side))
+        y0 = int(min(max(0, cy - side / 2), height - side))
+        return x0, y0, side, side
+
+    def _infer(self, frame, full=True, tracks=()):
+        height, width = frame.shape[:2]
+        tiles = (self._tile_boxes(self.cfg["detect"].get("tiles", "1x1"), width, height)
+                 if full else [])
+        threshold = float(self.cfg["detect"].get("threshold", 0.4))
+        cat_only = bool(self.cfg["detect"].get("cat_only", True))
         boxes = []
         raw = []                    # alles ab WIT_THRESHOLD, fuer Radar-Bilder
         floor = min(threshold, WIT_THRESHOLD)
         started = time.monotonic()
-        for (tx, ty, tw, th) in tiles:
-            crop = frame[ty:ty + th, tx:tx + tw]
-            if crop.size == 0:
-                continue
-            common.set_input(self.interpreter, self._resize(crop, self.input_size))
-            self.interpreter.invoke()
-            # get_objects rechnet intern sx = Eingangsbreite / image_scale_x.
-            # Der frueher uebergebene Massstab (Kachel/Tensor) war damit gerade
-            # verkehrt herum und quetschte alle Rahmen in eine Ecke. Da die
-            # Kachel den Tensor vollstaendig ausfuellt, ist image_scale hier
-            # (1,1): die Rahmen kommen in Tensor-Pixeln, und wir rechnen sie
-            # selbst auf die Kachel hoch und schieben sie an ihren Platz.
-            sx = tw / self.input_size[0]
-            sy = th / self.input_size[1]
-            for obj in detect.get_objects(self.interpreter, floor):
-                label = self.labels.get(obj.id, str(obj.id))
-                # Die Koordinaten sind Tensor-Pixel, der Tensor ist die Kachel.
-                if (obj.bbox.width * obj.bbox.height) / tensor_area > max_area:
-                    continue
-                x0 = clamp01((tx + obj.bbox.xmin * sx) / width)
-                y0 = clamp01((ty + obj.bbox.ymin * sy) / height)
-                x1 = clamp01((tx + obj.bbox.xmax * sx) / width)
-                y1 = clamp01((ty + obj.bbox.ymax * sy) / height)
-                if x1 <= x0 or y1 <= y0:
-                    continue
-                box = {
-                    "x": round(x0, 4),
-                    "y": round(y0, 4),
-                    "w": round(x1 - x0, 4),
-                    "h": round(y1 - y0, 4),
-                    "score": round(float(obj.score), 3),
-                    "label": label,
-                }
-                raw.append(box)
-                if obj.score < threshold or (cat_only and "cat" not in label.lower()):
-                    continue
+
+        def keep(box):
+            raw.append(box)
+            if box["score"] >= threshold and not (cat_only and "cat" not in box["label"].lower()):
                 boxes.append(box)
+
+        for (tx, ty, tw, th) in tiles:
+            for box in self._detect_region(frame, tx, ty, tw, th, floor):
+                keep(box)
+        crops = []
+        for tr in list(tracks)[:CROP_MAX_TRACKS]:
+            rect = self._crop_rect(tr, width, height)
+            crops.append(rect)
+            # Wozu gehoert ein Rahmen im Ausschnitt? Zur Spur, wenn er ihren
+            # Mittelpunkt (grosszuegig) enthaelt - der Ausschnitt zeigt ja
+            # auch Umgebung, z. B. den Maeher neben der Katze.
+            cx, cy = tr["x"] + tr["w"] / 2, tr["y"] + tr["h"] / 2
+            for box in self._detect_region(frame, *rect, floor):
+                mx, my = box["w"] * 0.25 + tr["w"] / 2, box["h"] * 0.25 + tr["h"] / 2
+                if not (box["x"] - mx <= cx <= box["x"] + box["w"] + mx
+                        and box["y"] - my <= cy <= box["y"] + box["h"] + my):
+                    continue
+                box["track"] = tr["id"]
+                keep(box)
+                cat = CATEGORY.get(box["label"].lower())
+                if cat and self.motion is not None:
+                    self.motion.classify(tr["id"], cat, box["score"], box["label"])
         ms = round((time.monotonic() - started) * 1000, 1)
         norm_tiles = [{"x": t[0] / width, "y": t[1] / height,
-                       "w": t[2] / width, "h": t[3] / height} for t in tiles]
+                       "w": t[2] / width, "h": t[3] / height} for t in tiles + crops]
         raw.sort(key=lambda b: b["score"], reverse=True)
         return {"boxes": boxes, "raw": raw[:12], "ms": ms, "ts": time.time(),
                 "tiles": norm_tiles}
@@ -713,24 +874,26 @@ class Detector:
 
     def _witness_plain(self):
         try:
-            frame = self.camera.capture_array()
+            # Naechstes Bild der Pumpe abwarten - das neueste kann schon eine
+            # Weile alt sein, wenn die Meldung genau dazwischen kam.
+            frame, tracks, _seq = self.pump.wait(self.pump.seq)
             if frame is not None:
                 with self.lock:
                     info, shot = self._witness_take(time.monotonic())
-                self._save_witness(frame, None, info, shot)
+                self._save_witness(frame, None, info, shot, tracks)
         finally:
             with self.lock:
                 self.ep_busy = False
 
-    def _maybe_witness(self, frame, raw):
+    def _maybe_witness(self, frame, raw, tracks=()):
         now = time.monotonic()
         with self.lock:
             if not self._witness_due(now):
                 return
             info, shot = self._witness_take(now)
-        self._save_witness(frame, raw, info, shot)
+        self._save_witness(frame, raw, info, shot, tracks)
 
-    def _save_witness(self, frame, raw, info, shot):
+    def _save_witness(self, frame, raw, info, shot, tracks=()):
         cats = [b["score"] for b in (raw or []) if self._is_cat(b["label"])]
         best = max(cats) if cats else 0.0
         if raw is None:
@@ -740,10 +903,13 @@ class Detector:
         else:
             model = "Modell: nichts ab %d%%" % round(WIT_THRESHOLD * 100)
         note = "%s  Bild %d  %s" % (info, shot, model)
+        if tracks:
+            note += "  Bew. %d" % len(tracks)
         try:
             # Der Name traegt die beste KATZEN-Sicherheit (0 = keine Katze),
             # nicht die des staerksten Rahmens - danach sortiert man hinterher.
-            path = save_hit(frame, raw or [], note, RADAR_DIR, MAX_RADAR, name_score=best)
+            path = save_hit(frame, raw or [], note, RADAR_DIR, MAX_RADAR, name_score=best,
+                            tracks=tracks)
         except Exception as exc:                              # noqa: BLE001
             print("[web] Radar-Bild fehlgeschlagen: %s" % exc)
             return
@@ -753,26 +919,37 @@ class Detector:
 
     # -- Thread ----------------------------------------------------------
     def _run(self):
+        seq = -1
         while not self.stop_event.is_set():
+            pause = max(0.05, float(self.cfg["detect"].get("interval", 0.3)))
             try:
                 self._ensure_model()
-                frame = self.camera.capture_array()
+                frame, tracks, seq = self.pump.wait(seq)
                 if frame is None:
                     time.sleep(0.2)
                     continue
-                result = self._infer(frame)
+                # Bewegt sich etwas, zaehlt Tempo: nur die Ausschnitte um die
+                # Spuren (je ~25 ms), das ganze Kachelraster (~0,4 s) nur noch
+                # jede vierte Runde. Sonst wie bisher das ganze Bild.
+                self.loops += 1
+                full = not tracks or self.loops % 4 == 0
+                result = self._infer(frame, full, tracks)
                 raw = result.pop("raw", [])
+                result["motion"] = self.motion.moving() if self.motion else []
                 with self.lock:
                     self.result = result
                     self.error = ""
                 self._maybe_hit(frame, result)
-                self._maybe_witness(frame, raw)
+                self._maybe_witness(frame, raw, result["motion"])
+                if tracks:
+                    pause = 0.0             # gleich aufs naechste Bild warten
             except Exception as exc:
                 with self.lock:
                     self.error = "%s: %s" % (type(exc).__name__, exc)
                 print("[web] Erkennung fehlgeschlagen: %s" % exc)
                 self.stop_event.wait(2.0)
-            self.stop_event.wait(max(0.05, float(self.cfg["detect"].get("interval", 0.3))))
+            if pause:
+                self.stop_event.wait(pause)
 
     def set_enabled(self, enabled):
         if enabled and (self.thread is None or not self.thread.is_alive()):
@@ -793,6 +970,7 @@ class Detector:
             data["hits"] = self.hit_count
             data["hit_last"] = self.hit_last
             data["radar"] = self.radar_count
+            data["motion_status"] = self.motion.status() if self.motion else None
             # Wieviel Sperrzeit noch laeuft - damit die Oberflaeche erklaeren
             # kann, warum ein sichtbarer Rahmen gerade kein Bild ergibt.
             data["hit_wait"] = (0 if self.hit_at is None
@@ -830,7 +1008,8 @@ def _font(px):
         return ImageFont.load_default()
 
 
-def save_hit(frame, boxes, note, directory=None, keep=MAX_HITS, name_score=None):
+def save_hit(frame, boxes, note, directory=None, keep=MAX_HITS, name_score=None,
+             tracks=()):
     """Legt das Bild ab, in dem gerade etwas erkannt wurde - mit Rahmen drin.
 
     Der Rahmen wird fest eingezeichnet, nicht als Overlay nachgereicht: beim
@@ -847,6 +1026,21 @@ def save_hit(frame, boxes, note, directory=None, keep=MAX_HITS, name_score=None)
     font = _font(max(12, round(width / 45)))
     green, orange, dark = (90, 235, 130), (255, 170, 60), (8, 24, 14)
     best = 0.0
+    # Bewegungsspuren hellblau, mit etwas Abstand um den Fleck, damit die
+    # Katze selbst sichtbar bleibt; darunter Nummer und was die KI dort sah.
+    cyan = (80, 200, 255)
+    for tr in tracks:
+        pad = 0.006
+        x0, y0 = (tr["x"] - pad) * width, (tr["y"] - pad) * height
+        x1 = (tr["x"] + tr["w"] + pad) * width
+        y1 = (tr["y"] + tr["h"] + pad) * height
+        draw.rectangle([x0, y0, x1, y1], outline=cyan, width=max(1, line - 1))
+        pts = [(p[0] * width, p[1] * height) for p in tr.get("path") or []]
+        if len(pts) > 1:
+            draw.line(pts, fill=cyan, width=max(1, line - 1))
+        tag = ("B%d %s" % (tr["id"], tr.get("best") or "")).strip()
+        draw.text((min(x0, width - draw.textlength(tag, font=font) - 4), y1 + 2),
+                  tag, font=font, fill=cyan)
     # Schwaechste zuerst zeichnen, damit die staerksten obenauf liegen.
     for box in sorted(boxes, key=lambda b: b["score"]):
         x0, y0 = box["x"] * width, box["y"] * height
@@ -904,6 +1098,9 @@ HIT_DIR.mkdir(parents=True, exist_ok=True)
 RADAR_DIR.mkdir(parents=True, exist_ok=True)
 camera = Camera(cfg)
 detector = Detector(camera, cfg)
+motion = Motion()
+detector.motion = motion
+detector.pump = FramePump(camera, motion)
 
 # -- Busgeraet (Phase 3) ------------------------------------------------------
 # Die KI laeuft nur, wenn sie eingeschaltet ist (detect.enabled, auch vom VPS
@@ -939,6 +1136,27 @@ def _bus_on_target(m, kind, p):
     else:
         info = "%s rel. %.1f/%.1f m" % (name, p["x"] / 1000.0, p["y"] / 1000.0)
     detector.radar_event(info, force=(kind == "detected"))
+    _log_pair(m, kind, p)
+
+
+def _log_pair(m, kind, p):
+    """Radar-Weltposition neben die gerade bewegten Kamera-Spuren schreiben."""
+    if not p.get("worldValid", kind == "detected"):
+        return
+    tracks = motion.moving()
+    if not tracks:
+        return
+    row = {"t": round(time.time(), 2), "sender": m.sender, "kind": kind,
+           "wx": p["worldX"], "wy": p["worldY"],
+           "tracks": [{"id": t["id"], "foot": t["foot"], "w": t["w"], "h": t["h"],
+                       "age": t["age"], "best": t["best"]} for t in tracks]}
+    try:
+        if PAIRS_FILE.exists() and PAIRS_FILE.stat().st_size > PAIRS_MAX_BYTES:
+            PAIRS_FILE.replace(PAIRS_FILE.with_suffix(".old"))
+        with PAIRS_FILE.open("a") as fh:
+            fh.write(json.dumps(row) + "\n")
+    except OSError as exc:
+        print("[web] pairs.jsonl: %s" % exc)
 
 
 def _start_bus():
@@ -1148,10 +1366,11 @@ def api_snapshots():
 
 # Treffer (vom Modell ausgeloest) und Radar-Bilder (vom Bus ausgeloest) teilen
 # sich dieselben Endpunkte: /api/<art>, /<art>/<name>, DELETE, /api/<art>/clear.
-GALLERIES = {"hits": (HIT_DIR, MAX_HITS), "radar": (RADAR_DIR, MAX_RADAR)}
+GALLERIES = {"hits": (HIT_DIR, MAX_HITS), "radar": (RADAR_DIR, MAX_RADAR),
+             "motion": (MOTION_DIR, MAX_MOTION)}
 
 
-@app.route("/api/<any(hits, radar):kind>")
+@app.route("/api/<any(hits, radar, motion):kind>")
 def api_hits(kind):
     """Die von selbst entstandenen Bilder, neueste zuerst."""
     directory, keep = GALLERIES[kind]
@@ -1168,12 +1387,12 @@ def api_hits(kind):
     return jsonify({"max": keep, "files": out})
 
 
-@app.route("/<any(hits, radar):kind>/<path:name>")
+@app.route("/<any(hits, radar, motion):kind>/<path:name>")
 def hit_file(kind, name):
     return send_from_directory(GALLERIES[kind][0], name)
 
 
-@app.route("/api/<any(hits, radar):kind>/<path:name>", methods=["DELETE"])
+@app.route("/api/<any(hits, radar, motion):kind>/<path:name>", methods=["DELETE"])
 def hit_delete(kind, name):
     directory = GALLERIES[kind][0]
     target = (directory / name).resolve()
@@ -1183,7 +1402,7 @@ def hit_delete(kind, name):
     return jsonify({"ok": True})
 
 
-@app.route("/api/<any(hits, radar):kind>/clear", methods=["POST"])
+@app.route("/api/<any(hits, radar, motion):kind>/clear", methods=["POST"])
 def hits_clear(kind):
     count = 0
     for path in GALLERIES[kind][0].glob("*.jpg"):
