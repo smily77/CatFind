@@ -345,6 +345,30 @@ wehende Hecke keine bewegte. Springt mehr als 20 % des Bildes gleichzeitig
   statt von Hand, danach Kamera-Spur ↔ Radar-Ziel räumlich zuordnen und die
   echte Grösse (Katze vs. Fuchs vs. Person) in Metern prüfen.
 
+## Getrennte Ströme: KI in voller Auflösung (2026-10-04)
+
+Bis dahin war der Hauptstrom zugleich Livebild und KI-Bild — wer das Livebild
+wegen des WLANs auf 1640×1232 hielt, hielt damit auch die KI dort. Jetzt:
+
+| Strom | Inhalt | Einstellung |
+|---|---|---|
+| `main` (RGB888) | KI-Bild, verlässt den Pi nie | „Auflösung KI" (`ai_size`, Standard 2592×1944) |
+| `lores` (YUV420) | Livebild (JPEG-Encoder kodiert YUV direkt) + Quelle der Bewegungserkennung (auf ≤820×616 verkleinert) | „Auflösung Livebild" (`size`) |
+
+- Die ferne Katze hat damit ~40×70 statt ~25×45 echte Pixel; die Ausschnitte um
+  bewegte Spuren sind jetzt 10 % der Bildbreite (259 px) statt fest 160 px, die
+  Coral sieht dort also fast unverkleinerte Pixel statt hochgezogener.
+- Die OV5647 schafft 2592×1944 nur bis **15 fps**; die Bildrate wird dann
+  gedeckelt (Schieber zeigt das Maximum). Wer mehr fps will, muss das KI-Bild auf
+  1640×1232 stellen (zusammengefasster Sensormodus).
+- Schnappschüsse kommen aus dem KI-Bild („KI-Auflösung" = volle Grösse, sonst auf
+  Livebild-Grösse verkleinert) — kein Umschalten der Kamera mehr nötig.
+- Treffer-/Radar-/Bewegungs-Bilder werden auf 1640 Breite gespeichert (Galerien
+  bleiben im WLAN flink; Rahmen sind normiert).
+- Gemessen am 2026-10-04: Pumpe ~7–8 fps, Bewegung ~70 ms/Bild (inkl.
+  Verkleinern), volles 4×3-Kachelraster ~0,9 s (läuft bei Bewegung nur jede 4.
+  Runde), Prozess ~125 % CPU von 400 %, CMA frei ~120 MB.
+
 ## Dienst
 
 ```bash
