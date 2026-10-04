@@ -97,7 +97,7 @@
       </div>
       <div class="row">
         <button class="wide" id="bSnap">Schnappschuss</button>
-        <button class="wide" id="bSnapFull">Voll 5 MP</button>
+        <button class="wide" id="bSnapFull">KI-Auflösung</button>
         <button class="wide" id="bFull">Vollbild</button>
       </div>
       <div class="msg" id="msg"></div>
@@ -108,9 +108,16 @@
     <div class="card">
       <h2>Stream</h2>
       <div class="row">
-        <label for="fSize">Auflösung</label>
+        <label for="fSize">Auflösung Livebild</label>
         <select id="fSize"></select>
       </div>
+      <div class="row">
+        <label for="fAiSize">Auflösung KI</label>
+        <select id="fAiSize"></select>
+      </div>
+      <div class="hint">Livebild und KI sind getrennte Ströme: das Livebild geht ins
+        WLAN, das KI-Bild bleibt auf dem Pi. Volle 2592&nbsp;×&nbsp;1944 schafft der
+        Sensor bis 15&nbsp;fps.</div>
       <div class="row">
         <label for="fFps">Bildrate</label>
         <input type="range" id="fFps" min="1" max="30" step="1">
@@ -396,8 +403,14 @@ function applyState(s, first) {
       '<option value="' + sz[0] + 'x' + sz[1] + '">' + sz[0] + ' × ' + sz[1] + '</option>').join('');
     $('fModel').innerHTML = s.models.map(m => '<option>' + m + '</option>').join('') ||
       '<option value="">kein Modell</option>';
+    $('fAiSize').innerHTML = s.sizes.map(sz =>
+      '<option value="' + sz[0] + 'x' + sz[1] + '">' + sz[0] + ' × ' + sz[1] + '</option>').join('');
+    const ai = c.ai_size || s.sizes[s.sizes.length - 1];
+    $('fAiSize').value = ai[0] + 'x' + ai[1];
     $('fSize').value = c.size[0] + 'x' + c.size[1];
-    $('fFps').value = c.fps; $('vFps').textContent = c.fps + ' fps';
+    $('fFps').max = s.fps_max;
+    const f = Math.min(c.fps, s.fps_max);
+    $('fFps').value = f; $('vFps').textContent = f + ' fps';
     $('fQual').value = c.quality; $('vQual').textContent = c.quality;
     $('fTiles').value = c.detect.tiles;
     if (c.detect.model) $('fModel').value = c.detect.model;
@@ -419,7 +432,8 @@ function applyState(s, first) {
     buildControls();
     layout();
   }
-  $('sRes').textContent = c.size[0] + '×' + c.size[1];
+  const ss = s.stream_size || c.size;
+  $('sRes').textContent = ss[0] + '×' + ss[1];
   $('sFps').textContent = s.fps;
   $('sMbit').textContent = (s.mbit || 0) + ' Mbit/s';
   // Nachgemessen traegt das WLAN rund 29 Mbit/s. Erst ab etwa der Haelfte
@@ -557,9 +571,9 @@ $('bFull').onclick = () => {
 $('bSnap').onclick = () => snap(false);
 $('bSnapFull').onclick = () => snap(true);
 function snap(full) {
-  say(full ? 'Vollbild wird aufgenommen (Stream pausiert kurz) …' : 'Schnappschuss …');
+  say(full ? 'Schnappschuss in KI-Auflösung …' : 'Schnappschuss …');
   post('/api/snapshot', {full: full}).then(r => {
-    if (r.ok) { say('Gespeichert: ' + r.name); if (full) reloadStream(); loadGallery(); }
+    if (r.ok) { say('Gespeichert: ' + r.name); loadGallery(); }
     else say('Fehler: ' + r.error);
   });
 }
@@ -569,6 +583,13 @@ $('fSize').onchange = (e) => {
   say('Auflösung wird umgestellt …');
   post('/api/config', {size: size}).then(() => {
     state.config.size = size; reloadStream(); layout(); say('');
+  });
+};
+$('fAiSize').onchange = (e) => {
+  const size = e.target.value.split('x').map(Number);
+  say('KI-Auflösung wird umgestellt (Kamera startet neu) …');
+  post('/api/config', {ai_size: size}).then(() => {
+    reloadStream(); refreshState(true); say('');
   });
 };
 $('fFps').oninput = (e) => $('vFps').textContent = e.target.value + ' fps';
@@ -584,7 +605,8 @@ function preset(size, quality, fps, name) {
     state.config.size = size;
     $('fSize').value = size[0] + 'x' + size[1];
     $('fQual').value = quality; $('vQual').textContent = quality;
-    $('fFps').value = fps; $('vFps').textContent = fps + ' fps';
+    const f = Math.min(fps, state.fps_max || 30);
+    $('fFps').value = f; $('vFps').textContent = f + ' fps';
     reloadStream(); layout(); say(name + ' aktiv');
   });
 }

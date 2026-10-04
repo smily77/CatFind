@@ -23,7 +23,7 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
-from kivision_motion import Motion
+from kivision_motion import Motion, cv2
 from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
 from picamera2.outputs import FileOutput
@@ -45,6 +45,7 @@ MAX_HITS = 60
 # war und was das Modell dort sah - auch wenn es weit unter der Schwelle lag.
 # Hoechstens WIT_SHOTS Bilder je Radar-Episode, im Abstand WIT_EVERY.
 MAX_RADAR = 150
+SAVE_WIDTH = 1640          # Treffer-/Radar-/Bewegungs-Bilder (KI-Bild ist groesser)
 # Bewegungs-Bilder: eins je bewegter Spur (mit eingezeichnetem Weg), zum
 # Nachjustieren der Bewegungserkennung. Hoechstens alle MOTION_GAP Sekunden,
 # sonst fuellt ein Vogelschwarm die Karte.
@@ -62,16 +63,25 @@ WIT_EP_MAX = 120.0        # Dauermeldung (Maeher, Geist) zaehlt danach als neue 
 WIT_SHOTS = 4
 WIT_EVERY = 2.0
 WIT_HOLD = 3.0            # nur fotografieren, solange das Radar noch meldet
-# Bewegungserkennung (kivision_motion.py) laeuft auf dem kleinen Zweitstrom
-# (lores, nur Graubild): 820x616 ist ein Viertel der Flaeche des 1640er-Bildes,
-# die Katze hinten am Rasen bleibt dort noch ~12x22 Pixel - genug fuer einen
-# Fleck. Kostet auf dem Pi 4 rund 40 ms je Bild.
+# Zwei getrennte Stroeme (seit 2026-10-04):
+#   main  = KI-Bild in "ai_size" (Standard volle 2592x1944), geht nie ins WLAN
+#   lores = Livebild in "size" (YUV420, der JPEG-Encoder kodiert es direkt) und
+#           zugleich Quelle der Bewegungserkennung
+# Frueher war main beides, und wer das Livebild wegen des WLANs klein hielt,
+# hielt damit auch die KI klein.
+#
+# Die Bewegungserkennung (kivision_motion.py) rechnet auf hoechstens 820x616
+# (Graubild, notfalls aus dem Livebild verkleinert): die Katze hinten am Rasen
+# bleibt dort ~12x22 Pixel - genug fuer einen Fleck, ~40 ms je Bild.
 MOTION_SIZE = (820, 616)
+# Die OV5647 liefert volle 2592x1944 nur bis ~15 fps; darueber braucht es den
+# 2x2-zusammengefassten Modus (1640x1232 oder kleiner als KI-Bild).
+FULL_FPS_MAX = 15
 # Ausschnitt um eine bewegte Spur: so viel Mal ihre Groesse, mindestens
-# CROP_MIN Pixel des grossen Bildes. Nachgemessen: bei 2,5x sieht das Modell
+# CROP_MIN_REL der Bildbreite. Nachgemessen: bei 2,5x sieht das Modell
 # die Katze am ehesten als Tier; bei 4x und mehr verliert sie sich wieder.
 CROP_FACTOR = 2.5
-CROP_MIN = 160
+CROP_MIN_REL = 0.1         # Anteil der Bildbreite (160 px bei 1640, 259 bei 2592)
 CROP_MAX_TRACKS = 3
 # Was das COCO-Modell im Ausschnitt sagt, in Gruppen. "tier": auf kleinen oder
 # grauen Katzen nennt es gern bear/sheep/dog/cow - zaehlt als Hinweis.
@@ -119,7 +129,8 @@ DEFAULTS = {
     # selbst, nicht die Leitung. Die Bildrate darf deshalb hoch: jede Stufe der
     # Kette (Sensor, Encoder, Browser) kostet ein *Bild*, bei 8 fps also je
     # 125 ms. Mehr fps ist hier das wirksamste Mittel gegen die Verzoegerung.
-    "size": [640, 480],
+    "size": [640, 480],        # Livebild (lores)
+    "ai_size": [2592, 1944],   # KI-Bild (main)
     "fps": 20,
     "quality": 60,
     "hflip": False,
@@ -307,9 +318,16 @@ class Camera:
                                         "default": spec["default"]}
         return limits
 
+    def fps_max(self):
+        ai = self.cfg.get("ai_size") or SIZES[-1]
+        return FULL_FPS_MAX if ai[0] > 1640 else 30
+
+    def fps(self):
+        return max(1, min(int(self.cfg["fps"]), self.fps_max()))
+
     def _build_controls(self):
         ctrl = {}
-        fps = max(1, int(self.cfg["fps"]))
+        fps = self.fps()
         frame_us = int(1000000 / fps)
         ctrl["FrameDurationLimits"] = (frame_us, frame_us)
         for spec in CONTROL_SPEC:
@@ -345,10 +363,10 @@ class Camera:
         with self.lock:
             if self.running:
                 return
-            size = tuple(self.cfg["size"])
-            # Zweitstrom fuer die Bewegungserkennung; darf nicht groesser als
-            # der Hauptstrom sein.
-            lo = (min(MOTION_SIZE[0], size[0]), min(MOTION_SIZE[1], size[1]))
+            size = tuple(self.cfg.get("ai_size") or SIZES[-1])
+            # Livebild = lores; darf nicht groesser als das KI-Bild sein.
+            want = tuple(self.cfg["size"])
+            lo = (min(want[0], size[0]), min(want[1], size[1]))
             self.lores_size = lo
             config = self.picam.create_video_configuration(
                 main={"size": size, "format": "RGB888"},
@@ -362,7 +380,8 @@ class Camera:
             self.running = True
             if self.viewers > 0:
                 self._encoder_start()
-            print("[web] Kamera laeuft: %dx%d @ %s fps" % (size[0], size[1], self.cfg["fps"]))
+            print("[web] Kamera laeuft: KI %dx%d, Livebild %dx%d @ %s fps"
+                  % (size[0], size[1], lo[0], lo[1], self.fps()))
 
     # -- Encoder laeuft nur, solange jemand zuschaut ----------------------
     def _encoder_start(self):
@@ -370,7 +389,7 @@ class Camera:
             if self.encoder is not None or not self.running:
                 return
             self.encoder = JpegEncoder(q=int(self.cfg["quality"]))
-            self.picam.start_encoder(self.encoder, FileOutput(self.output))
+            self.picam.start_encoder(self.encoder, FileOutput(self.output), name="lores")
 
     def _encoder_stop(self):
         with self.lock:
@@ -466,34 +485,26 @@ class Camera:
             finally:
                 req.release()
         w, h = self.lores_size
-        return main[:, :, ::-1], lores[:h, :w]
+        gray = lores[:h, :w]
+        if w > MOTION_SIZE[0] and cv2 is not None:
+            gray = cv2.resize(gray, MOTION_SIZE, interpolation=cv2.INTER_AREA)
+        return main[:, :, ::-1], gray
 
-    def snapshot(self, full_res=False):
+    def snapshot(self, frame, full_res=False):
+        """Schnappschuss aus dem KI-Bild (kommt von der Bildpumpe): "voll" in
+        KI-Aufloesung, sonst auf Livebild-Groesse verkleinert. Der Strom muss
+        dafuer nicht mehr umgeschaltet werden."""
+        from PIL import Image
+        if frame is None:
+            raise RuntimeError("noch kein Kamerabild")
         SNAP_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         tag = "voll" if full_res else "stream"
         path = SNAP_DIR / ("%s_%s.jpg" % (stamp, tag))
-        with self.lock:
-            if not full_res:
-                self.picam.capture_file(str(path))
-            else:
-                # Fuer die volle Aufloesung muss der Stream kurz weichen.
-                self.stop()
-                try:
-                    still = self.picam.create_still_configuration(
-                        main={"size": SIZES[-1]},
-                        transform=self._transform(),
-                        controls=self._build_controls())
-                    self.picam.configure(still)
-                    self.picam.start()
-                    time.sleep(0.8)          # Automatik einschwingen lassen
-                    self.picam.capture_file(str(path))
-                finally:
-                    try:
-                        self.picam.stop()
-                    except Exception:
-                        pass
-                    self.start()
+        img = Image.fromarray(frame)
+        if not full_res:
+            img = img.resize(tuple(self.lores_size), Image.BILINEAR, reducing_gap=2.0)
+        img.save(path, "JPEG", quality=90)
         prune_snapshots()
         return path
 
@@ -725,7 +736,7 @@ class Detector:
     @staticmethod
     def _crop_rect(track, width, height):
         """Quadratischer Ausschnitt (Pixel) um eine Bewegungsspur."""
-        side = max(CROP_MIN, CROP_FACTOR * max(track["w"] * width, track["h"] * height))
+        side = max(CROP_MIN_REL * width, CROP_FACTOR * max(track["w"] * width, track["h"] * height))
         side = int(min(side, width, height))
         cx = (track["x"] + track["w"] / 2) * width
         cy = (track["y"] + track["h"] / 2) * height
@@ -1020,6 +1031,11 @@ def save_hit(frame, boxes, note, directory=None, keep=MAX_HITS, name_score=None,
     from PIL import Image, ImageDraw
 
     img = Image.fromarray(frame)
+    if img.size[0] > SAVE_WIDTH:
+        # Rahmen sind normiert - verkleinern vor dem Zeichnen ist verlustfrei
+        # fuer die Beschriftung und haelt die Galerien im WLAN flink.
+        img = img.resize((SAVE_WIDTH, round(img.size[1] * SAVE_WIDTH / img.size[0])),
+                         Image.BILINEAR, reducing_gap=2.0)
     width, height = img.size
     draw = ImageDraw.Draw(img)
     line = max(2, round(width / 400))
@@ -1227,6 +1243,8 @@ def api_state():
     return jsonify({
         "config": cfg,
         "sizes": [list(s) for s in SIZES],
+        "fps_max": camera.fps_max(),
+        "stream_size": list(camera.lores_size),
         "controls": CONTROL_SPEC,
         "limits": camera.limits,
         "models": Detector.available_models(),
@@ -1253,11 +1271,12 @@ def api_state():
 def api_config():
     data = request.get_json(force=True, silent=True) or {}
     restart = False
-    if "size" in data:
-        size = [int(v) for v in data["size"]]
-        if list(cfg["size"]) != size:
-            cfg["size"] = size
-            restart = True
+    for key in ("size", "ai_size"):
+        if key in data:
+            size = [int(v) for v in data[key]]
+            if list(cfg.get(key) or []) != size:
+                cfg[key] = size
+                restart = True
     for key in ("fps", "quality"):
         if key in data:
             value = int(data[key])
@@ -1350,7 +1369,7 @@ def api_detections():
 def api_snapshot():
     full = bool((request.get_json(force=True, silent=True) or {}).get("full"))
     try:
-        path = camera.snapshot(full_res=full)
+        path = camera.snapshot(detector.pump.latest()[0], full_res=full)
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
     return jsonify({"ok": True, "name": path.name})
