@@ -218,6 +218,16 @@
     </div>
 
     <div class="card">
+      <h2>Bewegungs-Bilder <span id="motionCount" class="tag"></span></h2>
+      <div class="hint">Ausgelöst von der Bewegungserkennung der Kamera selbst: ein Bild
+        je Spur, die sich 1,5&nbsp;s über den Rasen bewegt hat (höchstens alle 10&nbsp;s).
+        Hellblau: Rahmen, zurückgelegter Weg und was die KI im Ausschnitt sah.</div>
+      <div class="gal" id="galMotion"></div>
+      <div class="row"><button id="bMotionClear">Alle Bewegungs-Bilder löschen</button>
+        <button id="bMotionReload">Neu laden</button></div>
+    </div>
+
+    <div class="card">
       <h2>Schnappschüsse</h2>
       <div class="gal" id="gal"></div>
     </div>
@@ -271,6 +281,15 @@ function drawOverlay(det) {
       if ((det.tiles || []).length < 2) return;
       parts.push('<rect x="' + t.x * 1000 + '" y="' + t.y * 1000 + '" width="' + t.w * 1000 +
                  '" height="' + t.h * 1000 + '" fill="none" stroke="#4ea3ff55" stroke-width="2" stroke-dasharray="8 8"/>');
+    });
+    // Bewegte Spuren (Bewegungserkennung) hellblau, mit Nummer und KI-Befund
+    (det.motion || []).forEach(m => {
+      const x = m.x * 1000, y = m.y * 1000, w = m.w * 1000, h = m.h * 1000;
+      parts.push('<rect x="' + (x - 6) + '" y="' + (y - 6) + '" width="' + (w + 12) +
+                 '" height="' + (h + 12) + '" fill="none" stroke="#50c8ff" stroke-width="3"/>');
+      parts.push('<text x="' + Math.min(x, 900) + '" y="' + Math.min(y + h + 32, 995) +
+                 '" fill="#50c8ff" font-size="24" font-family="sans-serif">' +
+                 esc(('B' + m.id + ' ' + (m.best || '')).trim()) + '</text>');
     });
     (det.boxes || []).forEach(b => {
       const x = b.x * 1000, y = b.y * 1000, w = b.w * 1000, h = b.h * 1000;
@@ -441,7 +460,9 @@ function pollDetections() {
   if (!detOn) { drawOverlay(null); $('hitState').textContent = ''; return; }
   fetch('/api/detections').then(r => r.json()).then(d => {
     drawOverlay(d);
-    $('vDetMs').textContent = d.ms ? d.ms + ' ms' : '';
+    const ms = d.motion_status;
+    $('vDetMs').textContent = (d.ms ? d.ms + ' ms' : '') + (ms && ms.enabled
+      ? ' | Bewegung ' + ms.ms + ' ms, ' + ms.moving + '/' + ms.tracks + ' Spuren' : '');
     $('detErr').textContent = d.error || '';
     // Der Zaehler kommt vom Pi: steigt er, liegt ein neues Bild bereit. So
     // muss die Galerie nicht im Sekundentakt nachfragen.
@@ -498,6 +519,9 @@ const loadHits = () => loadAuto('hits', 'galHits', 'hitCount',
   'Noch kein Treffer. Die Kamera legt hier von selbst ein Bild ab, sobald sie etwas erkennt.');
 const loadRadar = () => loadAuto('radar', 'galRadar', 'radarCount',
   'Noch kein Radar-Bild. Es entsteht, sobald ein Radar ein Ziel meldet.');
+
+const loadMotion = () => loadAuto('motion', 'galMotion', 'motionCount',
+  'Noch kein Bewegungs-Bild.');
 
 function clock(ts) {
   const d = new Date(ts * 1000), z = (n) => String(n).padStart(2, '0');
@@ -616,7 +640,12 @@ function reloadStream() {
   $('live').src = '/stream.mjpg?t=' + Date.now();
 }
 
-refreshState(true).then(() => { loadGallery(); loadHits(); loadRadar(); });
+refreshState(true).then(() => { loadGallery(); loadHits(); loadRadar(); loadMotion(); });
+$('bMotionReload').onclick = loadMotion;
+$('bMotionClear').onclick = () => {
+  if (!confirm('Alle Bewegungs-Bilder löschen?')) return;
+  post('/api/motion/clear').then(r => { say(r.deleted + ' Bewegungs-Bilder gelöscht'); loadMotion(); });
+};
 setInterval(() => refreshState(false), 2000);
 setInterval(pollDetections, 300);
 </script>

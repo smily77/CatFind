@@ -19,6 +19,7 @@ CatFinder-Bus (siehe unten „Busgerät"). Homographie/Pose folgt in Phase 4.
 | `kivision-web.service` | systemd-Dienst (Autostart) |
 | `xcom.py` | xCom-6.3-Protokoll in Python, **zur Laufzeit aus `xComDef6_3.h` geparst** |
 | `kivision_bus.py` | das Busgerät: HB, settingsReport, poseReport, Kommandos |
+| `kivision_motion.py` | Bewegungserkennung (MOG2 + Spurverfolger) auf dem lores-Graubild |
 | `xComDef6_3.h` | wird beim Ausrollen aus `Controller/Manager6_3_0/` daneben kopiert |
 
 ## Busgerät (Phase 3)
@@ -44,7 +45,8 @@ CatFinder-Bus (siehe unten „Busgerät"). Homographie/Pose folgt in Phase 4.
 Auf dem Pi liegt alles unter `~/kivision/web/`, Schnappschüsse unter
 `~/kivision/snapshots/` (max. 200, danach werden die ältesten gelöscht),
 Treffer-Bilder unter `~/kivision/hits/` (max. 60), Radar-Bilder unter
-`~/kivision/radar/` (max. 150), gespeicherte Einstellungen
+`~/kivision/radar/` (max. 150), Bewegungs-Bilder unter `~/kivision/motion/`
+(max. 150), Radar↔Kamera-Paare in `~/kivision/pairs.jsonl`, gespeicherte Einstellungen
 in `~/kivision/web_config.json`.
 
 ## Bedienung
@@ -296,6 +298,53 @@ Erkennung ankommt, und ein grauer Kanal keinen Weißabgleich braucht, bleibt
 Die Fußzeile der Treffer-Bilder (Lux, Belichtungszeit, Gain) sagt im Nachhinein,
 in welcher Lage das Bild entstanden ist — nachts gemessen: Lux 13, 67 ms, Gain 8.
 
+## Bewegungserkennung (2026-10-04)
+
+**Warum:** Die Katze kommt fast immer hinten rechts an der Hecke herein und ist
+dort im 1640er-Bild nur ~25×45 Pixel gross. Mit den Radar-Bildern vom
+2026-10-04 offline nachgemessen (Ausschnitte 1,5×–6× um die Katze, plus
+Gegenproben Mäher/Rasen/Hecke/Blumentopf/Schatten):
+
+| Modell | ferne Katze | grosse Katze 13:35 | Blumentopf (Gegenprobe) |
+|---|---|---|---|
+| SSD-MobileNet-v2 COCO (bisher) | sheep 33 / person 16 | bear 96 | person 23 |
+| SSDLite-MobileDet | teddy bear 48 / potted plant 46 | cow 58 | teddy bear 73 |
+| EfficientDet-Lite2 (448) | dog 60 / person 52 | sheep 52 | person 52 |
+| EfficientDet-Lite3 (512) | sheep 67 / person 41 | sheep 74 | person 69 |
+| ImageNet-Klassifizierer (MobileNet, EfficientNet-M/L, Inception-v4) | Hunderassen, Dugong, Schnecke … | lynx 34 / tiger cat 21 | coral reef 81 |
+
+Kein Modell nennt die ferne Katze „cat", und die Gegenprobe bekommt dieselben
+Werte — **das Etikett trägt bei so wenigen Pixeln nicht**, auch ein grösseres
+Modell ändert das nicht. Selbst die gut sichtbare Katze um 13:35 (~120×80 px)
+hatte das bisherige 4×3-Kachelraster gar nicht gemeldet.
+
+**Was stattdessen trägt: Bewegung.** `kivision_motion.py` zieht auf dem
+lores-Zweitstrom (820×616, nur Y) einen MOG2-Hintergrund ab (~37 ms je Bild),
+verbindet Flecken zu Spuren und nennt eine Spur erst „bewegt", wenn sie
+mindestens 3 Bilder alt ist und sich um ≥1,2 % der Bildbreite bzw. 0,6× ihrer
+eigenen Grösse verschoben hat. Ein stehender Mäher erzeugt so keine Spur, eine
+wehende Hecke keine bewegte. Springt mehr als 20 % des Bildes gleichzeitig
+(Sonne/Wolke), wird das Bild verworfen und schneller nachgelernt.
+
+- **Voraussetzung:** `sudo apt install python3-opencv` (die venv sieht die
+  System-Pakete; ohne OpenCV läuft alles wie vorher, nur ohne Bewegung).
+- **Bildpumpe:** Ein Thread holt jedes Bild genau einmal (`capture_pair`: main
+  RGB + lores aus *derselben* Aufnahme) und füttert Bewegung und Coral.
+- **Gezielte KI:** Gibt es bewegte Spuren, schaut die Coral nur noch in
+  quadratische Ausschnitte um sie (2,5× Spurgrösse, mind. 160 px, max. 3 Spuren,
+  je ~25 ms) und das volle Kachelraster nur noch jede 4. Runde. Was sie dort
+  sieht, wird der Spur zugeordnet (Gruppen katze/tier/person/fahrzeug).
+- **Anzeige:** Spuren hellblau im Livebild und in den Radar-Bildern
+  (`B<nr> <KI-Befund>` + zurückgelegter Weg), Kopfzeile der Erkennung zeigt
+  Bewegungs-ms und bewegte/alle Spuren.
+- **Bewegungs-Bilder** (eigene Galerie): ein Bild je Spur, die 1,5 s bewegt ist,
+  höchstens alle 10 s. Journal: `[motion] Spur B… vorbei: Dauer, Weg, Grösse, Start/Ende, KI`.
+- **`pairs.jsonl`:** bei jeder Radar-Meldung mit Weltposition, während die Kamera
+  bewegte Spuren hat, eine Zeile `{t, sender, wx, wy, tracks:[{foot, w, h, …}]}`.
+  Rohstoff für die Homographie (Phase 4) — automatisch kalibriert aus Paaren
+  statt von Hand, danach Kamera-Spur ↔ Radar-Ziel räumlich zuordnen und die
+  echte Grösse (Katze vs. Fuchs vs. Person) in Metern prüfen.
+
 ## Dienst
 
 ```bash
@@ -309,7 +358,7 @@ Der Dienst ist `enabled`, startet also nach jedem Stromausfall von selbst.
 ## Neu ausrollen
 
 ```bash
-scp kivision_web.py xcom.py kivision_bus.py ../Controller/Manager6_3_0/xComDef6_3.h pi@192.168.0.186:~/kivision/web/
+scp kivision_web.py kivision_motion.py xcom.py kivision_bus.py ../Controller/Manager6_3_0/xComDef6_3.h pi@192.168.0.186:~/kivision/web/
 scp templates/index.html pi@192.168.0.186:~/kivision/web/templates/
 ssh pi@192.168.0.186 sudo systemctl restart kivision-web
 ```
