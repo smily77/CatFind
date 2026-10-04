@@ -85,7 +85,25 @@ CROP_MIN_REL = 0.1         # Anteil der Bildbreite (160 px bei 1640, 259 bei 259
 CROP_MAX_TRACKS = 3
 # Was das COCO-Modell im Ausschnitt sagt, in Gruppen. "tier": auf kleinen oder
 # grauen Katzen nennt es gern bear/sheep/dog/cow - zaehlt als Hinweis.
-CATEGORY = {"cat": "katze", "dog": "tier", "bear": "tier", "teddy bear": "tier",
+# Zweitmeinung fuer Katze vs. Fuchs (2026-10-04). Das COCO-Modell kennt gar
+# keinen Fuchs - es nennt ihn dog/cat/sheep. Ein ImageNet-Klassifizierer kennt
+# vier Fuchs- und fuenf Katzenklassen. Auf kleinen Zielen taugt er nicht
+# (nachgemessen: Hunderassen, Dugong ...), auf der grossen Katze 13:35 sagte
+# Inception-v4 immerhin lynx/tiger cat. Er kostet ~180 ms je Aufruf (inkl.
+# Modellwechsel auf der Coral) - darum nur fuer bewegte Spuren ab CLS_MIN_PX
+# (laengste Seite im KI-Bild) und je Spur hoechstens alle CLS_EVERY Sekunden,
+# hoechstens einer je Runde. Ohne grosses Ziel kostet er also nichts.
+CLS_DIR = MODEL_DIR / "classifier"
+CLS_MODEL = "inception_v4_299_quant_edgetpu.tflite"
+CLS_MIN_PX = 100
+CLS_EVERY = 1.5
+CLS_FACTOR = 1.6
+CLS_MIN_SCORE = 0.15
+CLS_GROUPS = {
+    "fox": ("red fox", "kit fox", "arctic fox", "grey fox"),
+    "cat": ("tabby", "tiger cat", "persian cat", "siamese cat", "egyptian cat", "lynx"),
+}
+CATEGORY = {"cat": "katze", "fox": "fuchs", "dog": "tier", "bear": "tier", "teddy bear": "tier",
             "sheep": "tier", "horse": "tier", "cow": "tier",
             "person": "person", "car": "fahrzeug", "truck": "fahrzeug",
             "bus": "fahrzeug", "motorcycle": "fahrzeug"}
@@ -174,7 +192,7 @@ DEFAULTS = {
 
 # COCO-Tierklassen, die eine Katze auf dem Rasen sein koennten (Vogel/Giraffe
 # & Co. bewusst nicht). Dient nur dem Festhalten, nicht der Anzeige.
-ANIMALS = ("cat", "katze", "dog", "bear", "teddy bear", "sheep", "horse", "cow")
+ANIMALS = ("cat", "katze", "fox", "fuchs", "dog", "bear", "teddy bear", "sheep", "horse", "cow")
 
 
 def load_config():
@@ -613,6 +631,10 @@ class Detector:
         self.motion = None          # kivision_motion.Motion (vom FramePump)
         self.pump = None            # FramePump: liefert Bild + Bewegungsspuren
         self.loops = 0
+        self.cls_it = None          # ImageNet-Zweitmeinung (lazy)
+        self.cls_labels = {}
+        self.cls_off = ""           # Grund, falls nicht verfuegbar
+        self.cls_last = {}          # Spur-Nr -> monotonic der letzten Zweitmeinung
 
     # -- Modell ----------------------------------------------------------
     @staticmethod
@@ -757,7 +779,7 @@ class Detector:
 
         def keep(box):
             raw.append(box)
-            if box["score"] >= threshold and not (cat_only and "cat" not in box["label"].lower()):
+            if box["score"] >= threshold and not (cat_only and not self._is_target(box["label"])):
                 boxes.append(box)
 
         for (tx, ty, tw, th) in tiles:
@@ -781,6 +803,7 @@ class Detector:
                 cat = CATEGORY.get(box["label"].lower())
                 if cat and self.motion is not None:
                     self.motion.classify(tr["id"], cat, box["score"], box["label"])
+        self._second_opinion(frame, tracks, keep)
         ms = round((time.monotonic() - started) * 1000, 1)
         norm_tiles = [{"x": t[0] / width, "y": t[1] / height,
                        "w": t[2] / width, "h": t[3] / height} for t in tiles + crops]
@@ -788,11 +811,81 @@ class Detector:
         return {"boxes": boxes, "raw": raw[:12], "ms": ms, "ts": time.time(),
                 "tiles": norm_tiles}
 
+    # -- Zweitmeinung Katze/Fuchs -----------------------------------------
+    def _ensure_cls(self):
+        if self.cls_it is not None:
+            return True
+        if self.cls_off:
+            return False
+        path = CLS_DIR / CLS_MODEL
+        try:
+            from pycoral.utils.edgetpu import make_interpreter
+            labels = {}
+            for i, line in enumerate((CLS_DIR / "imagenet_labels.txt").read_text().splitlines()):
+                labels[i] = line.split(",")[0].strip().lower()
+            it = make_interpreter(str(path))
+            it.allocate_tensors()
+        except Exception as exc:                              # noqa: BLE001
+            self.cls_off = "%s: %s" % (type(exc).__name__, exc)
+            print("[web] Zweitmeinung Katze/Fuchs aus: %s" % self.cls_off)
+            return False
+        self.cls_it, self.cls_labels = it, labels
+        print("[web] Zweitmeinung Katze/Fuchs geladen: %s" % CLS_MODEL)
+        return True
+
+    def _second_opinion(self, frame, tracks, keep):
+        """Grosse bewegte Spur -> ImageNet: Katze oder Fuchs? Hoechstens eine je
+        Runde; der Befund geht als Rahmen (label cat/fox) wie jeder andere in
+        Livebild, Treffer und Spur ein."""
+        if not tracks or not self._ensure_cls():
+            return
+        from pycoral.adapters import classify, common
+        height, width = frame.shape[:2]
+        now = time.monotonic()
+        for tr in tracks:
+            px = max(tr["w"] * width, tr["h"] * height)
+            if px < CLS_MIN_PX or now - self.cls_last.get(tr["id"], 0.0) < CLS_EVERY:
+                continue
+            self.cls_last[tr["id"]] = now
+            side = int(min(CLS_FACTOR * px, width, height))
+            cx = (tr["x"] + tr["w"] / 2) * width
+            cy = (tr["y"] + tr["h"] / 2) * height
+            x0 = int(min(max(0, cx - side / 2), width - side))
+            y0 = int(min(max(0, cy - side / 2), height - side))
+            crop = frame[y0:y0 + side, x0:x0 + side]
+            common.set_input(self.cls_it, self._resize(crop, common.input_size(self.cls_it)))
+            self.cls_it.invoke()
+            top = classify.get_classes(self.cls_it, 5, 0.0)
+            sums = {g: sum(c.score for c in top if self.cls_labels.get(c.id) in names)
+                    for g, names in CLS_GROUPS.items()}
+            group = max(sums, key=sums.get)
+            score = float(sums[group])
+            print("[web] Zweitmeinung B%d (%d px): %s -> %s" % (
+                tr["id"], px, ", ".join("%s %d%%" % (self.cls_labels.get(c.id, c.id),
+                                                     round(c.score * 100)) for c in top[:3]),
+                ("%s %d%%" % (group, round(score * 100))) if score >= CLS_MIN_SCORE else "-"))
+            if score >= CLS_MIN_SCORE:
+                keep({"x": tr["x"], "y": tr["y"], "w": tr["w"], "h": tr["h"],
+                      "score": round(score, 3), "label": group, "track": tr["id"],
+                      "src": "imagenet"})
+                if self.motion is not None:
+                    self.motion.classify(tr["id"], CATEGORY[group], score, group)
+            break
+        if len(self.cls_last) > 200:
+            for tid in sorted(self.cls_last, key=self.cls_last.get)[:100]:
+                del self.cls_last[tid]
+
     # -- Treffer festhalten ------------------------------------------------
     @staticmethod
     def _is_cat(label):
         low = str(label).lower()
         return "cat" in low or "katze" in low
+
+    @staticmethod
+    def _is_target(label):
+        """Wogegen sich die Anlage richtet: Katze oder Fuchs."""
+        low = str(label).lower()
+        return Detector._is_cat(low) or "fox" in low or "fuchs" in low
 
     @staticmethod
     def _is_animal(label):
@@ -809,7 +902,7 @@ class Detector:
         mode = det.get("snap_mode", "cat")
         if mode == "off" or not result["boxes"]:
             return
-        keep = {"all": lambda label: True, "animal": self._is_animal}.get(mode, self._is_cat)
+        keep = {"all": lambda label: True, "animal": self._is_animal}.get(mode, self._is_target)
         boxes = [b for b in result["boxes"] if keep(b["label"])]
         if not boxes:
             return
@@ -905,7 +998,7 @@ class Detector:
         self._save_witness(frame, raw, info, shot, tracks)
 
     def _save_witness(self, frame, raw, info, shot, tracks=()):
-        cats = [b["score"] for b in (raw or []) if self._is_cat(b["label"])]
+        cats = [b["score"] for b in (raw or []) if self._is_target(b["label"])]
         best = max(cats) if cats else 0.0
         if raw is None:
             model = "KI aus"
@@ -1062,7 +1155,7 @@ def save_hit(frame, boxes, note, directory=None, keep=MAX_HITS, name_score=None,
         x0, y0 = box["x"] * width, box["y"] * height
         x1, y1 = (box["x"] + box["w"]) * width, (box["y"] + box["h"]) * height
         # Katze gruen, alles andere orange (nur in Radar-/Tier-Bildern sichtbar)
-        col = green if Detector._is_cat(box["label"]) else orange
+        col = green if Detector._is_target(box["label"]) else orange
         draw.rectangle([x0, y0, x1, y1], outline=col, width=line)
         best = max(best, box["score"])
         tag = "%s %d%%" % (box["label"], round(box["score"] * 100))

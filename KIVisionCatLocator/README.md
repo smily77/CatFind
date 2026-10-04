@@ -369,6 +369,25 @@ wegen des WLANs auf 1640×1232 hielt, hielt damit auch die KI dort. Jetzt:
   Verkleinern), volles 4×3-Kachelraster ~0,9 s (läuft bei Bewegung nur jede 4.
   Runde), Prozess ~125 % CPU von 400 %, CMA frei ~120 MB.
 
+## Katze **und** Fuchs (2026-10-04)
+
+Das COCO-Modell kennt keinen Fuchs (es nennt ihn dog/cat/sheep). Darum:
+
+- **Ferne Ziele** (klein): wie bisher Bewegungsspur + COCO-Ausschnitt; jedes
+  Tier-Etikett (dog/bear/sheep/… = Gruppe `tier`) auf einer bewegten Spur ist ein
+  Hinweis auf Katze *oder* Fuchs. Kostet nichts extra.
+- **Grosse Ziele** (längste Seite ≥ 100 px im KI-Bild): Zweitmeinung durch
+  Inception-v4 (ImageNet, `~/kivision/models/classifier/`), das 4 Fuchs- und
+  5 Katzenklassen (inkl. lynx) kennt; Summe der Top-5 je Gruppe, ab 15 % gilt
+  sie (Etikett `cat`/`fox`). ~180 ms je Aufruf inkl. Modellwechsel auf der Coral
+  (gemessen: MobileNet-v2 55 ms, EfficientNet-L 98 ms abwechselnd mit SSD — beide
+  aber auf unseren Katzen unbrauchbar), darum höchstens 1 je Runde und je Spur
+  alle 1,5 s. Ohne grosses bewegtes Ziel läuft sie nie. Journal:
+  `[web] Zweitmeinung B<nr> (<px> px): top3 -> Ergebnis`. Offline-Probe: Katze
+  13:35 → „lynx 36 %, timber wolf 20 %, coyote 17 % → cat 36 %" (COCO: bear).
+- „nur Katze/Fuchs" (Anzeige- und Treffer-Filter) und grüne Rahmen gelten jetzt
+  für `cat` und `fox`.
+
 ## Dienst
 
 ```bash
