@@ -504,7 +504,7 @@ function loadGallery() {
   fetch('/api/snapshots').then(r => r.json()).then(list => {
     $('gal').innerHTML = list.map(f =>
       '<figure><a href="/snapshots/' + f.name + '" target="_blank">' +
-      '<img src="/snapshots/' + f.name + '" loading="lazy"></a>' +
+      '<img src="/thumb/snapshots/' + f.name + '" loading="lazy" decoding="async"></a>' +
       '<figcaption><span>' + f.name.slice(9, 15).replace(/(..)(..)(..)/, '$1:$2:$3') + '</span>' +
       '<button class="del" data-n="' + f.name + '">löschen</button></figcaption></figure>').join('');
     $('gal').querySelectorAll('.del').forEach(b => b.onclick = () =>
@@ -520,7 +520,7 @@ function loadAuto(kind, galId, countId, empty) {
     $(countId).textContent = list.length + ' / ' + d.max;
     $(galId).innerHTML = list.length ? list.map((f, i) =>
       '<figure' + (i === 0 ? ' class="fresh"' : '') + '><a href="/' + kind + '/' + f.name + '" target="_blank">' +
-      '<img src="/' + kind + '/' + f.name + '" loading="lazy"></a>' +
+      '<img src="/thumb/' + kind + '/' + f.name + '" loading="lazy" decoding="async"></a>' +
       '<figcaption><span>' + clock(f.ts) +
       (f.score != null ? ' <span class="score">' + f.score + '%</span>' : '') + '</span>' +
       '<button class="del" data-n="' + f.name + '">löschen</button></figcaption></figure>').join('')

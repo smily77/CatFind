@@ -51,6 +51,11 @@ SAVE_WIDTH = 1640          # Treffer-/Radar-/Bewegungs-Bilder (KI-Bild ist groes
 # sonst fuellt ein Vogelschwarm die Karte.
 MOTION_DIR = HOME / "motion"
 MAX_MOTION = 150
+# Vorschaubilder fuer die Galerien: je Ordner ein Unterordner .thumbs mit
+# gleichem Dateinamen. Die vollen Bilder (250-480 kB) machen bei 150 Stueck
+# 50 MB pro Galerie - die Vorschau ist rund 20x kleiner. Das volle Bild gibt
+# es weiterhin per Klick.
+THUMB_WIDTH = 360
 MOTION_SNAP_AGE = 1.5
 MOTION_GAP = 10.0
 # Radar-Ziel <-> Kamera-Fusspunkt, gleichzeitig beobachtet: Rohstoff fuer die
@@ -1087,13 +1092,47 @@ def clamp01(value):
     return max(0.0, min(1.0, value))
 
 
+def thumb_of(path):
+    return path.parent / ".thumbs" / path.name
+
+
+def unlink_with_thumb(path):
+    for target in (path, thumb_of(path)):
+        try:
+            target.unlink()
+        except OSError:
+            pass
+
+
+def write_thumb(img, path):
+    """Legt die Vorschau zu *path* ab; *img* ist ein PIL-Bild (wird kopiert)."""
+    dst = thumb_of(path)
+    dst.parent.mkdir(exist_ok=True)
+    small = img.copy()
+    small.thumbnail((THUMB_WIDTH, THUMB_WIDTH * 2))
+    tmp = dst.with_name("%s.%d.tmp" % (dst.stem, threading.get_ident()))
+    small.save(tmp, "JPEG", quality=72)
+    tmp.replace(dst)            # atomar: nie eine halbe Vorschau ausliefern
+    return dst
+
+
+def ensure_thumb(path):
+    """Vorschau fuer ein vorhandenes Bild - beim ersten Abruf nachgeliefert."""
+    dst = thumb_of(path)
+    if dst.exists() and dst.stat().st_mtime >= path.stat().st_mtime:
+        return dst
+    from PIL import Image
+    with Image.open(path) as img:
+        # draft(): der JPEG-Decoder skaliert schon beim Entpacken (1/2..1/8),
+        # das spart auf dem Pi den Grossteil der Arbeit.
+        img.draft("RGB", (THUMB_WIDTH, THUMB_WIDTH))
+        return write_thumb(img.convert("RGB"), path)
+
+
 def prune_dir(directory, keep):
     files = sorted(directory.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
     for old in files[keep:]:
-        try:
-            old.unlink()
-        except OSError:
-            pass
+        unlink_with_thumb(old)
 
 
 def prune_snapshots():
@@ -1177,6 +1216,10 @@ def save_hit(frame, boxes, note, directory=None, keep=MAX_HITS, name_score=None,
         best = name_score
     path = directory / ("%s_%02d.jpg" % (stamp.strftime("%Y%m%d_%H%M%S"), round(best * 100)))
     img.save(path, "JPEG", quality=80)
+    try:
+        write_thumb(img, path)
+    except OSError as exc:
+        print("[web] Vorschau fehlgeschlagen: %s" % exc)
     prune_dir(directory, keep)
     return path
 
@@ -1299,7 +1342,10 @@ app = Flask(__name__, template_folder=str(BASE / "templates"))
 
 @app.after_request
 def no_cache(resp):
-    resp.headers["Cache-Control"] = "no-store"
+    # Galerie-Bilder (send_from_directory mit max_age) duerfen im Browser
+    # bleiben, alles andere - Zustand, Seite, Strom - immer frisch.
+    if "max-age" not in resp.headers.get("Cache-Control", ""):
+        resp.headers["Cache-Control"] = "no-store"
     return resp
 
 
@@ -1499,9 +1545,28 @@ def api_hits(kind):
     return jsonify({"max": keep, "files": out})
 
 
+# Dateinamen tragen Datum+Uhrzeit und werden nie neu beschrieben - der Browser
+# darf sie behalten, statt bei jedem Neuaufbau der Galerie nachzufragen.
+IMG_MAX_AGE = 7 * 24 * 3600
+
+
 @app.route("/<any(hits, radar, motion):kind>/<path:name>")
 def hit_file(kind, name):
-    return send_from_directory(GALLERIES[kind][0], name)
+    return send_from_directory(GALLERIES[kind][0], name, max_age=IMG_MAX_AGE)
+
+
+@app.route("/thumb/<any(hits, radar, motion, snapshots):kind>/<name>")
+def thumb_file(kind, name):
+    directory = SNAP_DIR if kind == "snapshots" else GALLERIES[kind][0]
+    src = (directory / name).resolve()
+    if src.parent != directory.resolve() or not src.is_file():
+        return Response(status=404)
+    try:
+        dst = ensure_thumb(src)
+    except Exception as exc:              # kaputtes JPEG: dann eben das Original
+        print("[web] Vorschau %s: %s" % (name, exc))
+        return send_from_directory(directory, name, max_age=IMG_MAX_AGE)
+    return send_from_directory(dst.parent, dst.name, max_age=IMG_MAX_AGE)
 
 
 @app.route("/api/<any(hits, radar, motion):kind>/<path:name>", methods=["DELETE"])
@@ -1510,7 +1575,7 @@ def hit_delete(kind, name):
     target = (directory / name).resolve()
     if target.parent != directory.resolve() or not target.exists():
         return jsonify({"ok": False}), 404
-    target.unlink()
+    unlink_with_thumb(target)
     return jsonify({"ok": True})
 
 
@@ -1523,12 +1588,17 @@ def hits_clear(kind):
             count += 1
         except OSError:
             pass
+    for path in (GALLERIES[kind][0] / ".thumbs").glob("*"):
+        try:
+            path.unlink()
+        except OSError:
+            pass
     return jsonify({"ok": True, "deleted": count})
 
 
 @app.route("/snapshots/<path:name>")
 def snapshot_file(name):
-    return send_from_directory(SNAP_DIR, name)
+    return send_from_directory(SNAP_DIR, name, max_age=IMG_MAX_AGE)
 
 
 @app.route("/api/snapshots/<path:name>", methods=["DELETE"])
@@ -1536,7 +1606,7 @@ def snapshot_delete(name):
     target = (SNAP_DIR / name).resolve()
     if target.parent != SNAP_DIR.resolve() or not target.exists():
         return jsonify({"ok": False}), 404
-    target.unlink()
+    unlink_with_thumb(target)
     return jsonify({"ok": True})
 
 
