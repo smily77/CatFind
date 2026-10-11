@@ -1339,6 +1339,9 @@ node = _start_bus()
 
 app = Flask(__name__, template_folder=str(BASE / "templates"))
 
+SOCKET_TIMEOUT = 20      # s, dann gilt ein haengender Client als weg
+STREAM_PAUSE_MAX = 1.0   # s, laengste Pause zwischen zwei Livebildern
+
 
 @app.after_request
 def no_cache(resp):
@@ -1367,9 +1370,16 @@ def stream():
                 # X-Seq erlaubt es, den Rueckstand zu messen: der Vergleich mit
                 # "frames" aus /api/state sagt, wieviele Bilder der Client
                 # hinterherhinkt - ohne auf synchrone Uhren angewiesen zu sein.
+                sent = time.monotonic()
                 yield (b"--frame\r\nContent-Type: image/jpeg\r\nX-Seq: "
                        + str(seq).encode() + b"\r\nContent-Length: "
                        + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n")
+                # Hier ist das Bild geschrieben. So lange wie das gedauert hat,
+                # bleibt die Funkstrecke danach frei: auf schnellem WLAN kaum
+                # spuerbar (Millisekunden), auf der schwachen Pi-Strecke halbiert
+                # es die Bildrate, laesst aber Seite, Galerie und andere Geraete
+                # durch, statt dass ein Livebild alles zustopft.
+                time.sleep(min(time.monotonic() - sent, STREAM_PAUSE_MAX))
         finally:
             camera.remove_viewer()
     return Response(generate(),
@@ -1618,6 +1628,10 @@ if __name__ == "__main__":
     # verzoegerten Bestaetigung des Empfaengers kostet das bis zu 40 ms pro
     # Bild. Bei einem Strom aus fertigen Bildern bringt das Buendeln nichts.
     WSGIRequestHandler.disable_nagle_algorithm = True
+    # Ohne Zeitlimit blockiert das Schreiben an einen verschwundenen Client
+    # (Handy gesperrt, aus dem WLAN) bis TCP nach ~15 min aufgibt - so lange
+    # bliebe das Livebild "angeschaut" und der Thread haengen.
+    WSGIRequestHandler.timeout = SOCKET_TIMEOUT
 
     port = int(os.environ.get("KIVISION_PORT", 8080))
     server = make_server("0.0.0.0", port, app, threaded=True)
