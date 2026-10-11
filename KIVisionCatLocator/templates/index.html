@@ -468,11 +468,24 @@ function applyState(s, first) {
   }
 }
 
-const refreshState = (first) => fetch('/api/state').then(r => r.json()).then(s => applyState(s, first));
+// Nie zwei gleiche Abfragen gleichzeitig: auf schwacher Funkstrecke dauert
+// eine Antwort laenger als der Takt, und ohne diese Sperre stapeln sich die
+// Anfragen im Browser (max. 6 Verbindungen je Geraet, eine davon haelt das
+// Livebild) - dann kommt die Seite selbst nicht mehr durch.
+const busy = {};
+function once(key, fn) {
+  if (busy[key]) return Promise.resolve();
+  busy[key] = true;
+  return fn().catch(() => {}).finally(() => { busy[key] = false; });
+}
+
+const fetchState = (first) => fetch('/api/state').then(r => r.json()).then(s => applyState(s, first));
+// Nach einer Bedienung (first) immer frisch laden, nur der Takt wird gesperrt.
+const refreshState = (first) => first ? fetchState(true) : once('state', () => fetchState(false));
 
 function pollDetections() {
   if (!detOn) { drawOverlay(null); $('hitState').textContent = ''; return; }
-  fetch('/api/detections').then(r => r.json()).then(d => {
+  once('det', () => fetch('/api/detections').then(r => r.json()).then(d => {
     drawOverlay(d);
     const ms = d.motion_status;
     $('vDetMs').textContent = (d.ms ? d.ms + ' ms' : '') + (ms && ms.enabled
@@ -489,7 +502,7 @@ function pollDetections() {
       : (d.hit_wait ? 'Nächstes Bild frühestens in ' + d.hit_wait + ' s.'
                     : 'Bereit' + (mode === 'cat' ? ' für die nächste Katze.'
                                : mode === 'animal' ? ' für das nächste Tier.' : ' für den nächsten Treffer.'));
-  }).catch(() => {});
+  }));
 }
 
 function setDetButton() {
@@ -659,8 +672,20 @@ $('bHitClear').onclick = () => {
 };
 
 function reloadStream() {
+  if (document.hidden) return;
   $('live').src = '/stream.mjpg?t=' + Date.now();
 }
+
+// Unsichtbarer Tab (anderer Tab vorn, Handy gesperrt): Livebild abhaengen und
+// nicht mehr abfragen. Sonst zieht ein vergessener Tab dauernd den vollen
+// Strom ueber die schmale Pi-Funkstrecke, und andere Geraete kommen kaum durch.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { $('live').removeAttribute('src'); return; }
+  reloadStream();
+  refreshState(false);
+});
+// Abgerissenes Livebild (Neustart, Funkloch) von selbst wieder holen.
+$('live').onerror = () => setTimeout(() => { if (!document.hidden) reloadStream(); }, 3000);
 
 refreshState(true).then(() => { loadGallery(); loadHits(); loadRadar(); loadMotion(); });
 $('bMotionReload').onclick = loadMotion;
@@ -668,8 +693,8 @@ $('bMotionClear').onclick = () => {
   if (!confirm('Alle Bewegungs-Bilder löschen?')) return;
   post('/api/motion/clear').then(r => { say(r.deleted + ' Bewegungs-Bilder gelöscht'); loadMotion(); });
 };
-setInterval(() => refreshState(false), 2000);
-setInterval(pollDetections, 300);
+setInterval(() => { if (!document.hidden) refreshState(false); }, 2000);
+setInterval(() => { if (!document.hidden) pollDetections(); }, 300);
 </script>
 </body>
 </html>
