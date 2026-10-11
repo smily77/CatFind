@@ -44,6 +44,21 @@ static GwPose gwPose[GW_MAX_POSES];
 static bool   gwPosesDirty = false;
 static unsigned long gwLastPoseReq = 0;
 
+// Umweltwerte (envReport vom Bus, heute Dome-C1/BMP180). Wie Events: nach dem Flush
+// geleert - der VPS speichert jede Messung als Verlauf. Pro Sender nur der neueste
+// Wert seit dem letzten Flush.
+#define GW_MAX_ENV 4
+struct GwEnv { uint8_t sender, valid; int16_t temp; uint32_t press; };
+static GwEnv gwEnv[GW_MAX_ENV]; static int gwEnvN = 0;
+
+void gwAddEnv(uint8_t sender, const envPayload& ep) {
+  int i = 0;
+  while (i < gwEnvN && gwEnv[i].sender != sender) i++;
+  if (i == gwEnvN) { if (gwEnvN >= GW_MAX_ENV) return; gwEnvN++; }
+  gwEnv[i].sender = sender; gwEnv[i].valid = ep.valid;
+  gwEnv[i].temp = ep.tempDeci; gwEnv[i].press = ep.pressPa;
+}
+
 void gwAddPose(uint8_t sender, const worldPosePayload& wp) {
   int slot = -1;
   for (int i = 0; i < GW_MAX_POSES; i++)
@@ -280,7 +295,7 @@ void gwFlush() {
     if (slot < 0) for (int i = 0; i < GW_MAX_SETTINGS; i++) if (!gwSet[i].used) { gwSet[i].used = true; gwSet[i].sender = ID; slot = i; break; }
     if (slot >= 0) { gwSet[slot].sup = mySettings.supported; gwSet[slot].val = mySettings.values; gwSet[slot].act = mySettings.actions; }
   }
-  if (gwEventN == 0 && gwDebugN == 0 && gwHbN == 0 && !gwSettingsDirty && !gwPosesDirty) return;
+  if (gwEventN == 0 && gwDebugN == 0 && gwHbN == 0 && gwEnvN == 0 && !gwSettingsDirty && !gwPosesDirty) return;
 
   String body;
   body.reserve(2048 + gwEventN * 160);
@@ -312,6 +327,12 @@ void gwFlush() {
           + ",\"x\":" + String(gwPose[i].x) + ",\"y\":" + String(gwPose[i].y)
           + ",\"head\":" + String(gwPose[i].head, 1) + ",\"mir\":" + String(gwPose[i].mir) + "}";
   }
+  body += "],\"env\":[";
+  for (int i = 0; i < gwEnvN; i++) {
+    if (i) body += ',';
+    body += "{\"sender\":" + String(gwEnv[i].sender) + ",\"valid\":" + String(gwEnv[i].valid)
+          + ",\"temp\":" + String(gwEnv[i].temp) + ",\"press\":" + String(gwEnv[i].press) + "}";
+  }
   // Leichter Kartenstand (Version/CRC, kein Body) - aus dem Cache, kein LittleFS-
   // Zugriff im Hot Path. Der VPS erkennt daran Abweichungen (z.B. nach einem
   // Notweg-Flash) und stoesst per cmdMapPush ueber /commands einen Re-Sync an.
@@ -334,13 +355,14 @@ void gwFlush() {
                                        // sonst wuerden Events bei VPS-Fehlern endlos dupliziert)
   gwSettingsDirty = false;
   gwPosesDirty = false;
-  gwEventN = gwDebugN = gwHbN = 0; gwDropped = 0;
+  gwEventN = gwDebugN = gwHbN = gwEnvN = 0; gwDropped = 0;
 }
 
 // Ein vom VPS-Webinterface angefordertes Kommando auf den lokalen Bus geben. Der VPS ist
 // vom lokalen 192.168.0.x-Netz aus nicht direkt an die Geraete adressierbar -> der Manager
 // wirkt als Gateway. target 255 = Broadcast settingsRequest (alle melden ihre Einstellungen),
-// target 254 = Broadcast poseRequest (alle melden ihre Welt-Pose -> Erfassungssektoren).
+// target 254 = Broadcast poseRequest (alle melden ihre Welt-Pose -> Erfassungssektoren),
+// target 253 = Broadcast envRequest (Geraete mit Umweltsensor melden Temperatur/Luftdruck).
 void gwInjectCommand(int target, int cmd, long info) {
   // Karten-Sync: kein Bus-Kommando, sondern ein direkter HTTP-Aufruf des Managers
   // zum VPS (info = Kartentyp mapNoShot/mapRasen) - siehe cmdMapFetch/cmdMapPush.
@@ -348,6 +370,7 @@ void gwInjectCommand(int target, int cmd, long info) {
   if (cmd == cmdMapPush)  { gwPushMap((uint8_t)info); return; }
   if (target == 255) { broadcastMsg(settingsRequest); return; }
   if (target == 254) { broadcastMsg(poseRequest); return; }
+  if (target == 253) { broadcastMsg(envRequest); return; }
   if (target < 0 || target >= deviceCount) return;
   cmdPayload c; c.cmd = (uint8_t)cmd; c.info = (int32_t)info;
   if (target == ID) {                             // Kommando an den Manager selbst: ein UDP-

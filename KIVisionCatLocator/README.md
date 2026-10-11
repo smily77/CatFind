@@ -25,8 +25,8 @@ CatFinder-Bus (siehe unten „Busgerät"). Homographie/Pose folgt in Phase 4.
 ## Busgerät (Phase 3)
 
 - **ID 20, Name `KIVision`, Typ `VisionLocator`**, IP .186 (Eintrag in `device[]` der
-  `xComDef6_3.h`, `deviceCount` 21). Geräte mit alter Firmware (`deviceCount` 20)
-  verwerfen Pakete von #20 — wer #20 kennen muss (Manager, CatIdent,
+  `xComDef6_3.h`, seit Dome-C1 (#21, 2026-10-11) `deviceCount` 22). Geräte mit alter
+  Firmware (`deviceCount` 20) verwerfen Pakete von #20 — wer #20 kennen muss (Manager, CatIdent,
   Bedienungs-Display), braucht einen Neubau.
 - **Protokoll ohne zweite Quelle:** `xcom.py` liest beim Start `#define`s,
   `constexpr`s und alle `__attribute__((packed))`-Structs aus `xComDef6_3.h`

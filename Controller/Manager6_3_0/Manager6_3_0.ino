@@ -174,6 +174,10 @@ void loop() {
       settingsPayload sp;
       if (getPayload(mcMsg, sp)) gwAddSettings(mcMsg.header.sender, sp); // Gateway: an VPS weiterreichen
     }
+    else if (mcMsg.header.msgCode == envReport) {
+      envPayload ep;                                                     // Gateway: Temperatur/Luftdruck
+      if (getPayload(mcMsg, ep)) gwAddEnv(mcMsg.header.sender, ep);      // (Dome-C1) an den VPS
+    }
     else if (mcMsg.header.msgCode == poseReport) {
       worldPosePayload wp;                                               // Gateway: Welt-Posen an den VPS
       if (getPayload(mcMsg, wp) && mcMsg.header.sender != ID)            // (fuer die Erfassungssektoren)

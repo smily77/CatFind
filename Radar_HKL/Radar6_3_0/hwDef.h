@@ -63,6 +63,52 @@
   #define statusLightDuration 10
   #define deadZone 1000
 
+#elif defined DomeC1Device
+  // Aufbau wie CompactDome (ESP32, HLK-2450 an GPIO19, ein Pixel an GPIO27),
+  // zusaetzlich BMP180 (I2C) und IR-Scheinwerfer-Sperre an GPIO18.
+  #define ID DomeC1
+
+  #define containLed
+  #define COLOR_ORDER GRB
+  #define pixelNum 1
+  #define pixelPin 27
+  #define maxPix 0
+  #define minPix 0
+  uint8_t BRIGHTNESS = 100;
+  //HW
+  #define radar 19
+  //Serial2
+  #define S2_TX 12
+  #define S2_RX radar
+  #define S2_baud 256000
+
+  #define periodeForHB 5000
+  #define statusLightDuration 10
+  #define deadZone 500
+
+  // BMP180 Temperatur/Luftdruck (I2C-Adresse 0x77) -> envReport
+  #define hasBMP180
+  #define BMP_SDA 21
+  #define BMP_SCL 22
+  // IR-Scheinwerfer (Pi-Cam-Typ): GPIO18 liegt parallel zum LDR des Scheinwerfers und
+  // arbeitet als Open-Drain-Ausgang. Leitet er (LOW), sieht der Scheinwerfer "hell" und
+  // bleibt aus; hochohmig (HIGH) entscheidet der LDR wie ohne Steuerung (an bei Nacht).
+  #define hasIrLight
+  #define IR_PIN 18
+
+#endif
+
+// Versatz-Slot nach einem mapInfo-Announce (x MAP_ANNOUNCE_SLOT_MS, siehe Radar6_3_0.ino).
+// Fest je Variante statt ID % 10: DomeC1 (21) fiele sonst auf denselben Slot wie Dome (1).
+// Belegt: 1-3 + 4 hier, LidarC1 7, CatIdent 8.
+#if defined DomeDevice
+  #define MAP_SLOT 1
+#elif defined MiniDomeDevice
+  #define MAP_SLOT 2
+#elif defined CompactDomeDevice
+  #define MAP_SLOT 3
+#elif defined DomeC1Device
+  #define MAP_SLOT 4
 #endif
 
 #define LED_TYPE WS2811
@@ -75,9 +121,16 @@
 // ruhiger Bus) und nicht persistiert - nach jedem Reboot wieder der ruhige Normalbetrieb,
 // unabhaengig davon, was vor dem letzten Neustart eingestellt war (s. Radar6_3_0.ino).
 // stgActive (Ruhemodus) unterstuetzt, Default AN, NICHT persistiert: nach Reboot aktiv.
-#define STG_SUPPORTED ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCopyPose)|(1u<<stgAutoCalib)|(1u<<stgRadarFullRasen)|(1u<<stgActive))
-#define STG_DEFAULT   ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCalib)|(1u<<stgActive))   // Auto-Kalib + aktiv default an
-#define STG_PERSIST   ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCopyPose)|(1u<<stgAutoCalib))
+// IR-Scheinwerfer (nur Varianten mit hasIrLight): stgIrLight + stgIrAuto bilden den
+// Schalter AUS / EIN / AUTO (siehe xComDef6_3.h), beide persistiert, Default AUTO.
+#ifdef hasIrLight
+  #define STG_IR ((1u<<stgIrLight)|(1u<<stgIrAuto))
+#else
+  #define STG_IR 0u
+#endif
+#define STG_SUPPORTED ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCopyPose)|(1u<<stgAutoCalib)|(1u<<stgRadarFullRasen)|(1u<<stgActive)|STG_IR)
+#define STG_DEFAULT   ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCalib)|(1u<<stgActive)|STG_IR)   // Auto-Kalib + aktiv default an
+#define STG_PERSIST   ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCopyPose)|(1u<<stgAutoCalib)|STG_IR)
 #define STG_ACTIONS   ((1u<<actCopyPose)|(1u<<actCalibrate)|(1u<<actClearPose))
 
 byte radarBuffer[30];

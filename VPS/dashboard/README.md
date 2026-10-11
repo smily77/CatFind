@@ -74,13 +74,16 @@ würden die relativen URLs auf dem Wurzelpfad landen.
     Koordinatengruppe.
   - Farbe je `(Sensor, Ziel)`-Kombination (Radar bis 3 Ziele).
   - **Reset** löscht die akkumulierten `catObserved` (alle Karten).
+  - **Steuerung** — Schalter/Aktionen je aktivem Gerät; Dome-C1 zusätzlich mit
+    Dreifach-Schalter **IR-Scheinwerfer AUS/EIN/AUTO** und Zeile
+    **Temperatur/Luftdruck** (aktuell, 24 h Min/Max, Drucktendenz 3 h, Knopf „messen").
 
 ## Endpunkte
 
 | Methode | Pfad | Zweck |
 |---|---|---|
 | `GET`  | `/*****/` | Web-UI (Wurzelpfad `/` = 404, siehe oben) |
-| `POST` | `/ingest` | Manager-Push `{events,debug,hb,settings,poses,maps}` |
+| `POST` | `/ingest` | Manager-Push `{events,debug,hb,settings,poses,env,maps}` |
 | `GET`  | `/state` | Debug + aktive Geräte + Minuten-Zusammenfassung |
 | `GET`  | `/events?since=N` | neue catObserved ab Index N (für die Karten) |
 | `POST` | `/reset` | akkumulierte Ereignisse löschen |
@@ -100,6 +103,8 @@ würden die relativen URLs auf dem Wurzelpfad landen.
 | `POST` | `/amerge /aunmerge` | Tracks zusammenkleben (gehören zum selben Tier) / Klebung lösen |
 | `GET`  | `/atracks` `/atracks.csv` | komplette Trackliste inkl. Bewertungen+Klebungen (JSON/CSV, separat verwendbar) |
 | `GET`  | `/avalidate` | Modell gegen alle von Hand bewerteten Tracks prüfen (Übereinstimmung, Abweichungsliste) |
+| `GET`  | `/env?hours=24[&sender=21]` | Umweltwerte (envReport, Dome-C1/BMP180): Verlauf + Min/Max + Drucktendenz 3 h (Tabelle `env`) |
+| `POST` | `/env_request` | alle Geräte mit Umweltsensor sofort messen lassen (Manager: Broadcast `envRequest`) |
 | `POST` | `/devreload` | xComDef (Typen+Erfassungsbereiche) sofort neu lesen + poseRequest |
 
 ## Gelernte Erfassungs-Polygone
