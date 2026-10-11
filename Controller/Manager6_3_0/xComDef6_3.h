@@ -78,6 +78,7 @@ struct stationDefinitions {
 #define CatIdent 18   // Cat Identifier: Erkennungsmodell in Echtzeit (catmodel-Port), sendet catDetected
 #define CatCam 19     // XIAO Vision AI Camera: Foto bei catDetected + eigene KI-Katzenerkennung
 #define KIVision 20   // KIVisionCatLocator: Raspberry Pi 4 + Coral, Weitwinkel-KI + Boden-Homographie (Python-xCom)
+#define DomeC1 21     // Dome-C1: HLK-Radar wie CompactDome + BMP180 (Temperatur/Luftdruck) + IR-Scheinwerfer-Sperre (GPIO18)
 //Types
 #define MananagementDevice 1
 #define HLK 2
@@ -91,7 +92,7 @@ struct stationDefinitions {
 #define Kamera 10    // Vision-KI-Kamera: Fotos an den VPS, catObserved bei KI-Katzenerkennung
 #define VisionLocator 11  // Pi-Kamera mit Welt-Lokalisierung (Homographie): catObserved mit worldValid=1
 // Anzahl Eintraege in device[] - ueberall statt hartem "18"/"19" verwenden
-#define deviceCount 21
+#define deviceCount 22
 //  {MananagementDevice,180,0x01},
 stationDefinitions device[deviceCount] = {
   {MananagementDevice,180,0x01,groupNone, "Manager_Dev", 0,0,0},        //Manager
@@ -114,7 +115,8 @@ stationDefinitions device[deviceCount] = {
   {Lidar,0,0,groupNone, "LidarC1",    -180, 180, 12000},                //LidarC1 (RPLidar C1, welt-fähig via VPS-Lokalisierung, DHCP)
   {Detector,184,0x05,groupNone, "Cat_Identifier", 0,0,0},               //CatIdent: Echtzeit-Katzenerkennung auf dem Bus (feste IP .184), Modellparameter vom VPS
   {Kamera,185,0x06,groupNone, "Cat_Cam",    -31, 31, 8000},             //CatCam: XIAO Vision AI Camera (OV5647 62 Grad; feste IP .185), Fotos -> VPS
-  {VisionLocator,186,0x07,groupNone, "KIVision", -50, 50, 15000}         //KIVisionCatLocator: Pi 4 + Coral (feste IP .186), Python-xCom (KIVisionCatLocator/xcom.py); Bereich nominell bis zur Homographie
+  {VisionLocator,186,0x07,groupNone, "KIVision", -50, 50, 15000},        //KIVisionCatLocator: Pi 4 + Coral (feste IP .186), Python-xCom (KIVisionCatLocator/xcom.py); Bereich nominell bis zur Homographie
+  {HLK,0,0,groupNone,  "Dome-C1",      -60, 60, 7000}                   //DomeC1: HLK-Radar (Radar6_3_0, DomeC1Device, DHCP) + BMP180 + IR-Scheinwerfer
 };
 
 // call -> device[ident].type
@@ -140,6 +142,10 @@ stationDefinitions device[deviceCount] = {
 #define catDetected     13   // Erkennungsmodell hat eine KATZE bestaetigt (catDetectedPayload) -
                              // ausgeloest BEVOR die Katze den Erfassungsbereich verlaesst, damit
                              // Aktoren noch reagieren koennen. (Modell heute auf dem VPS, spaeter ESP32.)
+#define envRequest      14   // "melde Temperatur/Luftdruck" (ohne Payload; Broadcast=alle, Unicast=eines).
+                             // Nur Geraete mit Umweltsensor (heute Dome-C1/BMP180) antworten.
+#define envReport       15   // Antwort/Annonce (immer Broadcast): envPayload. Dome-C1 meldet zusaetzlich
+                             // selbsttaetig jede Minute; der Manager reicht es an den VPS weiter.
 
 // Karten-Typen (fuer mapRequest/mapInfo/mapChunk)
 #define mapNoShot   1   // Schusszonen-/No-Shot-Karte (innerhalb = Feuern erlaubt)
@@ -232,6 +238,14 @@ struct __attribute__((packed)) catDetectedPayload {
   int32_t  netMm;       // bisherige Netto-Verschiebung des Tracks (mm)
 };
 
+// envReport: Umweltwerte eines Geraets (Antwort auf envRequest / periodische Annonce).
+// Ganzzahlig, damit kein float-Layout-Thema zwischen ESP32/Python entsteht.
+struct __attribute__((packed)) envPayload {
+  uint8_t  valid;       // 1 = Sensor gelesen; 0 = Sensor fehlt/defekt (Werte dann 0)
+  int16_t  tempDeci;    // Temperatur in 0,1 Grad C (z.B. 215 = 21,5 Grad C)
+  uint32_t pressPa;     // Luftdruck in Pa, absolut (Stationsdruck, NICHT auf Meereshoehe reduziert)
+};
+
 // commandMsg (ersetzt ucDataStruct) - typischerweise per Unicast
 struct __attribute__((packed)) cmdPayload {
   uint8_t cmd;
@@ -304,7 +318,14 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
                             // persistiert: nach Reboot/Stromausfall ist das Geraet wieder aktiv
                             // (der Reset-Befehl cmdReboot ist damit zugleich ein 'zurueck auf normal').
                             // Nur Sensor-Geraete unterstuetzen es; Aktoren/Manager nicht.
-#define STG_COUNT       9
+#define stgIrLight      9   // Dome-C1: IR-Scheinwerfer freigegeben. AUS = GPIO18 (Open-Drain) leitet
+                            // dauernd -> LDR ueberbrueckt, Scheinwerfer bleibt aus.     [persistiert]
+#define stgIrAuto      10   // Dome-C1: IR nur bei Katze. Wirkt nur mit stgIrLight AN: GPIO18 gibt den
+                            // LDR erst frei, wenn irgendein Sensor catObserved meldet (dann ~60 s);
+                            // ob es Nacht ist, entscheidet weiterhin der LDR des Scheinwerfers.
+                            // Schalterstellung: AUS = Light aus | EIN = Light an+Auto aus |
+                            // AUTO = Light an+Auto an.                                  [persistiert]
+#define STG_COUNT      11
 
 // Ausloesbare Aktionen (Bit-Position in settingsPayload.actions).
 #define actCopyPose     0   // Welt-Pose jetzt aus der Gruppe kopieren  -> cmdCopyPose

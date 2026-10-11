@@ -113,7 +113,7 @@ CATEGORY = {"cat": "katze", "fox": "fuchs", "dog": "tier", "bear": "tier", "tedd
             "person": "person", "car": "fahrzeug", "truck": "fahrzeug",
             "bus": "fahrzeug", "motorcycle": "fahrzeug"}
 SENDER_NAMES = {0: "Manager", 1: "Dome", 2: "MiniDome", 3: "CompactDome",
-                17: "LidarC1", 18: "CatIdent", 19: "CatCam"}
+                17: "LidarC1", 18: "CatIdent", 19: "CatCam", 21: "DomeC1"}
 
 # Aufloesungen: OV5647 ist 4:3 (2592x1944 voll).
 SIZES = [(640, 480), (1280, 960), (1640, 1232), (2048, 1536), (2592, 1944)]

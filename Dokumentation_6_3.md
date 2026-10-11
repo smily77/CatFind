@@ -118,8 +118,10 @@ In `xComDef6_3.h` ist jedes Gerät mit einer festen ID (Array-Index) eingetragen
 | 17 | LidarC1 | Lidar | DHCP | ESP32-S3 + RPLidar C1, welt-fähig via VPS-Lokalisierung (siehe CF_LidarC1/C1Lidar6_3_0) |
 | 18 | CatIdent | Detector | 184 | Seeed XIAO ESP32-S3 (IPEX-Antenne!), Echtzeit-Erkennungsmodell → `catDetected` (siehe CatIdentifier/CatId6_3_0, Kap. 5.13) |
 | 19 | CatCam | Kamera | 185 | Seeed XIAO Vision AI Camera (XIAO ESP32-C3 + Grove Vision AI V2 + OV5647), Fotos → VPS (siehe CatCam/CatCam6_3_0, Kap. 5.14) |
+| 20 | KIVision | VisionLocator | 186 | Raspberry Pi 4 + Coral, Python-xCom (siehe KIVisionCatLocator/README.md) |
+| 21 | DomeC1 | HLK | DHCP | ESP32 + HLK-2450 (GPIO19) + Pixel (GPIO27) wie CompactDome, **zusätzlich BMP180** (I2C SDA 21/SCL 22) und **IR-Scheinwerfer-Sperre** (GPIO18 Open-Drain); OTA-Name `Dome-C1` (siehe Kap. 5.2) |
 
-- Die Anzahl der Einträge steht als **`deviceCount`** (derzeit 20) zur
+- Die Anzahl der Einträge steht als **`deviceCount`** (derzeit 22) zur
   Verfügung — Schleifen über die Tabelle verwenden dieses define statt einer
   harten Zahl.
 - Das Feld `IP` enthält das **letzte Oktett** der Adresse (Netz ist fest
@@ -203,6 +205,8 @@ posPayload = 34, cmdPayload = 5, worldPosePayload = 13, settingsPayload = 6 Byte
 | `settingsRequest` | 11 | — (kein Payload) | Broadcast/Unicast | "melde deine Einstellungen" (siehe Kap. 5.12) |
 | `settingsReport` | 12 | `settingsPayload` | Broadcast | Welche Anzeige-/Automatik-Settings/Aktionen ein Gerät hat und wie sie stehen |
 | `catDetected` | 13 | `catDetectedPayload` | Broadcast | Erkennungsmodell hat einen Track als **Katze bestätigt** (Ebene 2, Cat Identifier, Kap. 5.13) |
+| `envRequest` | 14 | — (kein Payload) | Broadcast/Unicast | "melde Temperatur/Luftdruck" — nur Geräte mit Umweltsensor (Dome-C1) antworten |
+| `envReport` | 15 | `envPayload` | Broadcast | Temperatur/Luftdruck (Antwort auf `envRequest` und jede Minute selbsttätig; Manager → VPS) |
 
 **posPayload** (34 Bytes) — Positionsmeldung. `x/y/radius/angle` sind **relativ**
 (sensor-/aktorlokal); `worldX/worldY` sind **Welt-Koordinaten** und nur gültig,
@@ -232,6 +236,15 @@ wenn `worldValid==1`:
 | `trackMs` | uint32 | bisherige Track-Dauer bei Auslösung (ms) |
 | `netMm` | int32 | bisherige Netto-Verschiebung des Tracks (mm) |
 
+**envPayload** (7 Bytes) — Umweltwerte (msgCode 15, heute nur Dome-C1 mit BMP180).
+Ganzzahlig, damit ESP32 und Python (`xcom.py`) dasselbe Layout ohne float-Fragen lesen:
+
+| Feld | Typ | Bedeutung |
+|---|---|---|
+| `valid` | uint8 | 1 = Sensor gelesen; 0 = Sensor fehlt/defekt (Werte dann 0) |
+| `tempDeci` | int16 | Temperatur in 0,1 °C (215 = 21,5 °C) |
+| `pressPa` | uint32 | Luftdruck in Pa, **absolut** (Stationsdruck, nicht auf Meereshöhe reduziert) |
+
 **worldPosePayload** (13 Bytes) — Welt-Pose eines Geräts (Antwort auf `poseRequest`):
 
 | Feld | Typ | Bedeutung |
@@ -245,7 +258,9 @@ wenn `worldValid==1`:
 `stgAutoCalib(3)`, `stgLidarMotor(4)`, `stgCatDetLed(5)` (Manager: rotes Blinken beim
 catDetected-Empfang), `stgCamAi(6)` (Cat Cam: Vision-KI-Erkennung an/aus),
 `stgRadarFullRasen(7)` (HLK-Radar: volle RasenKarte statt NoShot-gefiltert melden,
-nicht persistiert — siehe Kap. 5.2); Aktionen
+nicht persistiert — siehe Kap. 5.2), `stgActive(8)` (Sensor aktiv / Ruhemodus),
+`stgIrLight(9)` + `stgIrAuto(10)` (Dome-C1: IR-Scheinwerfer-Schalter AUS/EIN/AUTO,
+persistiert — siehe Kap. 5.2); Aktionen
 `actCopyPose(0)`, `actCalibrate(1)`, `actClearPose(2)`, `actReloadParams(3)` (CatIdent:
 Modell-Parameter neu vom VPS), `actPhoto(4)` (CatCam: Foto jetzt):
 
@@ -673,7 +688,11 @@ Jedes Programm folgt demselben Grundgerüst:
 - **Steuer-Gateway (Rückkanal):** der Manager reicht zusätzlich die `settingsReport`
   der Geräte an den VPS weiter (`/ingest`, Feld `settings`) und **pollt** `GET /commands`,
   um vom VPS-Webinterface angeforderte Kommandos auf den lokalen Bus zu geben
-  (`gwInjectCommand`: Unicast `commandMsg`, bzw. `target 255` = Broadcast `settingsRequest`).
+  (`gwInjectCommand`: Unicast `commandMsg`, bzw. `target 255` = Broadcast `settingsRequest`,
+  `254` = Broadcast `poseRequest`, `253` = Broadcast `envRequest`).
+- **Umweltwerte:** `envReport` (Dome-C1) sammelt der Manager je Sender und schickt sie im
+  nächsten Push als Feld `env` (`temp` in 0,1 °C, `press` in Pa) an den VPS, der sie als
+  Verlauf speichert (Tabelle `env`) und im Steuerungs-Tab anzeigt.
   So kann das Webinterface Geräte steuern, obwohl der VPS die 192.168.0.x-Geräte nicht
   direkt erreicht (siehe Kap. 5.12).
 - **Eigene Anzeige-Settings:** der Manager hat selbst drei schaltbare Anzeige-Settings
@@ -681,9 +700,12 @@ Jedes Programm folgt demselben Grundgerüst:
 
 ### 5.2 Radar6_3_0 — Bewegungssensor (HLK-Radar, "Dome"-Familie)
 
-- Eine Quelldatei für drei Hardware-Varianten; Auswahl per define am
-  Dateianfang (`DomeDevice` / `MiniDomeDevice` / `CompactDomeDevice`) —
-  hwDef.h setzt dann ID, Pins, HB-Periode und Totzone passend.
+- Eine Quelldatei für vier Hardware-Varianten; Auswahl per define am
+  Dateianfang (`DomeDevice` / `MiniDomeDevice` / `CompactDomeDevice` /
+  `DomeC1Device`) — hwDef.h setzt dann ID, Pins, HB-Periode, Totzone und den
+  Karten-Announce-Slot (`MAP_SLOT`) passend. **Jedes Radar einzeln** mit seinem
+  define bauen (`esp32:esp32:pico32`) und flashen — ein falsches define liest den
+  falschen Radar-Pin und meldet sich unter fremder ID.
 - Liest den HLK-Radarsensor über Serial2 (256000 Baud). Frameformat:
   Header `AA FF 03 00`, dann 3 Targets à 8 Bytes (x, y, Geschwindigkeit,
   Auflösung als 16-Bit-Werte mit Vorzeichen-Sonderkodierung), 30 Bytes
@@ -738,6 +760,36 @@ beide Bahnen und liefert die Transformation (Details: GesamtKonzeptCatFinder.md,
   arbeiten immer mit allen Zielen (ungefiltert) — nur das gemeldete
   `catObserved` wird gegated. Ohne Karte oder ohne Pose wird ungefiltert
   gemeldet (fail-open).
+- **Dome-C1 (ID 21, `DomeC1Device`)** — gleicher Aufbau wie CompactDome (HLK-2450 an
+  GPIO19, ein Pixel an GPIO27, Totzone 500 mm, keine Gruppe), dazu:
+  - **BMP180** an I2C (SDA 21, SCL 22, Adresse 0x77). Eigener, **nicht blockierender**
+    Treiber `bmp180.h` (Datenblatt-Rechnung, Oversampling 3): Messung anstoßen, ~33 ms
+    später aus `loop()` abholen — ein `delay()` von bis zu 26 ms würde den
+    256-kBaud-Radarstrom im Serial2-Puffer stauen. Antwortet auf `envRequest`
+    (Unicast oder Broadcast) und meldet zusätzlich **jede Minute** selbst ein
+    `envReport` (immer Broadcast). Fehlt der Sensor: `envReport` mit `valid=0`; er wird
+    bei jeder Anfrage neu gesucht (später angesteckt ⇒ geht ohne Neustart).
+  - **IR-Scheinwerfer-Sperre an GPIO18 (Open-Drain).** Der übliche Pi-Cam-IR-Scheinwerfer
+    schaltet per eingebautem LDR bei Dunkelheit ein. GPIO18 liegt **parallel zum LDR**:
+    leitet er (LOW), „sieht" der Scheinwerfer Helligkeit und bleibt aus; hochohmig (HIGH)
+    entscheidet der LDR wie ohne Steuerung. Der Schalter besteht aus zwei persistierten
+    Settings (Default AUTO):
+
+    | Stellung | `stgIrLight` | `stgIrAuto` | GPIO18 | Wirkung |
+    |---|---|---|---|---|
+    | **AUS** | 0 | egal | leitet dauernd | Scheinwerfer bleibt aus |
+    | **EIN** | 1 | 0 | hochohmig | an, sobald es Nacht ist (LDR) |
+    | **AUTO** | 1 | 1 | hochohmig für 60 s nach jeder `catObserved` | an, wenn ein Sensor ein Ziel meldet **und** es Nacht ist |
+
+    In AUTO zählt **jede** `catObserved` auf dem Bus (alle Sensoren, auch die eigenen
+    Ziele), jede weitere verlängert die 60 s (`IR_HOLD_MS`). Die Nacht-Bedingung liefert
+    der LDR des Scheinwerfers selbst — die Firmware muss Tag/Nacht nicht kennen. Nach dem
+    Booten ist GPIO18 zunächst leitend (gesperrt), bis `serviceIr()` den Schalter
+    auswertet; Zustandswechsel erscheinen als Text-Debug („IR-Scheinwerfer AUTO: frei …").
+    Bedienung: VPS-Steuerungs-Tab (Dreifach-Schalter AUS/EIN/AUTO) oder
+    Bedienungs-Display (zwei Zeilen „IR-Scheinwerfer" / „IR nur bei Katze").
+    Achtung: hatte der ESP32 vorher schon eine Firmware mit gespeicherten Settings
+    (NVS „devcfg"), fehlen dort die IR-Bits ⇒ Start in Stellung AUS, einmal umschalten.
 - **Einstellungen (Kap. 5.12):** HB-/Target-Anzeige schaltbar, Auto-Kalibrierung,
   Auto-Pose-Übernahme und „volle RasenKarte melden" schaltbar (letztere NICHT
   im NVS persistiert, alle anderen schon); Aktionen „Kalibrieren", „Pose
@@ -1117,7 +1169,10 @@ aller aktiven Geräte per Touch bedienen lassen (siehe GesamtKonzeptCatFinder.md
 > VPS (`/ingest`) und **pollt** `GET /commands` (CSV „target,cmd,info"), um vom Webinterface
 > (`POST /command`) angeforderte Kommandos auf den lokalen Bus zu geben. `target 255` =
 > Broadcast `settingsRequest`, `target 254` = Broadcast `poseRequest` (Welt-Posen für die
-> Erfassungssektoren). Kommandos mit **target = Manager** führt der Manager **lokal** aus
+> Erfassungssektoren), `target 253` = Broadcast `envRequest` (Knopf „Temp./Druck messen").
+> Geräte mit IR-Scheinwerfer (Dome-C1) bekommen statt zweier AN/AUS-Zeilen einen
+> Dreifach-Schalter **AUS/EIN/AUTO**; Geräte mit Umweltsensor zeigen Temperatur,
+> Luftdruck, 24-h-Min/Max und die Drucktendenz der letzten 3 h. Kommandos mit **target = Manager** führt der Manager **lokal** aus
 > (`handleCommonMsg`) — ein UDP-Unicast an die eigene IP loopt nicht in den eigenen Socket
 > zurück, darum reagierten seine eigenen Schalter früher nicht.
 

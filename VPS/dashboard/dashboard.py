@@ -29,6 +29,8 @@ Endpunkte:
   POST /manual_pose     manuell bestimmte Pose als Kommando-Sequenz an Sensor senden
   POST /command         Webinterface -> Kommando-Queue {"target":id,"cmd":c,"info":i}
   GET  /commands        Manager holt anstehende Kommandos ab (CSV "target,cmd,info"), leert die Queue
+  GET  /env             Umweltwerte (envReport, heute Dome-C1/BMP180): aktuell + Verlauf
+                        (?sender=21&hours=24); POST /env_request fragt alle sofort ab
 
 Analyse (Aufgabe "VPS-Modellierung der Katzenerkennung", GesamtKonzeptCatFinder.md):
   Alle catObserved werden zusätzlich PERSISTENT in SQLite gespeichert (Docker-
@@ -293,7 +295,7 @@ FALLBACK_DEVICES = {
     14:("Simulator","MananagementDevice",0,0,0,0), 15:("Laser_Marker","Marker",0,0,0,0),
     16:("PowerActor1_1","PowerActor",2,0,0,0), 17:("LidarC1","Lidar",0,-180,180,12000),
     18:("Cat_Identifier","Detector",0,0,0,0), 19:("Cat_Cam","Kamera",0,-31,31,8000),
-    20:("KIVision","VisionLocator",0,-50,50,15000),
+    20:("KIVision","VisionLocator",0,-50,50,15000), 21:("Dome-C1","HLK",0,-60,60,7000),
 }
 
 # ------------------------------------------------- Gerätetabelle aus xComDef6_3.h
@@ -377,6 +379,8 @@ _events_base = 0                 # ABSOLUTER Index des ersten RAM-Events: /event
                                  # die Live-Ansicht ein, sobald der Puffer voll war)
 _reset_seq = 0
 _settings = {}                   # sender -> {sup, val, act, t}  (aus settingsReport)
+_env = {}                        # sender -> {temp, press, valid, t}  (aus envReport; temp in
+                                 # Grad C, press in hPa - Verlauf in SQLite-Tabelle env)
 _poses = {}                      # sender -> {x, y, head, mir, valid, t}  (aus poseReport;
                                  # nur GÜLTIGE Posen, in SQLite persistiert — ein Sensor,
                                  # der nach Reboot noch nicht re-validiert ist, steht
@@ -479,7 +483,15 @@ def init_db():
     _db.execute("""CREATE TABLE IF NOT EXISTS hb_minute(
         minute INTEGER NOT NULL, sender INTEGER NOT NULL,
         cnt INTEGER NOT NULL, PRIMARY KEY(minute, sender))""")
+    # Umweltwerte (envReport: Temperatur/Luftdruck, heute Dome-C1/BMP180), jede
+    # Messung eine Zeile (~1/min) - unabhaengig von der Aufnahme (_rec_on).
+    _db.execute("""CREATE TABLE IF NOT EXISTS env(
+        t REAL, sender INT, temp REAL, press REAL)""")
+    _db.execute("CREATE INDEX IF NOT EXISTS idx_env_t ON env(sender,t)")
     _db.commit()
+    for sid, t, temp, press in _db.execute(
+            "SELECT sender,MAX(t),temp,press FROM env GROUP BY sender").fetchall():
+        _env[int(sid)] = {"temp": temp, "press": press, "valid": 1, "t": t}
     row = _db.execute("SELECT v FROM meta WHERE k='rec'").fetchone()
     _rec_on = (row is None) or (row[0] == "1")   # Default: Aufnahme AN
     # Migration: Daten aus der Zeit vor Einführung der recspans bekommen
@@ -657,6 +669,18 @@ def ingest():
             sid = int(s.get("sender", -1))
             _settings[sid] = {"sup": int(s.get("sup", 0)), "val": int(s.get("val", 0)),
                               "act": int(s.get("act", 0)), "t": now}
+        env_rows = []
+        for v in data.get("env", []):
+            sid = int(v.get("sender", -1))
+            if sid < 0:
+                continue
+            if int(v.get("valid", 0)) != 1:          # Sensor meldet sich, hat aber keinen Wert
+                _env[sid] = dict(_env.get(sid, {"temp": None, "press": None}), valid=0, t=now)
+                continue
+            temp = int(v.get("temp", 0)) / 10.0       # 0,1 Grad C -> Grad C
+            press = int(v.get("press", 0)) / 100.0    # Pa -> hPa
+            _env[sid] = {"temp": temp, "press": press, "valid": 1, "t": now}
+            env_rows.append((now, sid, temp, press))
         pose_rows = []
         invalid_pose_sids = []
         for p in data.get("poses", []):
@@ -718,7 +742,9 @@ def ingest():
                         "ON CONFLICT(minute,sender) DO UPDATE SET cnt=cnt+excluded.cnt",
                         (hb_minute, hsid, n))
             hb_wrote = True
-        if hb_wrote:
+        if env_rows:
+            _db.executemany("INSERT INTO env(t,sender,temp,press) VALUES(?,?,?,?)", env_rows)
+        if hb_wrote or env_rows:
             _db.commit()
     if pose_rows or invalid_pose_sids:
         with _db_lock:
@@ -811,10 +837,12 @@ def state():
                                   "name": dev_name(sid),
                                   "ip": dev.get("ip", 0),
                                   "age": round(now - dev["t"], 1)}
+        env = {str(sid): {"temp": e["temp"], "press": e["press"], "valid": e["valid"],
+                          "age": round(now - e["t"], 1)} for sid, e in _env.items()}
         return jsonify(now=now, reset_seq=_reset_seq,
                        debug=list(_debug)[-60:], devices=devs,
                        summary=minute_summary(), event_count=len(_events),
-                       settings=settings)
+                       settings=settings, env=env)
 
 
 @app.get("/events")
@@ -1029,6 +1057,45 @@ def command():
         _cmd_queue.append((t, c, i))
         n = len(_cmd_queue)
     return jsonify(ok=True, queued=n)
+
+
+ENV_REQUEST_TARGET = 253   # gwInjectCommand im Manager: Broadcast envRequest
+
+
+@app.post("/env_request")
+def env_request():
+    # Alle Geraete mit Umweltsensor sofort messen lassen (Antwort kommt als envReport
+    # ueber den Manager-Push zurueck, ~2-3 s).
+    with _cmd_lock:
+        _cmd_queue.append((ENV_REQUEST_TARGET, 0, 0))
+    return jsonify(ok=True)
+
+
+@app.get("/env")
+def env_history():
+    # Verlauf je Sender (Default: alle Sender mit Umweltsensor, letzte 24 h) plus
+    # Min/Max/Tendenz - fuer die Anzeige im Steuerungs-Tab.
+    hours = min(max(request.args.get("hours", 24, type=float), 0.1), 24 * 365)
+    sender = request.args.get("sender", type=int)
+    t0 = time.time() - hours * 3600
+    q = "SELECT sender,t,temp,press FROM env WHERE t>=?"
+    args = [t0]
+    if sender is not None:
+        q += " AND sender=?"
+        args.append(sender)
+    with _reading() as db:
+        rows = db.execute(q + " ORDER BY t", args).fetchall()
+    out = {}
+    for sid, t, temp, press in rows:
+        o = out.setdefault(str(sid), {"name": dev_name(int(sid)), "t": [], "temp": [], "press": []})
+        o["t"].append(round(t, 1)); o["temp"].append(temp); o["press"].append(press)
+    for o in out.values():
+        o["tempMin"], o["tempMax"] = min(o["temp"]), max(o["temp"])
+        o["pressMin"], o["pressMax"] = min(o["press"]), max(o["press"])
+        # Drucktendenz der letzten 3 h (Wetter-Faustregel: > +-1 hPa/3 h = Wetterwechsel)
+        k = next((i for i, t in enumerate(o["t"]) if t >= o["t"][-1] - 3 * 3600), 0)
+        o["pressTrend3h"] = round(o["press"][-1] - o["press"][k], 1)
+    return jsonify(hours=hours, env=out)
 
 
 @app.get("/commands")

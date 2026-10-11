@@ -43,7 +43,8 @@ DevState devSt[deviceCount];
 // Beschriftungen (Index = stg*/act* aus xComDef6_3.h)
 const char* stgLabel[STG_COUNT] = {
   "HB-Anzeige", "Cat-Anzeige", "Auto Pose kop.", "Auto-Kalib.", "Lidar-Motor", "CatDet-Anzeige", "Kamera-KI",
-  "Radar Vollmodus", "Aktiv (Sensor an)"
+  "Radar Vollmodus", "Aktiv (Sensor an)",
+  "IR-Scheinwerfer", "IR nur bei Katze"   // Dome-C1: AUS = Scheinw. aus | AN+AUS = EIN | AN+AN = AUTO
 };
 const char* actLabel[ACT_COUNT] = { "Pose kopieren", "Kalibrieren", "Pose loeschen", "Param. laden", "Foto jetzt" };
 const uint8_t actCmd[ACT_COUNT] = { cmdCopyPose,     cmdCalibrate, cmdClearPose, cmdReloadParams, cmdTakePhoto };

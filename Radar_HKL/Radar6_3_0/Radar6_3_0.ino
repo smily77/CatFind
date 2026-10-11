@@ -4,12 +4,16 @@
 //#define  CompactDomeDevice
 //#define  MiniDomeDevice
 //#define  DomeDevice
+//#define  DomeC1Device    // wie CompactDome + BMP180 (envReport) + IR-Scheinwerfer-Sperre GPIO18
 #define MiniDomeDevice
 
 #include <xComDef6_3.h>
 
 #include "hwDef.h"
 #include <FastLED.h>
+#ifdef hasBMP180
+  #include "bmp180.h"
+#endif
 
 #define DEBUG true
 
@@ -46,9 +50,15 @@ posPayload obsData;
 #define MAP_RETRY_MS      60000   // Karte nicht bekommen -> so lange bis zum naechsten Versuch
 #define MAP_RECHECK_MS  3600000UL // Fangnetz: auch mit geladener Karte stuendlich neu pruefen
                                   // (ein mapInfo-Announce kann per UDP verlorengehen - kein Resend)
-#define MAP_ANNOUNCE_SLOT_MS 300  // Versatz je Geraet nach einem Announce (ID % 10 * diesen Wert:
-                                  // die real vergebenen IDs 0-3/17-19 liefern so lauter
-                                  // verschiedene Slots, serveMap braucht je Karte ~0,1 s)
+#define MAP_ANNOUNCE_SLOT_MS 300  // Versatz je Geraet nach einem Announce (MAP_SLOT aus hwDef.h *
+                                  // diesen Wert: jede Radar-Variante hat ihren eigenen Slot,
+                                  // serveMap braucht je Karte ~0,1 s)
+
+// IR-Scheinwerfer (Dome-C1): Schalter AUS/EIN/AUTO ueber stgIrLight/stgIrAuto (xComDef6_3.h).
+// AUTO: nach jeder catObserved (eigene oder von irgendeinem Sensor) so lange freigeben.
+#define IR_HOLD_MS         60000
+// Umweltsensor (Dome-C1/BMP180): so oft selbsttaetig envReport broadcasten
+#define ENV_PERIOD_MS      60000
 
 int32_t  lastTargetX = 0, lastTargetY = 0;   // juengste eigene Detektion (fuer Health-Check)
 unsigned long lastTargetMs = 0;              // wann zuletzt ein Radar-Target aktiv war
@@ -92,6 +102,14 @@ void setup() {
   }
   if (!LittleFS.begin(true)) sendUdpTextln("LittleFS mount FAILED - kein Karten-Cache");
   Serial2.begin(S2_baud,SERIAL_8N1,S2_RX,S2_TX);
+#ifdef hasIrLight
+  pinMode(IR_PIN, OUTPUT_OPEN_DRAIN);
+  digitalWrite(IR_PIN, LOW);         // Start: leitet -> Scheinwerfer gesperrt, serviceIr() entscheidet
+#endif
+#ifdef hasBMP180
+  sendUdpTextln(bmpBegin(BMP_SDA, BMP_SCL) ? "BMP180 bereit"
+                                           : "BMP180 nicht gefunden - envReport ohne Werte");
+#endif
   sendSettingsReport();              // Einstellungen annoncieren (Display/VPS lernen sie)
   timer = millis();  //heardBeat
 }
@@ -105,11 +123,14 @@ void loop() {
   if (newDataReady) { processTargets(); newDataReady = false; }
   serviceCalibration();
   serviceFilterMaps();
+  serviceIr();
+  serviceEnv();
 }
 
 // Kommando per Unicast: Kalibrierfenster per Knopf/commandMsg starten.
 void handleCommand(const xMsg& m) {
   if (handleCommonMsg(m)) return;    // settingsRequest/poseRequest/cmdSetSetting generisch
+  if (m.header.msgCode == envRequest) { requestEnvReport(); return; }
   cmdPayload cmd;
   if (!getPayload(m, cmd)) return;
   if (cmd.cmd == cmdCopyPose) {      // Aktion: Welt-Pose aus der Gruppe uebernehmen
@@ -141,7 +162,7 @@ void handleObservation(const xMsg& m) {
   if (m.header.msgCode == mapInfo) {  // Announce: Manager hat eine Karte angenommen (gwAcceptMap)
     // Versatz je Geraet (aus der eigenen ID): sonst fragen nach dem Announce alle
     // Sensoren im selben Moment an und der Manager kann nur einen bedienen.
-    unsigned long due = millis() + MAP_ANNOUNCE_SLOT_MS * (unsigned long)(ID % 10);
+    unsigned long due = millis() + MAP_ANNOUNCE_SLOT_MS * (unsigned long)MAP_SLOT;
     if (mapAnnounceOutdated(m, mapNoShot, NOSHOT_PATH)) {
       noshotSlot.loaded = false; noshotSlot.synced = false;
       noshotSlot.recheckNow = true; noshotSlot.recheckAt = due;
@@ -152,7 +173,10 @@ void handleObservation(const xMsg& m) {
     }
     return;
   }
-  if (m.header.msgCode != catObserved || m.header.sender == ID) return;
+  if (m.header.msgCode == envRequest) { requestEnvReport(); return; }
+  if (m.header.msgCode != catObserved) return;
+  irNoteCat();                       // IR-AUTO: irgendein Sensor meldet ein Ziel
+  if (m.header.sender == ID) return;
   posPayload obs;
   if (!getPayload(m, obs) || !obs.worldValid) return;   // nur welt-valide Quellen taugen
   lastWorldObsMs = millis();
@@ -202,6 +226,7 @@ void processTargets() {
       if (obsData.worldValid && filterMapActive &&
           !insideNoShot(obsData.worldX, obsData.worldY)) continue;   // ausserhalb der Filterkarte
       broadcastMsg(catObserved, obsData);
+      irNoteCat();                                     // IR-AUTO: eigenes Ziel zaehlt auch
     }
   }
   setPixel(maxPix, (validTarget && settingOn(stgCatLed)) ? 0x0000FF : 0x000000);  // Anzeige schaltbar
@@ -288,4 +313,74 @@ void serviceCalibration() {
   } else {
     autoArmMs = 0;
   }
+}
+
+// --- IR-Scheinwerfer (Dome-C1) -------------------------------------------------------
+// GPIO18 ist Open-Drain parallel zum LDR des Scheinwerfers: LOW (leitet) = gesperrt,
+// HIGH (hochohmig) = der LDR entscheidet wie ohne Steuerung (an, wenn es dunkel ist).
+// Die Nacht-Bedingung von AUTO liefert damit der Scheinwerfer selbst - die Firmware
+// muss Tag/Nacht nicht kennen.
+//   AUS  (stgIrLight aus)               -> immer gesperrt
+//   EIN  (stgIrLight an, stgIrAuto aus) -> immer frei (Nachtlicht wie ohne Steuerung)
+//   AUTO (stgIrLight an, stgIrAuto an)  -> frei fuer IR_HOLD_MS nach jeder catObserved
+unsigned long irLastCatMs = 0;
+bool          irHadCat    = false;
+
+void irNoteCat() { irLastCatMs = millis(); irHadCat = true; }
+
+void serviceIr() {
+#ifdef hasIrLight
+  static int8_t irFree = -1;         // -1 = noch nie gesetzt
+  bool want;
+  if (!settingOn(stgIrLight))     want = false;
+  else if (!settingOn(stgIrAuto)) want = true;
+  else want = irHadCat && (millis() - irLastCatMs < IR_HOLD_MS);
+  if ((int8_t)want != irFree) {
+    digitalWrite(IR_PIN, want ? HIGH : LOW);
+    const char* mode = !settingOn(stgIrLight) ? "AUS" : (settingOn(stgIrAuto) ? "AUTO" : "EIN");
+    if (irFree >= 0)
+      sendUdpTextln(String("IR-Scheinwerfer ") + mode + ": " +
+                    (want ? "frei (LDR entscheidet)" : "gesperrt"));
+    irFree = want;
+  }
+#endif
+}
+
+// --- Umweltsensor (Dome-C1/BMP180) ---------------------------------------------------
+// envRequest (Unicast oder Broadcast) stoesst eine Messung an; das Ergebnis geht - wie
+// die periodische Annonce alle ENV_PERIOD_MS - immer per Broadcast als envReport raus
+// (der Manager reicht es an den VPS weiter). Ohne Sensor: envReport mit valid=0.
+// Varianten ohne BMP180 ignorieren envRequest.
+bool envPending = false;
+
+void sendEnvReport(bool valid) {
+  envPayload ep;
+  ep.valid = valid ? 1 : 0;
+  ep.tempDeci = 0; ep.pressPa = 0;
+#ifdef hasBMP180
+  if (valid) { ep.tempDeci = bmpTempDeci; ep.pressPa = (uint32_t)bmpPressPa; }
+#endif
+  broadcastMsg(envReport, ep);
+}
+
+void requestEnvReport() {
+#ifdef hasBMP180
+  if (!bmpOk && !bmpBegin(BMP_SDA, BMP_SCL)) { sendEnvReport(false); return; }
+  bmpStart();                        // laeuft schon eine Messung, wird deren Ergebnis gesendet
+  envPending = true;
+#endif
+}
+
+void serviceEnv() {
+#ifdef hasBMP180
+  static unsigned long lastEnv = 0;
+  if (lastEnv == 0 || millis() - lastEnv >= ENV_PERIOD_MS) {
+    lastEnv = millis();
+    requestEnvReport();
+  }
+  if (bmpService() && envPending) {
+    envPending = false;
+    sendEnvReport(true);
+  }
+#endif
 }
