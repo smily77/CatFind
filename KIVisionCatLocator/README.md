@@ -434,6 +434,15 @@ widersprechen sich untereinander. Darum `kivision_cammodel.py`:
 - **Nebenprodukt:** Nach dem Rechnen zeigt die Karte je Sensor, wie weit sein
   Weltsystem neben der Kamera liegt (Median der nahen Paare) – Grundlage, um
   die Radar-Posen nachzustellen.
+- **Erste echte Klicks (2026-10-17):** mit fest gemessenem Standort und freier
+  Verzeichnung bog das Modell k1 = +0,93 (Kissen statt Tonne) und verdrehte die
+  Karte zwischen den Punkten; mit k = 0 passten die Klicks nicht zusammen
+  (Dome-C1 ~0,9 m, Nulllinie 0,5–0,8 m daneben). Erst mit **mitgerechnetem
+  Standort** passt alles auf ~5 cm: Kamera bei 6,87/−0,18 statt gemessen
+  8,05/−0,60 m (anderer Bezugspunkt). Seither: Standort ab 7 Gleichungen frei
+  (leicht zur Messung gezogen), Verzeichnung erst ab 12/16 Gleichungen.
+- Der vordere Rand der Rasenkarte (y ≈ 0,6–1,2 m) ist nur die Schlusslinie des
+  Polygons, nicht vermessen – die echte Rasenkante an der Veranda liegt bei y ≈ 0.
 - Gespeichert in `~/kivision/camera_model.json`. Livebild: gelbe Kreise = wo das
   Modell die Referenzen sieht, magenta Kreuze = Klicks, türkis = Nulllinie.
 
