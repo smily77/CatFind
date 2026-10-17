@@ -700,7 +700,8 @@ function renderCm() {
       f.refs.map(r => esc(r.name) + ' ' + r.err_mm + ' mm').join(', ') +
       (f.zero_mm.length ? '; Nulllinie ' + f.zero_mm.join('/') + ' mm' : '') +
       (f.mirror < 0 ? '; Weltsystem gespiegelt' : '') +
-      (f.cam ? '; Kamera gerechnet bei <b>' + (f.cam[0] / 1000).toFixed(2) + ' / ' + (f.cam[1] / 1000).toFixed(2) +
+      (f.lens_eff_mm ? '; Brennweite wirksam <b>' + f.lens_eff_mm.toFixed(2) + ' mm</b> (' + f.f_px + ' px)' : '') +
+      (f.cam && !f.lens_eff_mm ? '; Kamera gerechnet bei <b>' + (f.cam[0] / 1000).toFixed(2) + ' / ' + (f.cam[1] / 1000).toFixed(2) +
                ' m</b> (eingetragen ' + (cm.data.cam[0] / 1000).toFixed(2) + ' / ' + (cm.data.cam[1] / 1000).toFixed(2) + ')' : '') +
       '; Verzeichnung k1 ' + f.p[3].toFixed(3) + ', k2 ' + f.p[4].toFixed(3) + '.' +
       (cm.valid ? '' : ' <span style="color:var(--warn)">Ungültig: Bild seither anders gespiegelt.</span>') +
