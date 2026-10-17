@@ -388,6 +388,33 @@ Das COCO-Modell kennt keinen Fuchs (es nennt ihn dog/cat/sheep). Darum:
 - „nur Katze/Fuchs" (Anzeige- und Treffer-Filter) und grüne Rahmen gelten jetzt
   für `cat` und `fox`.
 
+## Phase 4: Rasen-Abbildung (Homographie, 2026-10-17)
+
+Keine Klick-Kalibrierung: `kivision_homography.py` rechnet die Boden-Homographie
+(normierter Bildpunkt → Welt-mm) aus `pairs.jsonl` (+ `pairs.old`).
+
+- **Paare:** Zeilen mit genau *einer* bewegten Spur (≥ 1 s alt), nur Radare
+  (1/2/3/21) und CatIdent (18). LidarC1 (17) bleibt draussen – nur ~9 % seiner
+  Paare passten.
+- **RANSAC** mit 400 mm Schwelle wirft Fehlpaare raus (Kamera und Radar sahen
+  Verschiedenes). Stand 2026-10-17: 3918 von 8451 Paaren passen, Fehler Median
+  195 mm, 90 % unter 355 mm – so genau wie das Radar. **Gegenprobe** (erste
+  Hälfte der Zeit rechnen, an der zweiten prüfen) gleich gut → Kamera stand still.
+- **Weboberfläche:** Karte „Rasen-Abbildung" mit Knopf *Homographie berechnen*
+  (0,3 s) und Kennzahlen; Knopf **Karte** blendet Rasenrand (grün),
+  Schussverbot-Zone (rot gestrichelt) und ein 1-m-Gitter (Beschriftung x/y in m)
+  ins Livebild. Bewegte Spuren tragen ihre Rasenposition (`B12 cat @7.1/10.0 m`).
+- Ergebnis in `~/kivision/homography.json`; gilt nur bei gleicher Spiegelung
+  (`hflip`/`vflip`) wie beim Rechnen, sonst „ungültig".
+- **Karten** liegen auf dem Pi in `~/kivision/web/maps/` (Kopie aus
+  `Controller/Manager6_3_0/data/`), beim Ausrollen mitkopieren.
+- **Bewusst noch nicht:** Linsenverzeichnung (erst wenn das Gitter am Rand
+  sichtbar danebenliegt) und `poseReport` mit gültiger Pose – aus der Homographie
+  zerlegt widersprechen sich die zwei Brennweiten-Schätzungen (Verzeichnung),
+  Standort/Höhe wären geraten.
+- Nach dem Versetzen der Kamera: alte Paare wegräumen (`pairs.jsonl`/`.old`
+  umbenennen), einige Tage sammeln, neu berechnen.
+
 ## Dienst
 
 ```bash
@@ -401,8 +428,9 @@ Der Dienst ist `enabled`, startet also nach jedem Stromausfall von selbst.
 ## Neu ausrollen
 
 ```bash
-scp kivision_web.py kivision_motion.py xcom.py kivision_bus.py ../Controller/Manager6_3_0/xComDef6_3.h pi@192.168.0.186:~/kivision/web/
+scp kivision_web.py kivision_motion.py kivision_homography.py xcom.py kivision_bus.py ../Controller/Manager6_3_0/xComDef6_3.h pi@192.168.0.186:~/kivision/web/
 scp templates/index.html pi@192.168.0.186:~/kivision/web/templates/
+scp ../Controller/Manager6_3_0/data/rasen.csv ../Controller/Manager6_3_0/data/noshot.csv pi@192.168.0.186:~/kivision/web/maps/
 ssh pi@192.168.0.186 sudo systemctl restart kivision-web
 ```
 

@@ -23,6 +23,7 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
+from kivision_homography import Homography
 from kivision_motion import Motion, cv2
 from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
@@ -62,6 +63,11 @@ MOTION_GAP = 10.0
 # Homographie (Phase 4). Eine Zeile JSON je Radar-Meldung mit Bewegung.
 PAIRS_FILE = HOME / "pairs.jsonl"
 PAIRS_MAX_BYTES = 20 * 1024 * 1024
+# Daraus gerechnet (Knopf in der Oberflaeche, kivision_homography.py) und als
+# Rasenrand/Gitter ins Livebild eingeblendet. Die Karten-CSVs werden beim
+# Ausrollen aus Controller/Manager6_3_0/data/ nach web/maps/ kopiert.
+HOMOGRAPHY_FILE = HOME / "homography.json"
+MAP_DIR = BASE / "maps"
 WIT_THRESHOLD = 0.2       # alles ab hier einzeichnen, egal welches Label
 WIT_EP_GAP = 8.0          # so lange Funkstille -> naechste Meldung ist neue Episode
 WIT_EP_MAX = 120.0        # Dauermeldung (Maeher, Geist) zaehlt danach als neue Episode
@@ -160,6 +166,7 @@ DEFAULTS = {
     "vflip": False,
     "rotate": 0,          # nur Browser-Anzeige (der ISP kann kein 90-Grad)
     "grid": True,
+    "map": True,          # Rasenkarte per Homographie ins Livebild (Phase 4)
     "tuning": "auto",     # auto | normal | noir (NoIR-Modul: Magenta bei Tag)
     "controls": {},
     "detect": {
@@ -1253,6 +1260,7 @@ detector = Detector(camera, cfg)
 motion = Motion()
 detector.motion = motion
 detector.pump = FramePump(camera, motion)
+homography = Homography(HOMOGRAPHY_FILE, MAP_DIR)
 
 # -- Busgeraet (Phase 3) ------------------------------------------------------
 # Die KI laeuft nur, wenn sie eingeschaltet ist (detect.enabled, auch vom VPS
@@ -1439,7 +1447,7 @@ def api_config():
             if cfg[key] != value:
                 cfg[key] = value
                 restart = True
-    for key in ("rotate", "grid"):
+    for key in ("rotate", "grid", "map"):
         if key in data:
             cfg[key] = data[key]
     if "tuning" in data and data["tuning"] != cfg.get("tuning"):
@@ -1511,7 +1519,51 @@ def api_detect():
 
 @app.route("/api/detections")
 def api_detections():
-    return jsonify(detector.snapshot_state())
+    data = detector.snapshot_state()
+    # Fusspunkt jeder bewegten Spur auf den Rasen (Phase 4)
+    if homography.valid(_flips()) and data.get("motion"):
+        data["motion"] = [dict(m, world=homography.to_world(m["foot"][0], m["foot"][1]))
+                          if m.get("foot") else m for m in data["motion"]]
+    return jsonify(data)
+
+
+def _flips():
+    return {"hflip": bool(cfg.get("hflip")), "vflip": bool(cfg.get("vflip"))}
+
+
+def _pair_count():
+    n = 0
+    for path in (PAIRS_FILE.with_suffix(".old"), PAIRS_FILE):
+        try:
+            with path.open("rb") as fh:
+                n += sum(chunk.count(b"\n") for chunk in iter(lambda: fh.read(1 << 20), b""))
+        except OSError:
+            pass
+    return n
+
+
+@app.route("/api/homography")
+def api_homography():
+    """Stand der Kalibrierung; mit ?overlay=1 auch die Linien fuers Livebild."""
+    out = {"data": homography.data, "valid": homography.valid(_flips()),
+           "rows": _pair_count()}
+    if request.args.get("overlay") == "1" and out["valid"]:
+        out["overlay"] = homography.overlay()
+    return jsonify(out)
+
+
+@app.route("/api/homography/calibrate", methods=["POST"])
+def api_homography_calibrate():
+    try:
+        data = homography.calibrate([PAIRS_FILE.with_suffix(".old"), PAIRS_FILE], _flips())
+    except Exception as exc:                                  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)})
+    print("[web] Homographie: %d von %d Paaren, Median %d mm"
+          % (data["inliers"], data["pairs"], data["median_mm"]))
+    if node:
+        node.text("Homographie neu: %d/%d Paare, Median %d mm"
+                  % (data["inliers"], data["pairs"], data["median_mm"]))
+    return jsonify({"ok": True, "data": data})
 
 
 @app.route("/api/snapshot", methods=["POST"])
