@@ -60,6 +60,16 @@
   .gal .score { color: var(--ok); }
   .gal figure.fresh img { border-color: var(--ok); }
   .hidden { display: none !important; }
+  #ov.pick { cursor: crosshair; }
+  .refs { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .refs td { padding: 2px 3px; }
+  .refs input { width: 100%; min-width: 0; background: #10151b; color: var(--fg);
+                border: 1px solid var(--line); border-radius: 5px; padding: 4px 5px; font: inherit; }
+  .refs button { padding: 4px 8px; font-size: 12px; }
+  .refs .ok { color: var(--ok); } .refs .no { color: var(--dim); }
+  .cmgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; font-size: 12px; color: var(--dim); }
+  .cmgrid input { width: 100%; background: #10151b; color: var(--fg); border: 1px solid var(--line);
+                  border-radius: 5px; padding: 5px; font: inherit; }
 </style>
 </head>
 <body>
@@ -209,6 +219,32 @@
     </div>
 
     <div class="card">
+      <h2>Kamera-Modell <span class="tag">(Klick-Kalibrierung)</span></h2>
+      <div class="hint">Kamera-Standort und Objektiv sind gemessen; gesucht ist nur die
+        Blickrichtung. Je Referenz „Setzen“ drücken und im Livebild auf ihren
+        <b>Fusspunkt</b> klicken (wo sie auf dem Boden steht). Dazu einige Punkte auf
+        der <b>Nulllinie</b> (Veranda-Kante, y&nbsp;=&nbsp;0) verteilt anklicken. Mindestens
+        2 Referenzen und zusammen 5 Angaben; mehr Punkte = genauer.</div>
+      <div class="cmgrid">
+        <label>Kamera x (m)<input id="cmX" type="number" step="0.01"></label>
+        <label>y (m)<input id="cmY" type="number" step="0.01"></label>
+        <label>Höhe (m)<input id="cmZ" type="number" step="0.01"></label>
+        <label>Objektiv (mm)<input id="cmF" type="number" step="0.1"></label>
+      </div>
+      <table class="refs" id="cmRefs"></table>
+      <div class="row">
+        <button id="cmAdd">+ Referenz</button>
+        <button id="cmZero">Nulllinie-Punkt setzen</button>
+        <span class="val" id="cmZeroN"></span>
+        <button id="cmZeroClr">Nulllinie leeren</button>
+      </div>
+      <div class="msg" id="cmPick"></div>
+      <div class="row"><button class="wide" id="cmCalc">Speichern &amp; berechnen</button></div>
+      <div class="hint" id="cmInfo">-</div>
+      <div class="msg" id="cmMsg"></div>
+    </div>
+
+    <div class="card">
       <h2>Rasen-Abbildung <span class="tag">(Homographie)</span></h2>
       <div class="hint">Rechnet aus den gesammelten Radar↔Kamera-Paaren, wo ein
         Bildpunkt auf dem Rasen liegt – ohne Klicken. Danach liegen Rasenrand (grün),
@@ -256,7 +292,7 @@
 </main>
 
 <script>
-let state = null, rot = 0, grid = true, mapOn = true, hom = null, lastDet = null, detOn = false, hits = null, radarN = null, detClickAt = 0;
+let state = null, rot = 0, grid = true, mapOn = true, hom = null, lastDet = null, cm = null, pick = null, detOn = false, hits = null, radarN = null, detClickAt = 0;
 
 const $ = (id) => document.getElementById(id);
 const post = (url, body) => fetch(url, {
@@ -296,13 +332,30 @@ function drawOverlay(det) {
   if (det !== undefined) lastDet = det;
   det = lastDet;
   const parts = [];
-  const ov = mapOn && hom && hom.overlay;
+  const ov = mapOn && ((cm && cm.overlay) || (hom && hom.overlay));
   if (ov) {
     (ov.grid || []).forEach(l => parts.push(polyline(l, '#ffffff38', 1)));
+    (ov.zero || []).forEach(l => parts.push(polyline(l, '#3fd8e8', 2)));
     (ov.labels || []).forEach(t => parts.push('<text x="' + t[0] * 1000 + '" y="' + t[1] * 1000 +
       '" fill="#ffffffa0" font-size="16" font-family="sans-serif" text-anchor="middle">' + t[2] + '</text>'));
     (ov.noshot || []).forEach(l => parts.push(polyline(l, '#ff5f56', 2, '6 4')));
     (ov.rasen || []).forEach(l => parts.push(polyline(l, '#46c46a', 2)));
+    // wo das Modell die Referenzen sieht (gelb) ...
+    (ov.refs || []).forEach(t => parts.push('<circle cx="' + t[0] * 1000 + '" cy="' + t[1] * 1000 +
+      '" r="9" fill="none" stroke="#ffd34d" stroke-width="2" vector-effect="non-scaling-stroke"/>'));
+  }
+  // ... und wo sie angeklickt wurden (magenta), Nulllinie-Klicks tuerkis
+  if (cm && (mapOn || pick)) {
+    cm.data.refs.forEach(r => {
+      if (!r.uv) return;
+      const x = r.uv[0] * 1000, y = r.uv[1] * 1000;
+      parts.push('<path d="M' + (x - 10) + ' ' + y + 'H' + (x + 10) + 'M' + x + ' ' + (y - 10) + 'V' + (y + 10) +
+                 '" stroke="#ff4fd8" stroke-width="2" vector-effect="non-scaling-stroke"/>');
+      parts.push('<text x="' + (x + 8) + '" y="' + (y - 8) + '" fill="#ff4fd8" font-size="20" font-family="sans-serif">' +
+                 esc(r.name) + '</text>');
+    });
+    cm.data.zero.forEach(z => parts.push('<circle cx="' + z[0] * 1000 + '" cy="' + z[1] * 1000 +
+      '" r="5" fill="#3fd8e8" stroke="#000" stroke-width="1" vector-effect="non-scaling-stroke"/>'));
   }
   if (grid) {
     for (let i = 1; i < 3; i++) {
@@ -615,6 +668,95 @@ $('bHom').onclick = () => {
     return loadHom();
   }).finally(() => { $('bHom').disabled = false; });
 };
+/* ---------- Kamera-Modell (Klick-Kalibrierung) ----------------------- */
+function loadCm() {
+  return fetch('/api/cammodel').then(r => r.json()).then(c => {
+    cm = c; renderCm(); drawOverlay();
+  }).catch(() => {});
+}
+function renderCm() {
+  const d = cm.data, m = (v) => (v / 1000).toFixed(2);
+  $('cmX').value = m(d.cam[0]); $('cmY').value = m(d.cam[1]); $('cmZ').value = m(d.cam[2]);
+  $('cmF').value = d.lens_mm;
+  $('cmRefs').innerHTML = '<tr><td>Name</td><td>x (m)</td><td>y (m)</td><td></td><td></td><td></td></tr>' +
+    d.refs.map((r, i) => '<tr><td><input data-i="' + i + '" data-k="name" value="' + esc(r.name) + '"></td>' +
+      '<td><input data-i="' + i + '" data-k="x" type="number" step="0.01" value="' + m(r.x) + '"></td>' +
+      '<td><input data-i="' + i + '" data-k="y" type="number" step="0.01" value="' + m(r.y) + '"></td>' +
+      '<td class="' + (r.uv ? 'ok">✓' : 'no">–') + '</td>' +
+      '<td><button data-set="' + i + '">Setzen</button></td>' +
+      '<td><button data-del="' + i + '">×</button></td></tr>').join('');
+  $('cmRefs').querySelectorAll('input').forEach(el => el.onchange = () => {
+    const r = cm.data.refs[el.dataset.i];
+    r[el.dataset.k] = el.dataset.k === 'name' ? el.value : Math.round(Number(el.value) * 1000);
+  });
+  $('cmRefs').querySelectorAll('[data-set]').forEach(b => b.onclick = () => startPick({ref: Number(b.dataset.set)}));
+  $('cmRefs').querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+    cm.data.refs.splice(Number(b.dataset.del), 1); saveCm().then(loadCm);
+  });
+  $('cmZeroN').textContent = d.zero.length + ' Punkte';
+  const f = cm.fit;
+  $('cmInfo').innerHTML = f
+    ? 'Stand ' + new Date(f.fitted * 1000).toLocaleString('de-CH') + ': Restfehler <b>' + f.rms_mm + ' mm</b> (rms). ' +
+      f.refs.map(r => esc(r.name) + ' ' + r.err_mm + ' mm').join(', ') +
+      (f.zero_mm.length ? '; Nulllinie ' + f.zero_mm.join('/') + ' mm' : '') +
+      (f.mirror < 0 ? '; Weltsystem gespiegelt' : '') +
+      '; Verzeichnung k1 ' + f.p[3].toFixed(3) + ', k2 ' + f.p[4].toFixed(3) + '.' +
+      (cm.valid ? '' : ' <span style="color:var(--warn)">Ungültig: Bild seither anders gespiegelt.</span>') +
+      (f.radar && f.radar.length ? '<br>Sensoren gegenüber der Kamera (Median der Paare, Sensor − Kamera): ' +
+        f.radar.map(r => '#' + r.sender + (r.dx != null
+          ? ' Δ' + (r.dx / 1000).toFixed(2) + '/' + (r.dy / 1000).toFixed(2) + ' m (±' + (r.median_mm / 1000).toFixed(2) +
+            ' m, ' + r.near + '/' + r.n + ')'
+          : ' zu wenig (' + r.near + '/' + r.n + ')')).join('; ') : '')
+    : 'Noch nicht berechnet.';
+}
+function cmFromInputs() {
+  const mm = (id) => Math.round(Number($(id).value) * 1000);
+  cm.data.cam = [mm('cmX'), mm('cmY'), mm('cmZ')];
+  cm.data.lens_mm = Number($('cmF').value);
+}
+function saveCm() {
+  cmFromInputs();
+  return post('/api/cammodel', {cam: cm.data.cam, lens_mm: cm.data.lens_mm,
+                                refs: cm.data.refs, zero: cm.data.zero});
+}
+function startPick(what) {
+  pick = what;
+  $('ov').classList.add('pick');
+  $('cmPick').textContent = what.zero ? 'Jetzt im Livebild auf die Veranda-Kante (y = 0) klicken …'
+    : 'Jetzt im Livebild auf den Fusspunkt von „' + cm.data.refs[what.ref].name + '“ klicken …';
+  drawOverlay();
+}
+$('ov').addEventListener('click', (ev) => {
+  if (!pick || !cm) return;
+  const svg = $('ov'), pt = svg.createSVGPoint();
+  pt.x = ev.clientX; pt.y = ev.clientY;
+  const p = pt.matrixTransform(svg.getScreenCTM().inverse());   // beruecksichtigt die Drehung
+  const uv = [Math.round(p.x * 10) / 10000, Math.round(p.y * 10) / 10000];
+  if (uv[0] < 0 || uv[0] > 1 || uv[1] < 0 || uv[1] > 1) return;
+  if (pick.zero) cm.data.zero.push(uv); else cm.data.refs[pick.ref].uv = uv;
+  pick = null;
+  $('ov').classList.remove('pick');
+  $('cmPick').textContent = '';
+  saveCm().then(() => { renderCm(); drawOverlay(); });
+});
+$('cmAdd').onclick = () => {
+  cm.data.refs.push({name: 'Punkt ' + (cm.data.refs.length + 1), x: 0, y: 0, uv: null});
+  renderCm();
+};
+$('cmZero').onclick = () => startPick({zero: true});
+$('cmZeroClr').onclick = () => {
+  if (!confirm('Alle Nulllinie-Punkte löschen?')) return;
+  cm.data.zero = []; saveCm().then(loadCm);
+};
+$('cmCalc').onclick = () => {
+  $('cmCalc').disabled = true;
+  $('cmMsg').textContent = 'Rechne … (einige Sekunden)';
+  saveCm().then(() => post('/api/cammodel/calibrate')).then(r => {
+    $('cmMsg').textContent = r.ok ? 'Neu berechnet – Karte im Livebild prüfen.' : 'Fehler: ' + r.error;
+    return loadCm();
+  }).finally(() => { $('cmCalc').disabled = false; });
+};
+
 function loadHom() {
   return fetch('/api/homography?overlay=1').then(r => r.json()).then(h => {
     hom = h;
@@ -636,7 +778,7 @@ function flip(key, btn) {
   const value = !state.config[key];
   btn.classList.toggle('on', value);
   say('Bild wird umgestellt …');
-  post('/api/config', {[key]: value}).then(() => { reloadStream(); refreshState(false); loadHom(); say(''); });
+  post('/api/config', {[key]: value}).then(() => { reloadStream(); refreshState(false); loadHom(); loadCm(); say(''); });
 }
 $('bFull').onclick = () => {
   const el = $('stage');
@@ -749,7 +891,7 @@ document.addEventListener('visibilitychange', () => {
 // Abgerissenes Livebild (Neustart, Funkloch) von selbst wieder holen.
 $('live').onerror = () => setTimeout(() => { if (!document.hidden) reloadStream(); }, 3000);
 
-refreshState(true).then(() => { loadHom(); loadGallery(); loadHits(); loadRadar(); loadMotion(); });
+refreshState(true).then(() => { loadHom(); loadCm(); loadGallery(); loadHits(); loadRadar(); loadMotion(); });
 $('bMotionReload').onclick = loadMotion;
 $('bMotionClear').onclick = () => {
   if (!confirm('Alle Bewegungs-Bilder löschen?')) return;

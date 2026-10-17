@@ -415,6 +415,28 @@ Keine Klick-Kalibrierung: `kivision_homography.py` rechnet die Boden-Homographie
 - Nach dem Versetzen der Kamera: alte Paare wegräumen (`pairs.jsonl`/`.old`
   umbenennen), einige Tage sammeln, neu berechnen.
 
+### Kamera-Modell per Klick (2026-10-17, hat Vorrang vor der Homographie)
+
+Die Radar-Homographie trifft das Koordinatensystem der **Radare**, nicht die mit
+dem Laser-Rangefinder vermessene Rasenkarte: die Karte lag ~0,5–1 m daneben
+(vorn zu weit im Rasen, rechts auf der Hecke). Mit der gemessenen
+Kamera-Position passt nur Dome zu den Paaren, MiniDome/Dome-C1 kaum – die Radare
+widersprechen sich untereinander. Darum `kivision_cammodel.py`:
+
+- **Fest:** Kamera-Standort/-Höhe (gemessen 8,05/−0,6 m, 2,25 m hoch) und
+  Brennweite aus dem Objektiv (2,1 mm, OV5647 1,4 µm → 949 px bei 1640).
+- **Gesucht:** Blickrichtung (3 Winkel), bei genug Punkten Verzeichnung k1/k2
+  (leicht gebremst), Spiegelung des Weltsystems wird selbst erkannt.
+- **Klicks:** Fusspunkte von Referenzen mit bekannter Weltposition (vorbelegt
+  LidarC1/Dome/Dome-C1 mit ihren Posen, editierbar, eigene dazu) und Punkte auf
+  der **Nulllinie** (Veranda-Kante, y = 0). Mind. 2 Referenzen, zusammen 5
+  Gleichungen. Synthetisch geprüft: 4 px Klickfehler → ~50 mm Weltfehler.
+- **Nebenprodukt:** Nach dem Rechnen zeigt die Karte je Sensor, wie weit sein
+  Weltsystem neben der Kamera liegt (Median der nahen Paare) – Grundlage, um
+  die Radar-Posen nachzustellen.
+- Gespeichert in `~/kivision/camera_model.json`. Livebild: gelbe Kreise = wo das
+  Modell die Referenzen sieht, magenta Kreuze = Klicks, türkis = Nulllinie.
+
 ## Dienst
 
 ```bash
@@ -428,7 +450,7 @@ Der Dienst ist `enabled`, startet also nach jedem Stromausfall von selbst.
 ## Neu ausrollen
 
 ```bash
-scp kivision_web.py kivision_motion.py kivision_homography.py xcom.py kivision_bus.py ../Controller/Manager6_3_0/xComDef6_3.h pi@192.168.0.186:~/kivision/web/
+scp kivision_web.py kivision_motion.py kivision_homography.py kivision_cammodel.py xcom.py kivision_bus.py ../Controller/Manager6_3_0/xComDef6_3.h pi@192.168.0.186:~/kivision/web/
 scp templates/index.html pi@192.168.0.186:~/kivision/web/templates/
 scp ../Controller/Manager6_3_0/data/rasen.csv ../Controller/Manager6_3_0/data/noshot.csv pi@192.168.0.186:~/kivision/web/maps/
 ssh pi@192.168.0.186 sudo systemctl restart kivision-web

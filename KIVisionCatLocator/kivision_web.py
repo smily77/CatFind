@@ -23,7 +23,8 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
-from kivision_homography import Homography
+from kivision_cammodel import CameraModel
+from kivision_homography import Homography, pairs as load_pairs, _read_poly
 from kivision_motion import Motion, cv2
 from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
@@ -67,6 +68,10 @@ PAIRS_MAX_BYTES = 20 * 1024 * 1024
 # Rasenrand/Gitter ins Livebild eingeblendet. Die Karten-CSVs werden beim
 # Ausrollen aus Controller/Manager6_3_0/data/ nach web/maps/ kopiert.
 HOMOGRAPHY_FILE = HOME / "homography.json"
+# Kamera-Modell aus Klick-Referenzen (kivision_cammodel.py) - hat Vorrang vor
+# der Homographie, weil es die vermessene Rasenkarte trifft statt das
+# Koordinatensystem der Radare.
+CAMMODEL_FILE = HOME / "camera_model.json"
 MAP_DIR = BASE / "maps"
 WIT_THRESHOLD = 0.2       # alles ab hier einzeichnen, egal welches Label
 WIT_EP_GAP = 8.0          # so lange Funkstille -> naechste Meldung ist neue Episode
@@ -1261,6 +1266,7 @@ motion = Motion()
 detector.motion = motion
 detector.pump = FramePump(camera, motion)
 homography = Homography(HOMOGRAPHY_FILE, MAP_DIR)
+cammodel = CameraModel(CAMMODEL_FILE)
 
 # -- Busgeraet (Phase 3) ------------------------------------------------------
 # Die KI laeuft nur, wenn sie eingeschaltet ist (detect.enabled, auch vom VPS
@@ -1521,10 +1527,72 @@ def api_detect():
 def api_detections():
     data = detector.snapshot_state()
     # Fusspunkt jeder bewegten Spur auf den Rasen (Phase 4)
-    if homography.valid(_flips()) and data.get("motion"):
-        data["motion"] = [dict(m, world=homography.to_world(m["foot"][0], m["foot"][1]))
+    geo = _geo()
+    if geo and data.get("motion"):
+        data["motion"] = [dict(m, world=geo.to_world(m["foot"][0], m["foot"][1]))
                           if m.get("foot") else m for m in data["motion"]]
     return jsonify(data)
+
+
+def _geo():
+    """Bild -> Rasen: Kamera-Modell, sonst Radar-Homographie, sonst nichts."""
+    if cammodel.valid(_flips()):
+        return cammodel
+    if homography.valid(_flips()):
+        return homography
+    return None
+
+
+def _maps():
+    return {name: _read_poly(MAP_DIR / (name + ".csv")) for name in ("rasen", "noshot")}
+
+
+@app.route("/api/cammodel")
+def api_cammodel():
+    valid = cammodel.valid(_flips())
+    return jsonify({"data": cammodel.data, "fit": cammodel.fit, "valid": valid,
+                    "overlay": cammodel.overlay(_maps()) if valid else None})
+
+
+@app.route("/api/cammodel", methods=["POST"])
+def api_cammodel_set():
+    """Kamera-Standort, Objektiv, Referenzpunkte und Nulllinie speichern."""
+    data = request.get_json(force=True, silent=True) or {}
+    d = cammodel.data
+    try:
+        if "cam" in data:
+            d["cam"] = [float(v) for v in data["cam"]][:3]
+        if "lens_mm" in data:
+            d["lens_mm"] = max(0.5, min(20.0, float(data["lens_mm"])))
+        if "refs" in data:
+            d["refs"] = [{"name": str(r.get("name", ""))[:20], "x": float(r["x"]), "y": float(r["y"]),
+                          "uv": ([float(r["uv"][0]), float(r["uv"][1])] if r.get("uv") else None)}
+                         for r in data["refs"]][:20]
+        if "zero" in data:
+            d["zero"] = [[float(u), float(v)] for u, v in data["zero"]][:30]
+    except (TypeError, ValueError, KeyError, IndexError) as exc:
+        return jsonify({"ok": False, "error": "ungueltige Eingabe: %s" % exc})
+    cammodel.save()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/cammodel/calibrate", methods=["POST"])
+def api_cammodel_calibrate():
+    try:
+        fit = cammodel.calibrate(_flips())
+    except Exception as exc:                                  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)})
+    # Nebenbei: wie weit liegt jedes Sensor-Weltsystem neben der Kamera?
+    try:
+        src, dst, _, snd = load_pairs([PAIRS_FILE.with_suffix(".old"), PAIRS_FILE], senders=None)
+        fit["radar"] = cammodel.radar_offsets(src / (1640.0, 1232.0), dst, snd)
+        cammodel.save()
+    except Exception as exc:                                  # noqa: BLE001
+        print("[web] Radar-Vergleich: %s" % exc)
+    print("[web] Kamera-Modell: rms %d mm, %s" % (fit["rms_mm"], fit["refs"]))
+    if node:
+        node.text("Kamera-Modell neu: rms %d mm" % fit["rms_mm"])
+    return jsonify({"ok": True, "fit": fit})
 
 
 def _flips():
