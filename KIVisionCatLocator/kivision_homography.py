@@ -57,10 +57,11 @@ def _rows(paths):
                     continue
 
 
-def pairs(paths):
-    src, dst, t = [], [], []
+def pairs(paths, senders=FIT_SENDERS):
+    """Paare (Fusspunkt in Pixel des 1640er-Rasters, Welt-mm, Zeit, Sender)."""
+    src, dst, t, snd = [], [], [], []
     for r in _rows(paths):
-        if r.get("sender") not in FIT_SENDERS:
+        if senders is not None and r.get("sender") not in senders:
             continue
         tracks = [k for k in r.get("tracks", []) if k.get("age", 0) >= MIN_AGE]
         if len(tracks) != 1:
@@ -69,7 +70,8 @@ def pairs(paths):
         src.append((fx * _FRAME[0], fy * _FRAME[1]))
         dst.append((r["wx"], r["wy"]))
         t.append(r["t"])
-    return np.float64(src), np.float64(dst), np.float64(t)
+        snd.append(r["sender"])
+    return np.float64(src), np.float64(dst), np.float64(t), np.int32(snd)
 
 
 def fit(paths, flips):
@@ -77,7 +79,7 @@ def fit(paths, flips):
     Speichern) oder wirft ValueError mit einer lesbaren Begruendung."""
     if cv2 is None:
         raise ValueError("OpenCV fehlt")
-    src, dst, t = pairs(paths)
+    src, dst, t, _ = pairs(paths)
     if len(src) < MIN_INLIERS:
         raise ValueError("zu wenig Paare (%d)" % len(src))
     h_px, mask = cv2.findHomography(src, dst, cv2.RANSAC, RANSAC_MM,
