@@ -91,6 +91,7 @@
         <div class="seg">
           <button id="bRot">Drehen 0°</button>
           <button id="bGrid">Raster</button>
+          <button id="bMap" title="Rasenrand, Schussverbot-Zone und 1-m-Gitter aus der Homographie">Karte</button>
           <button id="bHflip">Spiegeln ⇄</button>
           <button id="bVflip">Spiegeln ⇅</button>
         </div>
@@ -208,6 +209,19 @@
     </div>
 
     <div class="card">
+      <h2>Rasen-Abbildung <span class="tag">(Homographie)</span></h2>
+      <div class="hint">Rechnet aus den gesammelten Radar↔Kamera-Paaren, wo ein
+        Bildpunkt auf dem Rasen liegt – ohne Klicken. Danach liegen Rasenrand (grün),
+        Schussverbot-Zone (rot) und ein 1-m-Gitter (Beschriftung x/y in m) im
+        Livebild: passen sie zum echten Rasen, stimmt die Abbildung. Bewegte Spuren
+        zeigen dann ihre Rasenposition. Nach dem Versetzen der Kamera erst wieder
+        einige Tage Paare sammeln.</div>
+      <div class="row"><button class="wide" id="bHom">Homographie berechnen</button></div>
+      <div class="hint" id="homInfo">-</div>
+      <div class="msg" id="homMsg"></div>
+    </div>
+
+    <div class="card">
       <h2>Treffer-Bilder <span id="hitCount" class="tag"></span></h2>
       <div class="msg" id="hitState"></div>
       <div class="gal" id="galHits"></div>
@@ -242,7 +256,7 @@
 </main>
 
 <script>
-let state = null, rot = 0, grid = true, detOn = false, hits = null, radarN = null, detClickAt = 0;
+let state = null, rot = 0, grid = true, mapOn = true, hom = null, lastDet = null, detOn = false, hits = null, radarN = null, detClickAt = 0;
 
 const $ = (id) => document.getElementById(id);
 const post = (url, body) => fetch(url, {
@@ -272,8 +286,24 @@ window.addEventListener('resize', layout);
 
 const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
 
+function polyline(pts, color, width, dash) {
+  return '<polyline points="' + pts.map(p => (p[0] * 1000).toFixed(1) + ',' + (p[1] * 1000).toFixed(1)).join(' ') +
+         '" fill="none" stroke="' + color + '" stroke-width="' + width + '"' +
+         (dash ? ' stroke-dasharray="' + dash + '"' : '') + ' vector-effect="non-scaling-stroke"/>';
+}
+
 function drawOverlay(det) {
+  if (det !== undefined) lastDet = det;
+  det = lastDet;
   const parts = [];
+  const ov = mapOn && hom && hom.overlay;
+  if (ov) {
+    (ov.grid || []).forEach(l => parts.push(polyline(l, '#ffffff38', 1)));
+    (ov.labels || []).forEach(t => parts.push('<text x="' + t[0] * 1000 + '" y="' + t[1] * 1000 +
+      '" fill="#ffffffa0" font-size="16" font-family="sans-serif" text-anchor="middle">' + t[2] + '</text>'));
+    (ov.noshot || []).forEach(l => parts.push(polyline(l, '#ff5f56', 2, '6 4')));
+    (ov.rasen || []).forEach(l => parts.push(polyline(l, '#46c46a', 2)));
+  }
   if (grid) {
     for (let i = 1; i < 3; i++) {
       const p = i * 1000 / 3;
@@ -296,7 +326,9 @@ function drawOverlay(det) {
                  '" height="' + (h + 12) + '" fill="none" stroke="#50c8ff" stroke-width="3"/>');
       parts.push('<text x="' + Math.min(x, 900) + '" y="' + Math.min(y + h + 32, 995) +
                  '" fill="#50c8ff" font-size="24" font-family="sans-serif">' +
-                 esc(('B' + m.id + ' ' + (m.best || '')).trim()) + '</text>');
+                 esc(('B' + m.id + ' ' + (m.best || '') +
+                      (m.world ? ' @' + (m.world[0] / 1000).toFixed(1) + '/' + (m.world[1] / 1000).toFixed(1) + ' m' : '')).trim()) +
+                 '</text>');
     });
     (det.boxes || []).forEach(b => {
       const x = b.x * 1000, y = b.y * 1000, w = b.w * 1000, h = b.h * 1000;
@@ -423,7 +455,8 @@ function applyState(s, first) {
     $('fGap').value = c.detect.snap_gap || 60;
     $('vGap').textContent = ($('fGap').value) + ' s';
     $('fTuning').value = c.tuning || 'auto';
-    rot = c.rotate || 0; grid = c.grid !== false; detOn = !!c.detect.enabled;
+    rot = c.rotate || 0; grid = c.grid !== false; mapOn = c.map !== false; detOn = !!c.detect.enabled;
+    $('bMap').classList.toggle('on', mapOn);
     $('bRot').textContent = 'Drehen ' + rot + '°';
     $('bGrid').classList.toggle('on', grid);
     $('bHflip').classList.toggle('on', !!c.hflip);
@@ -568,13 +601,42 @@ $('bGrid').onclick = () => {
   drawOverlay(null); pollDetections();
   post('/api/config', {grid: grid});
 };
+$('bMap').onclick = () => {
+  mapOn = !mapOn;
+  $('bMap').classList.toggle('on', mapOn);
+  drawOverlay();
+  post('/api/config', {map: mapOn});
+};
+$('bHom').onclick = () => {
+  $('bHom').disabled = true;
+  $('homMsg').textContent = 'Rechne … (einige Sekunden)';
+  post('/api/homography/calibrate').then(r => {
+    $('homMsg').textContent = r.ok ? 'Neu berechnet.' : 'Fehler: ' + r.error;
+    return loadHom();
+  }).finally(() => { $('bHom').disabled = false; });
+};
+function loadHom() {
+  return fetch('/api/homography?overlay=1').then(r => r.json()).then(h => {
+    hom = h;
+    const d = h.data, day = (t) => new Date(t * 1000).toLocaleDateString('de-CH');
+    $('homInfo').innerHTML = (d
+      ? 'Stand ' + new Date(d.fitted * 1000).toLocaleString('de-CH') + ': <b>' + d.inliers + '</b> von ' +
+        d.pairs + ' Paaren passen, Fehler Median <b>' + d.median_mm + ' mm</b>, 90 % unter ' + d.p90_mm +
+        ' mm (Daten ' + day(d.t0) + '–' + day(d.t1) + ').' +
+        (d.check ? ' Gegenprobe (1. Hälfte → 2. Hälfte): ' + Math.round(d.check.share * 100) +
+                   ' % passen, Median ' + d.check.median_mm + ' mm.' : '') +
+        (h.valid ? '' : ' <span style="color:var(--warn)">Ungültig: Bild seither anders gespiegelt.</span>')
+      : 'Noch nicht berechnet.') + ' Gesammelt: ' + h.rows + ' Radar-Meldungen.';
+    drawOverlay();
+  }).catch(() => {});
+}
 $('bHflip').onclick = () => flip('hflip', $('bHflip'));
 $('bVflip').onclick = () => flip('vflip', $('bVflip'));
 function flip(key, btn) {
   const value = !state.config[key];
   btn.classList.toggle('on', value);
   say('Bild wird umgestellt …');
-  post('/api/config', {[key]: value}).then(() => { reloadStream(); refreshState(false); say(''); });
+  post('/api/config', {[key]: value}).then(() => { reloadStream(); refreshState(false); loadHom(); say(''); });
 }
 $('bFull').onclick = () => {
   const el = $('stage');
@@ -687,7 +749,7 @@ document.addEventListener('visibilitychange', () => {
 // Abgerissenes Livebild (Neustart, Funkloch) von selbst wieder holen.
 $('live').onerror = () => setTimeout(() => { if (!document.hidden) reloadStream(); }, 3000);
 
-refreshState(true).then(() => { loadGallery(); loadHits(); loadRadar(); loadMotion(); });
+refreshState(true).then(() => { loadHom(); loadGallery(); loadHits(); loadRadar(); loadMotion(); });
 $('bMotionReload').onclick = loadMotion;
 $('bMotionClear').onclick = () => {
   if (!confirm('Alle Bewegungs-Bilder löschen?')) return;

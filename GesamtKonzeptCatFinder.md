@@ -803,6 +803,12 @@ Nachtbilder ist gleichmäßige IR-Ausleuchtung wichtiger als maximale Mittenhell
 4. **Pose / Homographie (assistiert).** Die Kamera lernt Standort und Ausrichtung
    als Boden-Homographie über RasenKarten-Referenzpunkte (Web-UI-Klicks; VPS falls
    nötig).
+   **ERLEDIGT 2026-10-17 (einfacher als geplant, ohne Klicks):** Homographie
+   automatisch per RANSAC aus den gesammelten Radar↔Kamera-Paaren
+   (`pairs.jsonl`), Median-Fehler ~200 mm; Rasenrand/Schussverbot/1-m-Gitter
+   werden zur Sichtprüfung ins Livebild eingeblendet, bewegte Spuren zeigen ihre
+   Rasenposition. Offen: Linsenverzeichnung, gültiger `poseReport`. Details
+   `KIVisionCatLocator/README.md` („Phase 4").
 5. **Katzenerkennung + Tag/Nacht-Automatik.** Permanente Erkennung; IR-Filter/
    -Scheinwerfer automatisch tag/nacht; bei bestätigter Katze `catObserved` senden
    und ein Bild auf dem VPS ablegen.
