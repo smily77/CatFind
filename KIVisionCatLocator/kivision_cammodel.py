@@ -44,6 +44,11 @@ DEFAULT = {
 }
 STEP_MM = 150
 K_PRIOR_MM = 200          # k1 = 0,5 "kostet" so viel wie 100 mm Klickfehler
+# Bei genug Punkten wird der Kamera-Standort (x/y) mitgerechnet: der gemessene
+# lag am 2026-10-17 ~1 m neben dem, den die Klicks verlangen (anderer
+# Bezugspunkt als das Weltsystem der Laserkarte). 1 m Abweichung kostet so
+# viel wie 20 mm Klickfehler - die Messung zieht nur leicht.
+CAM_PRIOR = 0.02
 GRID_MM = 1000
 
 
@@ -88,7 +93,10 @@ class CameraModel:
         f = float(self.data["lens_mm"]) / PIXEL_MM
         R = _rot(p[0], p[1], p[2])
         dist = np.float64([p[3], p[4], 0, 0, 0])
-        C = np.float64(self.data["cam"]) * (1, self._m, 1)
+        C = np.float64(self.data["cam"])
+        if len(p) > 5:                    # Standort mitgerechnet (Hoehe bleibt)
+            C = np.float64([p[5], p[6], C[2]])
+        C = C * (1, self._m, 1)
         return R, C, self._K(f), dist
 
     def _ground(self, uv, p=None, mirror=None):
@@ -150,6 +158,10 @@ class CameraModel:
         # Leichte Bremse fuer die Verzeichnung (Weitwinkel: |k| deutlich < 1);
         # sonst biegt sie bei wenigen Punkten alles zurecht.
         res += [K_PRIOR_MM * p[3], K_PRIOR_MM * p[4]]
+        # Standort darf wandern, aber nicht beliebig weit (Messung ist ein Anhalt)
+        if len(p) > 5:
+            c = self.data["cam"]
+            res += [(p[5] - c[0]) * CAM_PRIOR, (p[6] - c[1]) * CAM_PRIOR]
         return np.float64(res)
 
     def calibrate(self, flips):
@@ -159,8 +171,10 @@ class CameraModel:
         n_eq = 2 * n_ref + len(self.data["zero"])
         if n_ref < 2 or n_eq < 5:
             raise ValueError("zu wenig Punkte: mind. 2 Referenzen und zusammen 5 Gleichungen")
-        # k1/k2 nur, wenn genug Gleichungen da sind - sonst Lochkamera
-        free = [0, 1, 2] + ([3] if n_eq >= 6 else []) + ([4] if n_eq >= 9 else [])
+        # Erst der Standort (7+ Gleichungen), Verzeichnung erst bei deutlich mehr
+        # Punkten: mit 8 Gleichungen bog k1 frei alles zurecht (k1 = +0,93,
+        # Kissen statt Tonne) und verdrehte die Karte zwischen den Punkten.
+        free = [0, 1, 2] + ([5, 6] if n_eq >= 7 else []) + ([3] if n_eq >= 12 else [])             + ([4] if n_eq >= 16 else [])
         C = np.float64(self.data["cam"])
         tgt = [r for r in self.data["refs"] if r.get("uv")]
         cx = np.mean([r["x"] for r in tgt]); cy = np.mean([r["y"] for r in tgt])
@@ -169,7 +183,7 @@ class CameraModel:
             yaw0 = math.atan2(mirror * (cy - C[1]), cx - C[0])
             for dyaw in np.radians([-40, -20, 0, 20, 40]):
                 for pitch in np.radians([15, 25, 35, 50, 65]):
-                    p = np.float64([yaw0 + dyaw, pitch, 0, 0, 0])
+                    p = np.float64([yaw0 + dyaw, pitch, 0, 0, 0, C[0], C[1]])
                     p, cost = self._lm(p, free, mirror)
                     if best is None or cost < best[1]:
                         best = (p, cost, mirror)
@@ -181,10 +195,11 @@ class CameraModel:
             if ref.get("uv"):
                 per.append({"name": ref["name"], "err_mm": round(float(math.hypot(r[i], r[i + 1])))})
                 i += 2
-        r = r[:-2]                                   # ohne Verzeichnungs-Bremse
+        r = r[:-4]                                   # ohne Bremsen (k, Standort)
         zero = [round(float(abs(v))) for v in r[i:]]
         self.fit = {"p": [float(v) for v in p], "mirror": mirror, "fitted": time.time(), "flips": flips,
                     "free": free, "refs": per, "zero_mm": zero,
+                    "cam": [round(float(p[5])), round(float(p[6])), float(C[2])],
                     "rms_mm": round(float(np.sqrt(np.mean(r ** 2))))}
         self.save()
         return self.fit
