@@ -9,8 +9,11 @@ MiniDome und Dome-C1 kaum (2026-10-17). Die Karte lag deshalb ~0,5-1 m daneben.
 Hier ist bekannt bzw. gemessen:
   * Kamera-Standort und -Hoehe (vom User gemessen, 8,05/-0,6 m, 2,25 m hoch)
   * Brennweite aus dem Objektiv (2,1 mm, OV5647-Pixel 1,4 um -> 949 px bei 1640)
-Gesucht sind nur die Blickrichtung (3 Winkel) und die Verzeichnung (k1, k2 bei
-genug Punkten). Dafuer klickt man im Livebild ein paar Punkte mit bekannter
+Gesucht sind die Blickrichtung (3 Winkel), die wirksame Brennweite und die
+Verzeichnung (k1). Die Brennweite ist frei, weil die Objektiv-Angabe nicht
+traegt: mit dem nachgemessenen Standort verlangen die Klicks ~3 mm statt der
+aufgedruckten 2,1 mm (2026-10-17); 2,1 mm passte nur mit einem um 1,2 m
+verschobenen Standort. Dafuer klickt man im Livebild ein paar Punkte mit bekannter
 Weltposition an (Fusspunkte von Lidar/Radaren) und Punkte auf der Nulllinie
 (Veranda-Kante, y = 0).
 
@@ -44,10 +47,9 @@ DEFAULT = {
 }
 STEP_MM = 150
 K_PRIOR_MM = 200          # k1 = 0,5 "kostet" so viel wie 100 mm Klickfehler
-# Bei genug Punkten wird der Kamera-Standort (x/y) mitgerechnet: der gemessene
-# lag am 2026-10-17 ~1 m neben dem, den die Klicks verlangen (anderer
-# Bezugspunkt als das Weltsystem der Laserkarte). 1 m Abweichung kostet so
-# viel wie 20 mm Klickfehler - die Messung zieht nur leicht.
+# Standort fest (vom User nachgemessen, stimmt); mitgerechnet wird er nur, wenn
+# "free_cam" in den Daten steht. Dann kostet 1 m Abweichung so viel wie 20 mm
+# Klickfehler - die Messung zieht nur leicht.
 CAM_PRIOR = 0.02
 GRID_MM = 1000
 
@@ -90,7 +92,7 @@ class CameraModel:
         falls das Weltsystem gegenueber der Wirklichkeit gespiegelt ist."""
         p = self.fit["p"] if p is None else p
         self._m = float(self.fit["mirror"] if mirror is None else mirror)
-        f = float(self.data["lens_mm"]) / PIXEL_MM
+        f = float(p[7]) if len(p) > 7 else float(self.data["lens_mm"]) / PIXEL_MM
         R = _rot(p[0], p[1], p[2])
         dist = np.float64([p[3], p[4], 0, 0, 0])
         C = np.float64(self.data["cam"])
@@ -159,7 +161,7 @@ class CameraModel:
         # sonst biegt sie bei wenigen Punkten alles zurecht.
         res += [K_PRIOR_MM * p[3], K_PRIOR_MM * p[4]]
         # Standort darf wandern, aber nicht beliebig weit (Messung ist ein Anhalt)
-        if len(p) > 5:
+        if len(p) > 5 and self.data.get("free_cam"):
             c = self.data["cam"]
             res += [(p[5] - c[0]) * CAM_PRIOR, (p[6] - c[1]) * CAM_PRIOR]
         return np.float64(res)
@@ -171,11 +173,16 @@ class CameraModel:
         n_eq = 2 * n_ref + len(self.data["zero"])
         if n_ref < 2 or n_eq < 5:
             raise ValueError("zu wenig Punkte: mind. 2 Referenzen und zusammen 5 Gleichungen")
-        # Erst der Standort (7+ Gleichungen), Verzeichnung erst bei deutlich mehr
-        # Punkten: mit 8 Gleichungen bog k1 frei alles zurecht (k1 = +0,93,
-        # Kissen statt Tonne) und verdrehte die Karte zwischen den Punkten.
-        free = [0, 1, 2] + ([5, 6] if n_eq >= 7 else []) + ([3] if n_eq >= 12 else [])             + ([4] if n_eq >= 16 else [])
+        # Standort fest: Brennweite (7+ Gleichungen) und k1 (8+) frei. Der
+        # Startwert fuer f kommt vom Objektiv, k1 haelt die Bremse klein - bei
+        # freiem f landet k1 bei Tonne (-0,3) statt wie frueher bei Kissen (+0,93).
+        # Mit "free_cam" der alte Weg: Standort statt Brennweite.
+        if self.data.get("free_cam"):
+            free = [0, 1, 2] + ([5, 6] if n_eq >= 7 else []) + ([3] if n_eq >= 12 else [])                 + ([4] if n_eq >= 16 else [])
+        else:
+            free = [0, 1, 2] + ([7] if n_eq >= 6 else []) + ([3] if n_eq >= 8 else [])                 + ([4] if n_eq >= 16 else [])
         C = np.float64(self.data["cam"])
+        f0 = float(self.data["lens_mm"]) / PIXEL_MM
         tgt = [r for r in self.data["refs"] if r.get("uv")]
         cx = np.mean([r["x"] for r in tgt]); cy = np.mean([r["y"] for r in tgt])
         best = None
@@ -183,10 +190,11 @@ class CameraModel:
             yaw0 = math.atan2(mirror * (cy - C[1]), cx - C[0])
             for dyaw in np.radians([-40, -20, 0, 20, 40]):
                 for pitch in np.radians([15, 25, 35, 50, 65]):
-                    p = np.float64([yaw0 + dyaw, pitch, 0, 0, 0, C[0], C[1]])
-                    p, cost = self._lm(p, free, mirror)
-                    if best is None or cost < best[1]:
-                        best = (p, cost, mirror)
+                    for fs in ((1.0, 1.35) if 7 in free else (1.0,)):
+                        p = np.float64([yaw0 + dyaw, pitch, 0, 0, 0, C[0], C[1], f0 * fs])
+                        p, cost = self._lm(p, free, mirror)
+                        if best is None or cost < best[1]:
+                            best = (p, cost, mirror)
         p, _, mirror = best
         r = self.residuals(p, mirror)
         per = []
@@ -195,11 +203,12 @@ class CameraModel:
             if ref.get("uv"):
                 per.append({"name": ref["name"], "err_mm": round(float(math.hypot(r[i], r[i + 1])))})
                 i += 2
-        r = r[:-4]                                   # ohne Bremsen (k, Standort)
+        r = r[:-4] if self.data.get("free_cam") else r[:-2]   # ohne Bremsen (k, Standort)
         zero = [round(float(abs(v))) for v in r[i:]]
         self.fit = {"p": [float(v) for v in p], "mirror": mirror, "fitted": time.time(), "flips": flips,
                     "free": free, "refs": per, "zero_mm": zero,
                     "cam": [round(float(p[5])), round(float(p[6])), float(C[2])],
+                    "f_px": round(float(p[7])), "lens_eff_mm": round(float(p[7]) * PIXEL_MM, 2),
                     "rms_mm": round(float(np.sqrt(np.mean(r ** 2))))}
         self.save()
         return self.fit
@@ -212,8 +221,8 @@ class CameraModel:
             J = np.empty((len(r), len(free)))
             for k, j in enumerate(free):
                 dp = np.zeros_like(p)
-                dp[j] = 1e-6
-                J[:, k] = (self.residuals(p + dp, mirror) - r) / 1e-6
+                dp[j] = 1e-6 * max(1.0, abs(p[j]) if j >= 5 else 1.0)
+                J[:, k] = (self.residuals(p + dp, mirror) - r) / dp[j]
             A = J.T @ J
             g = J.T @ r
             while True:
