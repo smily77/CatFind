@@ -285,6 +285,17 @@
       <div class="hint">Ausgelöst von der Bewegungserkennung der Kamera selbst: ein Bild
         je Spur, die sich 1,5&nbsp;s über den Rasen bewegt hat (höchstens alle 10&nbsp;s).
         Hellblau: Rahmen, zurückgelegter Weg und was die KI im Ausschnitt sah.</div>
+      <div class="row">
+        <label for="fZone">Bewegung/Augen nur in</label>
+        <select id="fZone">
+          <option value="rasen">Rasenkarte</option>
+          <option value="noshot">Noshot-Zone</option>
+        </select>
+        <span class="val" id="vZone"></span>
+      </div>
+      <div class="hint">Ausserhalb der gewählten Karte entstehen weder Spuren noch
+        Bilder noch Meldungen auf den Bus (Fusspunkt zählt). Ohne gültiges
+        Kamera-Modell bzw. Homographie gilt das ganze Bild.</div>
       <div class="gal" id="galMotion"></div>
       <div class="row"><button id="bMotionClear">Alle Bewegungs-Bilder löschen</button>
         <button id="bMotionReload">Neu laden</button></div>
@@ -534,6 +545,7 @@ function applyState(s, first) {
     $('fGap').value = c.detect.snap_gap || 60;
     $('vGap').textContent = ($('fGap').value) + ' s';
     $('fTuning').value = c.tuning || 'auto';
+    $('fZone').value = c.zone || 'rasen';
     rot = c.rotate || 0; grid = c.grid !== false; mapOn = c.map !== false; detOn = !!c.detect.enabled;
     $('bMap').classList.toggle('on', mapOn);
     $('bRot').textContent = 'Drehen ' + rot + '°';
@@ -602,6 +614,7 @@ function pollDetections() {
     const ms = d.motion_status;
     $('vDetMs').textContent = (d.ms ? d.ms + ' ms' : '') + (ms && ms.enabled
       ? ' | Bewegung ' + ms.ms + ' ms, ' + ms.moving + '/' + ms.tracks + ' Spuren' : '');
+    if (ms) $('vZone').textContent = ms.zone ? ms.zone_drop + ' Flecken ausserhalb verworfen' : 'ganzes Bild';
     $('detErr').textContent = d.error || '';
     const es = d.eyes_status;
     if (es) $('eyesStat').textContent = es.night
@@ -687,6 +700,7 @@ $('bGrid').onclick = () => {
   drawOverlay(null); pollDetections();
   post('/api/config', {grid: grid});
 };
+$('fZone').onchange = () => post('/api/config', {zone: $('fZone').value});
 $('bMap').onclick = () => {
   mapOn = !mapOn;
   $('bMap').classList.toggle('on', mapOn);

@@ -35,6 +35,7 @@ MIN_TRAVEL_REL = 0.6
 MIN_HITS = 3
 LOST_S = 2.0                # so lange ungesehen -> Spur weg
 MAX_GLOBAL = 0.20           # mehr Vordergrund als das: Licht hat sich geaendert
+ZONE_GROW = 0.015           # Zonenrand im Bild um so viel (Bildbreite) erweitert
 
 
 class Track:
@@ -103,6 +104,29 @@ class Motion:
         self.size = (0, 0)
         self.fg_frac = 0.0
         self.enabled = cv2 is not None
+        self.zone = None                     # Zonenumriss, normierte Bildpunkte
+        self.zone_mask = None
+        self.zone_drop = 0
+
+    def set_zone(self, uv_poly):
+        """Nur Flecken, deren Fusspunkt in dieser Zone liegt, werden zu Spuren
+        (None/leer = ganzes Bild). Die Maske entsteht im naechsten update()."""
+        with self.lock:
+            self.zone = list(uv_poly) if uv_poly and len(uv_poly) >= 3 else None
+            self.zone_mask = None
+
+    def _zone_mask(self, w, h):
+        if self.zone is None:
+            return None
+        m = self.zone_mask
+        if m is None or m.shape != (h, w):
+            m = np.zeros((h, w), np.uint8)
+            pts = np.int32([[round(u * w), round(v * h)] for u, v in self.zone])
+            cv2.fillPoly(m, [pts], 1)
+            g = max(1, int(ZONE_GROW * w))
+            m = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * g + 1,) * 2))
+            self.zone_mask = m
+        return m
 
     def reset(self):
         with self.lock:
@@ -155,6 +179,13 @@ class Motion:
                     continue
                 blobs.append((x / w, y / h, bw / w, bh / h))
         with self.lock:
+            zm = self._zone_mask(w, h)
+            if zm is not None and blobs:
+                inside = [b for b in blobs
+                          if zm[min(h - 1, int((b[1] + b[3]) * h)),
+                                min(w - 1, int((b[0] + b[2] / 2) * w))]]
+                self.zone_drop += len(blobs) - len(inside)
+                blobs = inside
             self._track(blobs, now)
             self.ms = round((time.monotonic() - started) * 1000, 1)
             return [t.as_dict(now) for t in self.tracks if t.moving]
@@ -238,5 +269,6 @@ class Motion:
         with self.lock:
             return {"enabled": self.enabled, "ms": self.ms, "frames": self.frames,
                     "fg": round(self.fg_frac, 4), "global_skip": self.global_skip,
-                    "tracks": len(self.tracks),
+                    "tracks": len(self.tracks), "zone": self.zone is not None,
+                    "zone_drop": self.zone_drop,
                     "moving": sum(1 for t in self.tracks if t.moving)}

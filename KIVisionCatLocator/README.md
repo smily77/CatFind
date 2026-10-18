@@ -339,6 +339,13 @@ wehende Hecke keine bewegte. Springt mehr als 20 % des Bildes gleichzeitig
   Bewegungs-ms und bewegte/alle Spuren.
 - **Bewegungs-Bilder** (eigene Galerie): ein Bild je Spur, die 1,5 s bewegt ist,
   höchstens alle 10 s. Journal: `[motion] Spur B… vorbei: Dauer, Weg, Grösse, Start/Ende, KI`.
+- **Zone (2026-10-18):** Auswahl „Bewegung/Augen nur in" = Rasenkarte (vorne bis
+  y = 0) oder Noshot-Zone (`zone` in `web_config.json`). Die Karte wird übers
+  Kamera-Modell/Homographie ins Bild projiziert (Rand +1,5 % Bildbreite);
+  Flecken mit Fusspunkt ausserhalb werden gar nicht erst zu Spuren – also auch
+  keine Bewegungs-Bilder, Coral-Ausschnitte, `pairs.jsonl`-Spuren und kein
+  `visionObserved`. Die Augensuche maskiert mit derselben Zone. Ohne gültige
+  Abbildung gilt das ganze Bild.
 - **`pairs.jsonl`:** bei jeder Radar-Meldung mit Weltposition, während die Kamera
   bewegte Spuren hat, eine Zeile `{t, sender, wx, wy, tracks:[{foot, w, h, …}]}`.
   Rohstoff für die Homographie (Phase 4) — automatisch kalibriert aus Paaren
