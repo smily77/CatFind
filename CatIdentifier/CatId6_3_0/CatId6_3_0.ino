@@ -169,7 +169,10 @@ void handleBusMsg(const xMsg& m) {
     }
     return;
   }
-  if (m.header.msgCode == catObserved && m.header.sender != ID) {
+  // visionObserved (Kamera) nur mit cam_feed=1 - erst pruefen, ob die Kamera-
+  // Spuren das Modell besser machen, bevor sie die Feuer-Entscheidung beeinflussen.
+  bool vision = m.header.msgCode == visionObserved && CTP.cam_feed;
+  if ((m.header.msgCode == catObserved || vision) && m.header.sender != ID) {
     if (!deviceActive()) return;       // Ruhemodus (stgActive AUS): Modell wird nicht gefuettert
     posPayload obs;
     if (!getPayload(m, obs) || !obs.worldValid) return;   // Modell arbeitet in Welt-mm

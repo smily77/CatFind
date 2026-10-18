@@ -145,6 +145,10 @@ void loop() {
         timer = millis()+ Alarm_blinkPeriode;
       }
     }
+    else if (mcMsg.header.msgCode == visionObserved) {
+      posPayload pos;                                                    // Kamera: nur zum VPS, kein Blinken
+      if (getPayload(mcMsg, pos)) gwAddEvent(mcMsg.header.sender, pos);
+    }
     else if (mcMsg.header.msgCode == catDetected) {
       // Cat Identifier hat eine Katze bestaetigt: ROT blinken (schaltbar) + VPS-Debug.
       // Der Identifier sendet jede Detektion DOPPELT (UDP-Verlustschutz) -> identische

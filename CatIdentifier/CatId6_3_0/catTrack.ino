@@ -37,6 +37,7 @@ void ctSetDefaults() {
   CTP.storm_window_s = 3.0f; CTP.storm_rate_evts_s = 8.0f;
   CTP.storm_min_events = 12; CTP.storm_scatter_mm = 2500;
   CTP.fusion_distance_mm = 500; CTP.fusion_time_s = 0.7f;
+  CTP.cam_feed = 0;
   CTP.quiet_t0_min = 900; CTP.quiet_t1_min = 990;   // NoShot-Zeit 15:00-16:30 lokal
 }
 
@@ -79,6 +80,7 @@ static bool ctApplyParam(const String& k, float v) {
   else if (k == "storm_scatter_mm")    CTP.storm_scatter_mm = v;
   else if (k == "fusion_distance_mm")  CTP.fusion_distance_mm = v;
   else if (k == "fusion_time_ms")      CTP.fusion_time_s = v / 1000.0f;
+  else if (k == "cam_feed")            CTP.cam_feed = (int)v;
   else if (k == "quiet_t0_min")        CTP.quiet_t0_min = (int)v;
   else if (k == "quiet_t1_min")        CTP.quiet_t1_min = (int)v;
   else return false;                   // unbekannt (z.B. reine VPS-Parameter) - ok

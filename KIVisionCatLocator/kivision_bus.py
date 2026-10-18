@@ -4,6 +4,7 @@ Der Pi verhaelt sich auf dem xCom-Bus wie ein ESP32-Sensor:
   * HB alle 10 s (hbPayload, IP-Oktett + Periode)
   * settingsReport beim Start, auf settingsRequest und nach jeder Aenderung
   * poseReport auf poseRequest (bis Phase 4 ohne gueltige Pose)
+  * visionObserved: bewegte Spuren der Kamera in Welt-mm (Phase 5B)
   * Kommandos: cmdSetSetting (stgCamAi = KI-Erkennung, stgActive = Ruhemodus),
     cmdReboot (startet das Programm neu, systemd holt es zurueck)
   * Debug-Text auf den Text-Multicast -> VPS-Debugfenster
@@ -40,6 +41,7 @@ class BusNode:
         self.supported = (1 << defs.stgCamAi) | (1 << defs.stgActive)
         self.actions = 0
         self.last_cmd = ""
+        self.vision_tx = 0
         self.started = time.time()
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -66,6 +68,7 @@ class BusNode:
                        if self.bus.stats["last_rx"] else None),
             "peers": len(self.bus.device_ips),
             "last_cmd": self.last_cmd,
+            "vision_tx": self.vision_tx,
         }
 
     # -- Senden ------------------------------------------------------------
@@ -82,6 +85,16 @@ class BusNode:
         # Phase 4 (Homographie) liefert die Pose; bis dahin ehrlich "ungueltig".
         self.bus.broadcast(self.x.poseReport, self.x.pack(
             "worldPosePayload", validWorldPose=0, worldX=0, worldY=0, heading=0.0, mirror=1))
+
+    def send_vision(self, wx, wy, width):
+        """Bewegtes Ziel am Boden (Welt-mm) als visionObserved - nicht als
+        catObserved, auf das die PowerActors ohne Absender-Pruefung feuern."""
+        if not hasattr(self.x, "visionObserved"):
+            return                      # alter Header ohne den Code: lieber nichts senden
+        self.bus.broadcast(self.x.visionObserved, self.x.pack(
+            "posPayload", x=wx, y=wy, radius=0.0, angle=0.0, targetSpeed=0, res=width,
+            worldX=wx, worldY=wy, worldValid=1, sensor=0))
+        self.vision_tx += 1
 
     def text(self, line):
         self.bus.text("KIVision: " + line)
