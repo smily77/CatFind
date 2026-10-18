@@ -11,6 +11,7 @@ CatFinder-Bus (kivision_bus.py / xcom.py): HB, settingsReport, Steuerung aus
 dem VPS-Tab "Steuerung" (KI an/aus, Ruhemodus, Neustart).
 """
 
+import base64
 import io
 import json
 import os
@@ -58,6 +59,14 @@ MAX_MOTION = 150
 # 50 MB pro Galerie - die Vorschau ist rund 20x kleiner. Das volle Bild gibt
 # es weiterhin per Klick.
 THUMB_WIDTH = 360
+# Radar-Bilder gehen zusaetzlich klein auf den VPS (POST /photo, wie die Cat Cam)
+# und erscheinen dort beim Track im Analyse-Tab - als Beleg fuers Klassifizieren.
+# Je Bild eine Uebersicht und, wenn die Rasenposition bekannt ist, ein Ausschnitt
+# um das Ziel aus dem vollen KI-Bild. Klein halten: das Pi-WLAN schafft ~60 kB/s.
+VPS_PHOTO_URL = os.environ.get("KIVISION_VPS_PHOTO", "http://46.225.81.240/photo")
+VPS_WIDTH = 1024
+VPS_CROP = 0.22            # Ausschnittbreite als Anteil der Bildbreite (4:3)
+VPS_QUEUE = 16             # mehr wartende Bilder -> neue verwerfen (WLAN haengt)
 MOTION_SNAP_AGE = 1.5
 MOTION_GAP = 10.0
 # Radar-Ziel <-> Kamera-Fusspunkt, gleichzeitig beobachtet: Rohstoff fuer die
@@ -639,6 +648,7 @@ class Detector:
         self.ep_next = 0.0
         self.ep_force = False
         self.ep_info = ""
+        self.ep_world = None
         self.ep_busy = False
         self.radar_count = 0
         self.model_path = None
@@ -951,7 +961,7 @@ class Detector:
         print("[web] Treffer festgehalten: %s (%d Rahmen)" % (path.name, len(boxes)))
 
     # -- Radar-Bilder ------------------------------------------------------
-    def radar_event(self, info, force=False):
+    def radar_event(self, info, force=False, world=None):
         """Vom Bus: ein Sensor meldet ein Ziel (catObserved) bzw. das Modell
         hat eine Katze bestaetigt (catDetected, force=True -> sofort ein Bild).
 
@@ -969,6 +979,7 @@ class Detector:
                 self.ep_next = now
             self.ep_last = now
             self.ep_info = info
+            self.ep_world = world
             if force:
                 self.ep_force = True
             running = self.thread is not None and self.thread.is_alive()
@@ -991,7 +1002,7 @@ class Detector:
         self.ep_force = False
         self.ep_shots += 1
         self.ep_next = now + WIT_EVERY
-        return self.ep_info, self.ep_shots
+        return (self.ep_info, self.ep_world), self.ep_shots
 
     def _witness_plain(self):
         try:
@@ -1023,6 +1034,7 @@ class Detector:
             model = "bestes: %s %d%%" % (raw[0]["label"], round(raw[0]["score"] * 100))
         else:
             model = "Modell: nichts ab %d%%" % round(WIT_THRESHOLD * 100)
+        info, world = info
         note = "%s  Bild %d  %s" % (info, shot, model)
         if tracks:
             note += "  Bew. %d" % len(tracks)
@@ -1037,6 +1049,7 @@ class Detector:
         with self.lock:
             self.radar_count += 1
         print("[web] Radar-Bild: %s (%s)" % (path.name, note))
+        vps_upload(path, frame, world, best)
 
     # -- Thread ----------------------------------------------------------
     def _run(self):
@@ -1301,8 +1314,75 @@ def _bus_on_target(m, kind, p):
         info = "%s Welt %.1f/%.1f m" % (name, p["worldX"] / 1000.0, p["worldY"] / 1000.0)
     else:
         info = "%s rel. %.1f/%.1f m" % (name, p["x"] / 1000.0, p["y"] / 1000.0)
-    detector.radar_event(info, force=(kind == "detected"))
+    world = (p["worldX"], p["worldY"]) if p.get("worldValid", kind == "detected") else None
+    detector.radar_event(info, force=(kind == "detected"), world=world)
     _log_pair(m, kind, p)
+
+
+_vps_queue = []
+_vps_cond = threading.Condition()
+
+
+def vps_upload(path, frame, world, best):
+    """Radar-Bild in die Warteschlange zum VPS (eigener Thread, WLAN ist langsam)."""
+    if not cfg.get("vps_photos", True):
+        return
+    with _vps_cond:
+        if len(_vps_queue) >= VPS_QUEUE:
+            print("[web] VPS-Bild verworfen (Warteschlange voll)")
+            return
+        _vps_queue.append((time.time(), path, frame, world, best))
+        _vps_cond.notify()
+
+
+def _vps_jpeg(img, quality=72):
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=quality)
+    return base64.b64encode(buf.getvalue())
+
+
+def _vps_images(path, frame, world):
+    """Uebersicht (beschriftetes Radar-Bild, verkleinert) und Ausschnitt um die
+    Rasenposition aus dem vollen Bild. Liefert [(trigger, x, y, base64)]."""
+    from PIL import Image
+    over = Image.open(path)
+    over = over.resize((VPS_WIDTH, round(over.size[1] * VPS_WIDTH / over.size[0])), Image.BILINEAR)
+    out = [("kivision", _vps_jpeg(over))]
+    geo = _geo()
+    uv = geo.to_image(*world) if geo and world else None
+    if uv and 0 <= uv[0] <= 1 and 0 <= uv[1] <= 1:
+        h, w = frame.shape[:2]
+        cw = round(w * VPS_CROP)
+        ch = round(cw * 3 / 4)
+        x0 = min(max(0, round(uv[0] * w - cw / 2)), w - cw)
+        y0 = min(max(0, round(uv[1] * h - ch * 0.6)), h - ch)   # Ziel etwas unter der Mitte
+        crop = Image.fromarray(frame[y0:y0 + ch, x0:x0 + cw])
+        out.insert(0, ("kivcrop", _vps_jpeg(crop, 80)))
+    return out
+
+
+def _vps_run():
+    import urllib.request
+    while True:
+        with _vps_cond:
+            while not _vps_queue:
+                _vps_cond.wait()
+            t, path, frame, world, best = _vps_queue.pop(0)
+        try:
+            imgs = _vps_images(path, frame, world)
+        except Exception as exc:                              # noqa: BLE001
+            print("[web] VPS-Bild: %s" % exc)
+            continue
+        x, y = world or (0, 0)
+        for trig, data in imgs:
+            url = "%s?sender=%d&trigger=%s&score=%d&x=%d&y=%d&t=%.2f" % (
+                VPS_PHOTO_URL, node.id if node else 20, trig, round(best * 100), x, y, t)
+            try:
+                req = urllib.request.Request(url, data=data, headers={"Content-Type": "text/plain"})
+                urllib.request.urlopen(req, timeout=30).read()
+            except Exception as exc:                          # noqa: BLE001
+                print("[web] VPS-Bild %s: %s" % (trig, exc))
+                break
 
 
 def _log_pair(m, kind, p):
@@ -1350,6 +1430,7 @@ def _start_bus():
 
 apply_detect()
 node = _start_bus()
+threading.Thread(target=_vps_run, daemon=True).start()
 
 app = Flask(__name__, template_folder=str(BASE / "templates"))
 
