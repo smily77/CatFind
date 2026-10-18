@@ -78,6 +78,22 @@
   .seg .sw.sel { background:#1f8a3b; }
   .env { font-size:13px; margin:6px 0; color:#cde; }
   .act { border:none; border-radius:6px; padding:7px 14px; margin:5px 0; cursor:pointer; color:#fff; font-size:13px; background:#2d6cdf; width:100%; text-align:left; }
+  /* ---- Coverage-Tab ---- */
+  #cov { height:100%; display:flex; min-height:0; }
+  #covMapWrap { flex:1; position:relative; min-width:0; }
+  #covMap { position:absolute; inset:0; width:100%; height:100%; cursor:grab; touch-action:none; }
+  #covMap.editing { cursor:crosshair; }
+  #covSide { width:330px; min-width:330px; border-left:1px solid #333; overflow:auto; padding:10px; font-size:12px; background:#121218; }
+  #covSide h3 { margin:10px 0 6px; font-size:13px; }
+  #covSide input[type=datetime-local] { width:100%; background:#0d0d12; color:#ddd; border:1px solid #333; border-radius:5px; padding:4px; margin:2px 0 6px; }
+  #covSide .act:disabled { opacity:.4; cursor:default; }
+  #covSide .tab { margin:2px 0; }
+  .covItem { padding:4px 6px; border:1px solid #2a2a30; border-radius:6px; margin:3px 0; cursor:pointer; background:#0d0d12; }
+  .covItem i { width:9px; height:9px; border-radius:2px; display:inline-block; margin-right:5px; }
+  .covItem small { display:block; color:#889; margin-top:2px; }
+  .covItem.sel { border-color:#ffd23b; background:#2a2612; }
+  .covItem.off { opacity:.5; cursor:default; }
+  #covMsg { color:#9ab; line-height:1.35; margin:8px 0; min-height:1em; }
   /* ---- Analyse-Tab ---- */
   #ana { height:100%; display:flex; flex-direction:column; }
   #anaBar { display:flex; align-items:center; gap:6px; padding:6px 8px; flex-wrap:wrap; background:#16161b; border-bottom:1px solid #2a2a30; }
@@ -149,6 +165,7 @@
   <button class="tab" data-v="g3">Gruppe 3</button>
   <button class="tab" data-v="ana">Analyse</button>
   <button class="tab" data-v="manual">Manuelle Pose</button>
+  <button class="tab" data-v="cov">Coverage</button>
   <button class="tab" data-v="pics">Bilder</button>
   <button class="tab" data-v="ctrl">Steuerung</button>
   <button id="reset">Karten zurücksetzen</button>
@@ -212,6 +229,36 @@
         <div class="manHelp" id="manInfo"></div>
       </div>
     </div>
+    <div id="cov" style="display:none">
+      <div id="covMapWrap"><canvas id="covMap" title="Ziehen = verschieben · Rad = zoomen · Doppelklick = einpassen · beim Bearbeiten: Eckpunkte ziehen"></canvas></div>
+      <div id="covSide">
+        <h3 style="margin-top:0">Erfassungsbereiche (Coverage)</h3>
+        <div class="manHelp">Diese Polygone nutzt das Erkennungsmodell (VPS + CatIdentifier): wo ein Track den Bereich verlässt, gilt die Katze als „durchgelaufen". Gelernt wird aus einer Mäherfahrt; wo der Mäher nicht hinkommt (Hecke), die Ecken von Hand nachziehen.</div>
+        <div id="covList"></div>
+        <button class="tab" id="covReload">neu laden</button>
+        <h3>Gewählt: <span id="covSel">—</span></h3>
+        <button class="act" id="covEditBtn" title="Vorhandene Eckpunkte verschieben (keine neuen Punkte)">✋ Ecken verschieben</button>
+        <span id="covEditTools" style="display:none">
+          <button class="act" id="covEditSave" style="background:#1f8a3b">✅ Angepasstes Polygon speichern</button>
+          <button class="act" id="covEditDiscard" style="background:#444">Bearbeiten verwerfen (Esc)</button>
+        </span>
+        <button class="act" id="covDelBtn" style="background:#7a2230" title="Gelerntes/angepasstes Polygon deaktivieren - danach gilt wieder der Sektor aus xComDef">Gelerntes Polygon löschen</button>
+        <h3>Zeitfenster (Treffer anzeigen + lernen)</h3>
+        <label>von</label><input type="datetime-local" id="covT0">
+        <label>bis</label><input type="datetime-local" id="covT1">
+        <button class="tab" id="covEvLoad">Treffer laden</button>
+        <button class="tab" id="covFromAna" title="Zeitfenster bzw. Shift-Auswahl aus dem Analyse-Tab übernehmen">aus Analyse übernehmen</button>
+        <div class="hint" id="covEvInfo" style="padding:4px 0"></div>
+        <label><input type="checkbox" id="covAllEv"> Treffer aller Sensoren zeigen</label><br>
+        <label><input type="checkbox" id="covOnlySel"> nur gewählten Sensor zeigen</label>
+        <h3>Aus Mäherfahrt lernen</h3>
+        <div class="manHelp">Zeitfenster auf die Mäherfahrt setzen, dann lernen. Die Vorschau erscheint gestrichelt weiss.</div>
+        <button class="act" id="covLearnBtn">🧭 Vorschau lernen</button>
+        <button class="act" id="covPrevSave" style="display:none;background:#1f8a3b">✅ Vorschau speichern</button>
+        <button class="act" id="covPrevDrop" style="display:none;background:#444">Vorschau verwerfen</button>
+        <div id="covMsg"></div>
+      </div>
+    </div>
     <div id="legend" style="display:none"></div>
     <div class="hint" id="hint" style="display:none"></div>
     <div id="ana" style="display:none">
@@ -229,8 +276,6 @@
         <label><input type="checkbox" id="anaCovChk" title="Erfassungsbereiche: Sektoren aus xComDef (Winkel+Reichweite) über die Welt-Posen der Sensoren; Fallback empirisch"> Erfassung</label>
         <label><input type="checkbox" id="anaFollowChk"> live folgen</label>
         <button id="anaBDev" title="Gerätetabelle (xComDef6_3.h: Typen + Erfassungsbereiche) sofort neu aus dem Repo lesen und die Sensoren um ihre Welt-Posen bitten">Geräte ⟳</button>
-        <button id="anaBCovLearn" title="Aus dem aktuellen Zeitfenster bzw. der Shift-Auswahl eine Mäher-Coverage für einen Sensor lernen">Coverage lernen</button>
-        <button id="anaBCovDel" title="Gelerntes Coverage-Polygon eines Sensors deaktivieren">Coverage löschen</button>
         <button id="anaBParams">Parameter…</button>
         <button id="anaBValid" title="Modell gegen alle von Hand bewerteten Tracks der ganzen Aufnahme prüfen">Modell-Check</button>
         <a class="abtn" href="atracks.csv" download title="komplette Trackliste inkl. Bewertungen/Klebungen als CSV herunterladen">Tracks ⇩</a>
@@ -312,12 +357,13 @@ const CMD_REBOOT=30;   // Fernwartung: Geraet neu starten (jedes Geraet, ueber M
 function setView(v,b){
   view=v;
   document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active", x===b));
-  const isList=v==="list", isCtrl=v==="ctrl", isAna=v==="ana", isPics=v==="pics", isManual=v==="manual",
-        isMap=!isList&&!isCtrl&&!isAna&&!isPics&&!isManual;
+  const isList=v==="list", isCtrl=v==="ctrl", isAna=v==="ana", isPics=v==="pics", isManual=v==="manual", isCov=v==="cov",
+        isMap=!isList&&!isCtrl&&!isAna&&!isPics&&!isManual&&!isCov;
   document.getElementById("list").style.display   = isList?"block":"none";
   document.getElementById("ctrl").style.display   = isCtrl?"block":"none";
   document.getElementById("ana").style.display    = isAna?"flex":"none";
   document.getElementById("manual").style.display = isManual?"flex":"none";
+  document.getElementById("cov").style.display    = isCov?"flex":"none";
   document.getElementById("pics").style.display   = isPics?"block":"none";
   document.getElementById("cv").style.display     = isMap?"block":"none";
   document.getElementById("legend").style.display = isMap?"block":"none";
@@ -326,6 +372,7 @@ function setView(v,b){
   if(isCtrl){ renderCtrl(lastSettings, true); reqAll(); }
   if(isAna) anaShow();
   if(isManual) manShow();
+  if(isCov) covShow();
   if(isPics) loadPics();
 }
 
@@ -726,5 +773,6 @@ async function tick(){
 (async()=>{ try{ mapPoints=(await (await fetch("map")).json()).points; }catch(e){ mapPoints=[]; } tick(); setInterval(tick,1500); })();
 </script>
 <script src="static/analysis.js"></script>
+<script src="static/coverage.js"></script>
 </body>
 </html>
