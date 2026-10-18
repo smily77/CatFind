@@ -836,6 +836,14 @@ Nachtbilder ist gleichmäßige IR-Ausleuchtung wichtiger als maximale Mittenhell
      eine unabhängige, genaue Position und verwirft Radar-Geister leichter. Keine
      Klassifikation nötig. Dazu gültiger `poseReport`. (Deckt Phase 6 weitgehend
      ab.)
+     **Umgesetzt 2026-10-18:** als eigener Nachrichtentyp **`visionObserved` (16)**,
+     nicht `catObserved` — die PowerActors feuern auf jedes `catObserved` ohne
+     Absender-Prüfung. Manager reicht es an den VPS weiter; CatIdent und
+     VPS-Modell nehmen es nur mit Modell-Parameter **`cam_feed=1`** (Standard 0:
+     erst aufzeichnen, an bewerteten Tracks prüfen, dann zuschalten). Je Spur
+     max. 1/s, stehend alle 3 s, Teilspuren < 0,7 m zusammengefasst, nur auf dem
+     Rasen. `poseReport` bleibt bis zum Zuschalten ungültig (sonst ändert der
+     Kamera-Sektor die Randlogik).
    - **C. Leuchtende Augen nachts.** Zwei kleine helle Punkte im Augenabstand,
      die sich gemeinsam bewegen: billiger, sehr spezifischer Tier-Detektor, auch
      ausserhalb des IR-Lichts; Abstand und Höhe trennen grob Katze und Fuchs.

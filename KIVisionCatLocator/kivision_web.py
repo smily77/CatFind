@@ -74,7 +74,14 @@ VPS_QUEUE = 16             # mehr wartende Bilder -> neue verwerfen (WLAN haengt
 # auf jedes catObserved. CatIdent nimmt sie nur mit Modell-Parameter cam_feed=1.
 # Je Spur hoechstens alle VISION_EVERY s; nur Spuren auf dem Rasen und schmaler
 # als VISION_MAX_W (breiter = Lichtwechsel/Schatten, kein Tier und kein Mensch).
+# Steht eine Spur (seit dem letzten Senden < VISION_STILL_MM), nur alle
+# VISION_STILL_EVERY s - eine sitzende Katze soll sichtbar bleiben, aber nicht
+# jede Sekunde dieselbe Position. Teilspuren eines Ziels (Beine, Schatten)
+# naeher als VISION_MERGE_MM gehen als EIN Ziel raus (die groesste).
 VISION_EVERY = 1.0
+VISION_STILL_MM = 200
+VISION_STILL_EVERY = 3.0
+VISION_MERGE_MM = 700
 VISION_MAX_W = 2500
 MOTION_SNAP_AGE = 1.5
 MOTION_GAP = 10.0
@@ -1339,7 +1346,7 @@ def _lawn_area():
 
 
 def _vision_run():
-    sent = {}                 # Spur-Id -> letzte Sendezeit
+    sent = {}                 # Spur-Id -> (letzte Sendezeit, Weltpunkt)
     lawn, lawn_at = None, 0.0
     while True:
         time.sleep(0.25)
@@ -1351,11 +1358,13 @@ def _vision_run():
         now = time.monotonic()
         if now - lawn_at > 300:                       # Karte kann neu kopiert werden
             lawn, lawn_at = _lawn_area(), now
-        tracks = motion.moving()
+        tracks = sorted(motion.moving(), key=lambda t: -t["w"] * t["h"])
         alive = set()
+        out = []                                      # diese Runde gesendet (Welt-mm)
         for tr in tracks:
             alive.add(tr["id"])
-            if now - sent.get(tr["id"], 0) < VISION_EVERY:
+            last_t, last_w = sent.get(tr["id"], (0.0, None))
+            if now - last_t < VISION_EVERY:
                 continue
             u, v = tr["foot"]
             w = geo.to_world(u, v)
@@ -1368,7 +1377,14 @@ def _vision_run():
             width = int(math.hypot(right[0] - left[0], right[1] - left[1])) if left and right else 0
             if width > VISION_MAX_W:
                 continue
-            sent[tr["id"]] = now
+            still = last_w and math.hypot(w[0] - last_w[0], w[1] - last_w[1]) < VISION_STILL_MM
+            if still and now - last_t < VISION_STILL_EVERY:
+                continue
+            if any(math.hypot(w[0] - o[0], w[1] - o[1]) < VISION_MERGE_MM for o in out):
+                sent[tr["id"]] = (now, w)             # Teil eines groesseren Ziels
+                continue
+            sent[tr["id"]] = (now, w)
+            out.append(w)
             node.send_vision(w[0], w[1], width)
         for k in [k for k in sent if k not in alive]:
             del sent[k]
