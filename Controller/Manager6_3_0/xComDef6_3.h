@@ -146,6 +146,11 @@ stationDefinitions device[deviceCount] = {
                              // Nur Geraete mit Umweltsensor (heute Dome-C1/BMP180) antworten.
 #define envReport       15   // Antwort/Annonce (immer Broadcast): envPayload. Dome-C1 meldet zusaetzlich
                              // selbsttaetig jede Minute; der Manager reicht es an den VPS weiter.
+#define visionObserved  16   // Kamera (VisionLocator, KIVision) sieht ein bewegtes Ziel am Boden:
+                             // posPayload wie catObserved (worldValid=1, res = Breite am Boden in mm).
+                             // Bewusst KEIN catObserved: die PowerActors feuern auf jedes catObserved
+                             // ohne Absender-Filter. Ausgewertet nur vom Manager (-> VPS) und vom
+                             // Cat Identifier (nur mit Modell-Parameter cam_feed=1).
 
 // Karten-Typen (fuer mapRequest/mapInfo/mapChunk)
 #define mapNoShot   1   // Schusszonen-/No-Shot-Karte (innerhalb = Feuern erlaubt)

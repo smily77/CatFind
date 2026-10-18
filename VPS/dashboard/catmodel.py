@@ -111,7 +111,20 @@ DEFAULT_PARAMS = {
     # --- Fusion
     "fusion_distance_mm": 500,
     "fusion_time_ms": 700,
+    # --- Kamera (KIVision, visionObserved): 1 = ihre Bewegungsspuren zählen
+    #     wie ein weiterer Sensor. 0 = nur aufgezeichnet und angezeigt, damit
+    #     man erst prüft, ob sie das Modell besser machen (gilt auch im ESP32).
+    "cam_feed": 0,
 }
+
+
+def _drop_vision(events, p, devices):
+    """Ohne cam_feed fließen Kamera-Events (Gerätetyp VisionLocator) nicht ins
+    Modell - wie im Cat Identifier, der visionObserved dann ignoriert."""
+    if p["cam_feed"] or not devices:
+        return events
+    cams = {int(k) for k, d in devices.items() if (d or {}).get("type") == "VisionLocator"}
+    return [e for e in events if e["sender"] not in cams] if cams else events
 
 
 def merged_params(params):
@@ -782,6 +795,7 @@ def analyze(events, params=None, devices=None, coverage=None, exclude=None):
     Aufnahme und in der Karten-/Zeitleisten-Darstellung — sie fließen nur nicht
     in Tracking/Bestätigung ein."""
     p = merged_params(params)
+    events = _drop_vision(events, p, devices)
     n_raw = len(events)
     if exclude:
         events = [e for e in events
@@ -819,6 +833,7 @@ def analyze_stream(events, params=None, devices=None, coverage=None,
     möglicherweise noch und bleiben provisorisch (Flag OFFEN, kein
     Austritts-Urteil). Rückgabe {"final": [...], "prov": [...], "storms": {}}."""
     p = merged_params(params)
+    events = _drop_vision(events, p, devices)
     if exclude:
         events = [e for e in events
                   if not any(a <= e["t"] <= b for a, b in exclude)]

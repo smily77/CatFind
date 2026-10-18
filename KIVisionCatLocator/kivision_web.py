@@ -14,6 +14,7 @@ dem VPS-Tab "Steuerung" (KI an/aus, Ruhemodus, Neustart).
 import base64
 import io
 import json
+import math
 import os
 import socket
 import subprocess
@@ -22,6 +23,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
 from kivision_cammodel import CameraModel
@@ -67,6 +69,13 @@ VPS_PHOTO_URL = os.environ.get("KIVISION_VPS_PHOTO", "http://46.225.81.240/photo
 VPS_WIDTH = 1024
 VPS_CROP = 0.22            # Ausschnittbreite als Anteil der Bildbreite (4:3)
 VPS_QUEUE = 16             # mehr wartende Bilder -> neue verwerfen (WLAN haengt)
+# Bewegte Spuren als visionObserved auf den Bus (Phase 5B): Fusspunkt ueber das
+# Kamera-Modell in Rasen-mm. Bewusst NICHT catObserved - die PowerActors feuern
+# auf jedes catObserved. CatIdent nimmt sie nur mit Modell-Parameter cam_feed=1.
+# Je Spur hoechstens alle VISION_EVERY s; nur Spuren auf dem Rasen und schmaler
+# als VISION_MAX_W (breiter = Lichtwechsel/Schatten, kein Tier und kein Mensch).
+VISION_EVERY = 1.0
+VISION_MAX_W = 2500
 MOTION_SNAP_AGE = 1.5
 MOTION_GAP = 10.0
 # Radar-Ziel <-> Kamera-Fusspunkt, gleichzeitig beobachtet: Rohstoff fuer die
@@ -1319,6 +1328,52 @@ def _bus_on_target(m, kind, p):
     _log_pair(m, kind, p)
 
 
+def _lawn_area():
+    """Rasenkarte als Flaeche; die unvermessene Schlusslinie vorne wird durch
+    die Nulllinie (Veranda-Kante, y = 0) ersetzt."""
+    poly = _read_poly(MAP_DIR / "rasen.csv")
+    if len(poly) < 3 or cv2 is None:
+        return None
+    a, b = poly[-1], poly[0]
+    return np.float32(poly + [(a[0], 0), (b[0], 0)]).reshape(-1, 1, 2)
+
+
+def _vision_run():
+    sent = {}                 # Spur-Id -> letzte Sendezeit
+    lawn, lawn_at = None, 0.0
+    while True:
+        time.sleep(0.25)
+        if not (node and _bus_active[0] and cfg.get("vision_observed", True)):
+            continue
+        geo = _geo()
+        if not geo:
+            continue
+        now = time.monotonic()
+        if now - lawn_at > 300:                       # Karte kann neu kopiert werden
+            lawn, lawn_at = _lawn_area(), now
+        tracks = motion.moving()
+        alive = set()
+        for tr in tracks:
+            alive.add(tr["id"])
+            if now - sent.get(tr["id"], 0) < VISION_EVERY:
+                continue
+            u, v = tr["foot"]
+            w = geo.to_world(u, v)
+            if not w:
+                continue
+            if lawn is not None and cv2.pointPolygonTest(lawn, (float(w[0]), float(w[1])), False) < 0:
+                continue
+            left = geo.to_world(tr["x"], v)
+            right = geo.to_world(tr["x"] + tr["w"], v)
+            width = int(math.hypot(right[0] - left[0], right[1] - left[1])) if left and right else 0
+            if width > VISION_MAX_W:
+                continue
+            sent[tr["id"]] = now
+            node.send_vision(w[0], w[1], width)
+        for k in [k for k in sent if k not in alive]:
+            del sent[k]
+
+
 _vps_queue = []
 _vps_cond = threading.Condition()
 
@@ -1431,6 +1486,7 @@ def _start_bus():
 apply_detect()
 node = _start_bus()
 threading.Thread(target=_vps_run, daemon=True).start()
+threading.Thread(target=_vision_run, daemon=True).start()
 
 app = Flask(__name__, template_folder=str(BASE / "templates"))
 
