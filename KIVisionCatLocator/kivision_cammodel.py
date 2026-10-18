@@ -15,7 +15,12 @@ traegt: mit dem nachgemessenen Standort verlangen die Klicks ~3 mm statt der
 aufgedruckten 2,1 mm (2026-10-17); 2,1 mm passte nur mit einem um 1,2 m
 verschobenen Standort. Dafuer klickt man im Livebild ein paar Punkte mit bekannter
 Weltposition an (Fusspunkte von Lidar/Radaren) und Punkte auf der Nulllinie
-(Veranda-Kante, y = 0).
+(Veranda-Kante, y = 0). Die Nulllinie ist die genaueste Linie im System.
+
+Dazu Punkte auf der sichtbaren Rasenkante (Beet links, Hecke rechts): sie
+muessen auf dem Rand der Rasenkarte landen (vom Laser vermessen). Ohne sie lag
+die Karte links ~0,5 m im Beet (2026-10-18) - die drei Fusspunkte liegen alle
+weit hinten bzw. rechts und sagen ueber die linke Bildhaelfte fast nichts.
 
 Bildpunkte normiert 0..1 (volles Sensorfeld; Livebild und KI-Bild zeigen
 dasselbe Feld). Gerechnet wird im 1640x1232-Raster.
@@ -44,6 +49,7 @@ DEFAULT = {
         {"name": "Dome-C1", "x": 8210, "y": 2905, "uv": None},
     ],
     "zero": [],                       # Klicks auf der Nulllinie (y = 0), je [u, v]
+    "edge": [],                       # Klicks auf der Rasenkante (Beet/Hecke), je [u, v]
 }
 STEP_MM = 150
 K_PRIOR_MM = 200          # k1 = 0,5 "kostet" so viel wie 100 mm Klickfehler
@@ -71,12 +77,32 @@ class CameraModel:
         self.data = json.loads(json.dumps(DEFAULT))
         self.fit = None          # Ergebnis der letzten Berechnung
         self._overlay = None
+        self._lawn = None        # Rasenrand als Strecken [ax, ay, bx, by] (mm)
         try:
             stored = json.loads(self.path.read_text())
             self.data.update({k: v for k, v in stored.items() if k != "fit"})
             self.fit = stored.get("fit")
         except (OSError, ValueError):
             pass
+
+    def set_lawn(self, poly):
+        """Rasenkarte als offener Zug: die Schlusslinie vorne (letzter -> erster
+        Punkt, y 0,6..1,2 m) ist nicht vermessen, die echte Kante ist die
+        Nulllinie."""
+        if len(poly) > 1:
+            a = np.float64(poly)
+            self._lawn = np.c_[a[:-1], a[1:]]
+
+    def _edge_dist(self, P):
+        """Abstand jedes Bodenpunkts zum Rasenrand (mm)."""
+        s = self._lawn
+        d = s[:, 2:] - s[:, :2]
+        q = P[:, None, :] - s[None, :, :2]
+        t = np.clip((q * d).sum(-1) / (d * d).sum(-1), 0, 1)
+        return np.hypot(*(q - t[..., None] * d).transpose(2, 0, 1)).min(1)
+
+    def _edges(self):
+        return self.data.get("edge") or [] if self._lawn is not None else []
 
     def save(self):
         out = dict(self.data, fit=self.fit)
@@ -157,6 +183,9 @@ class CameraModel:
         if self.data["zero"]:
             P = self._ground(self.data["zero"], p, mirror)
             res += [q[1] if not np.isnan(q[1]) else 1e5 for q in P]
+        if self._edges():
+            P = self._ground(self._edges(), p, mirror)
+            res += np.where(np.isnan(P[:, 0]), 1e5, self._edge_dist(np.nan_to_num(P))).tolist()
         # Leichte Bremse fuer die Verzeichnung (Weitwinkel: |k| deutlich < 1);
         # sonst biegt sie bei wenigen Punkten alles zurecht.
         res += [K_PRIOR_MM * p[3], K_PRIOR_MM * p[4]]
@@ -170,7 +199,7 @@ class CameraModel:
         if cv2 is None:
             raise ValueError("OpenCV fehlt")
         n_ref = sum(1 for r in self.data["refs"] if r.get("uv"))
-        n_eq = 2 * n_ref + len(self.data["zero"])
+        n_eq = 2 * n_ref + len(self.data["zero"]) + len(self._edges())
         if n_ref < 2 or n_eq < 5:
             raise ValueError("zu wenig Punkte: mind. 2 Referenzen und zusammen 5 Gleichungen")
         # Standort fest: Brennweite (7+ Gleichungen) und k1 (8+) frei. Der
@@ -185,16 +214,21 @@ class CameraModel:
         f0 = float(self.data["lens_mm"]) / PIXEL_MM
         tgt = [r for r in self.data["refs"] if r.get("uv")]
         cx = np.mean([r["x"] for r in tgt]); cy = np.mean([r["y"] for r in tgt])
-        best = None
+        starts = []
         for mirror in (1, -1):
             yaw0 = math.atan2(mirror * (cy - C[1]), cx - C[0])
             for dyaw in np.radians([-40, -20, 0, 20, 40]):
                 for pitch in np.radians([15, 25, 35, 50, 65]):
                     for fs in ((1.0, 1.35) if 7 in free else (1.0,)):
                         p = np.float64([yaw0 + dyaw, pitch, 0, 0, 0, C[0], C[1], f0 * fs])
-                        p, cost = self._lm(p, free, mirror)
-                        if best is None or cost < best[1]:
-                            best = (p, cost, mirror)
+                        p, cost = self._lm(p, free, mirror, iters=8)
+                        starts.append((cost, p, mirror))
+        # nur die besten Starts ausrechnen (alle voll dauerte auf dem Pi 5 min)
+        best = None
+        for _, p, mirror in sorted(starts, key=lambda s: s[0])[:3]:
+            p, cost = self._lm(p, free, mirror)
+            if best is None or cost < best[1]:
+                best = (p, cost, mirror)
         p, _, mirror = best
         r = self.residuals(p, mirror)
         per = []
@@ -204,9 +238,11 @@ class CameraModel:
                 per.append({"name": ref["name"], "err_mm": round(float(math.hypot(r[i], r[i + 1])))})
                 i += 2
         r = r[:-4] if self.data.get("free_cam") else r[:-2]   # ohne Bremsen (k, Standort)
-        zero = [round(float(abs(v))) for v in r[i:]]
+        nz = len(self.data["zero"])
+        zero = [round(float(abs(v))) for v in r[i:i + nz]]
+        edge = [round(float(abs(v))) for v in r[i + nz:]]
         self.fit = {"p": [float(v) for v in p], "mirror": mirror, "fitted": time.time(), "flips": flips,
-                    "free": free, "refs": per, "zero_mm": zero,
+                    "free": free, "refs": per, "zero_mm": zero, "edge_mm": edge,
                     "cam": [round(float(p[5])), round(float(p[6])), float(C[2])],
                     "f_px": round(float(p[7])), "lens_eff_mm": round(float(p[7]) * PIXEL_MM, 2),
                     "rms_mm": round(float(np.sqrt(np.mean(r ** 2))))}
@@ -273,8 +309,8 @@ class CameraModel:
         if self._overlay is None:
             out = {}
             for name, poly in maps.items():
-                if poly:
-                    out[name] = self._project(poly + poly[:1])
+                if poly:     # Rasen offen: Schlusslinie vorne ist nicht vermessen
+                    out[name] = self._project(poly if name == "rasen" else poly + poly[:1])
             pts = [q for poly in maps.values() for q in poly]
             if pts:
                 x0 = math.floor(min(q[0] for q in pts) / GRID_MM) * GRID_MM

@@ -1570,6 +1570,8 @@ def api_cammodel_set():
                          for r in data["refs"]][:20]
         if "zero" in data:
             d["zero"] = [[float(u), float(v)] for u, v in data["zero"]][:30]
+        if "edge" in data:
+            d["edge"] = [[float(u), float(v)] for u, v in data["edge"]][:60]
     except (TypeError, ValueError, KeyError, IndexError) as exc:
         return jsonify({"ok": False, "error": "ungueltige Eingabe: %s" % exc})
     cammodel.save()
@@ -1579,6 +1581,7 @@ def api_cammodel_set():
 @app.route("/api/cammodel/calibrate", methods=["POST"])
 def api_cammodel_calibrate():
     try:
+        cammodel.set_lawn(_maps()["rasen"])
         fit = cammodel.calibrate(_flips())
     except Exception as exc:                                  # noqa: BLE001
         return jsonify({"ok": False, "error": str(exc)})
