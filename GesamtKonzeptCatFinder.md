@@ -809,9 +809,10 @@ Nachtbilder ist gleichmäßige IR-Ausleuchtung wichtiger als maximale Mittenhell
    werden zur Sichtprüfung ins Livebild eingeblendet, bewegte Spuren zeigen ihre
    Rasenposition. Offen: Linsenverzeichnung, gültiger `poseReport`. Details
    `KIVisionCatLocator/README.md` („Phase 4").
-5. **Katzenerkennung + Tag/Nacht-Automatik.** Permanente Erkennung; IR-Filter/
-   -Scheinwerfer automatisch tag/nacht; bei bestätigter Katze `catObserved` senden
-   und ein Bild auf dem VPS ablegen.
+5. **Katzenerkennung.** Permanente Erkennung; bei bestätigter Katze `catObserved`
+   senden und ein Bild auf dem VPS ablegen.
+   **GESTRICHEN 2026-10-18: Tag/Nacht-Automatik** — IR-Sperrfilter und IR-Licht
+   schaltet die Kamera selbst, der Pi muss nichts steuern.
 6. **Lokalisierung.** Erkannte Katze → Rasen-Weltkoordinaten (Homographie aus
    Phase 4) → in `catObserved` (`worldX/worldY`, `worldValid=1`) mitübertragen.
 7. **CatIdent-Modelloptimierung.** Die welt-lokalisierten Kamera-Treffer dienen
@@ -820,7 +821,7 @@ Nachtbilder ist gleichmäßige IR-Ausleuchtung wichtiger als maximale Mittenhell
 
 ### Nicht Teil dieser Aufgabe / Abgrenzung
 - Wetterfestes Gehäuse, Strom, Montage (Nutzer).
-- IR-CUT-/IR-Scheinwerfer-Verkabelung im Detail (Nutzer studiert Modul/GPIO noch).
+- IR-CUT-/IR-Scheinwerfer: schaltet die Kamera selbst (2026-10-18).
 - Vollautomatische Pose-Ableitung ohne Nutzerklicks; IR-Nachttraining (eigene
   spätere Iteration); Nutzung als eigenständiger `catDetected`-Bestätiger
   (bleibt bei CatIdent).
