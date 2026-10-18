@@ -214,6 +214,9 @@ DEFAULTS = {
     "map": True,          # Rasenkarte per Homographie ins Livebild (Phase 4)
     "eyes": True,         # Augensuche nachts (Phase 5C)
     "eyes_force": False,  # Augensuche auch bei Tag (nur zum Testen)
+    # Bewegung/Augen nur innerhalb dieser Karte (rasen | noshot): ausserhalb
+    # entstehen weder Spuren noch Bilder noch visionObserved.
+    "zone": "rasen",
     "tuning": "auto",     # auto | normal | noir (NoIR-Modul: Magenta bei Tag)
     "controls": {},
     "detect": {
@@ -1353,19 +1356,46 @@ def _bus_on_target(m, kind, p):
     _log_pair(m, kind, p)
 
 
-def _lawn_area():
-    """Rasenkarte als Flaeche; die unvermessene Schlusslinie vorne wird durch
-    die Nulllinie (Veranda-Kante, y = 0) ersetzt."""
-    poly = _read_poly(MAP_DIR / "rasen.csv")
+ZONES = ("rasen", "noshot")
+
+
+def _zone_name():
+    z = cfg.get("zone")
+    return z if z in ZONES else "rasen"
+
+
+def _zone_area():
+    """Gewaehlte Karte als Flaeche (Welt-mm). Beim Rasen wird die unvermessene
+    Schlusslinie vorne durch die Nulllinie (Veranda-Kante, y = 0) ersetzt;
+    die Noshot-Zone ist schon ein geschlossenes Polygon."""
+    name = _zone_name()
+    poly = _read_poly(MAP_DIR / (name + ".csv"))
     if len(poly) < 3 or cv2 is None:
         return None
-    a, b = poly[-1], poly[0]
-    return np.float32(poly + [(a[0], 0), (b[0], 0)]).reshape(-1, 1, 2)
+    if name == "rasen":
+        a, b = poly[-1], poly[0]
+        poly = poly + [(a[0], 0), (b[0], 0)]
+    return np.float32(poly).reshape(-1, 1, 2)
+
+
+def _zone_run():
+    """Zone ins Bild projizieren und dem Bewegungsmelder geben - alle 5 min
+    (Karte/Kamera-Modell koennen sich aendern) und sofort bei Umschalten."""
+    key, at = None, 0.0
+    while True:
+        time.sleep(1.0)
+        now = time.monotonic()
+        k = (_zone_name(), id(_geo()))
+        if k == key and now - at < 300:
+            continue
+        key, at = k, now
+        geo = _geo()
+        motion.set_zone(_zone_uv(geo) if geo else None)
 
 
 def _vision_run():
     sent = {}                 # Spur-Id -> (letzte Sendezeit, Weltpunkt)
-    lawn, lawn_at = None, 0.0
+    lawn, lawn_at, lawn_zone = None, 0.0, None
     while True:
         time.sleep(0.25)
         if not (node and _bus_active[0] and cfg.get("vision_observed", True)):
@@ -1374,8 +1404,8 @@ def _vision_run():
         if not geo:
             continue
         now = time.monotonic()
-        if now - lawn_at > 300:                       # Karte kann neu kopiert werden
-            lawn, lawn_at = _lawn_area(), now
+        if now - lawn_at > 300 or lawn_zone != _zone_name():   # Karte neu kopiert / umgeschaltet
+            lawn, lawn_at, lawn_zone = _zone_area(), now, _zone_name()
         tracks = sorted(motion.moving(), key=lambda t: -t["w"] * t["h"])
         alive = set()
         out = []                                      # diese Runde gesendet (Welt-mm)
@@ -1450,10 +1480,10 @@ def _vps_images(path, frame, world, trig="kivision"):
     return out
 
 
-def _eye_mask(geo):
-    """Rasen (vorne bis zur Nulllinie) ins Bild projizieren - dicht abgetastet,
-    weil die Verzeichnung gerade Kanten biegt."""
-    lawn = _lawn_area()
+def _zone_uv(geo):
+    """Gewaehlte Zone ins Bild projizieren - dicht abgetastet, weil die
+    Verzeichnung gerade Kanten biegt."""
+    lawn = _zone_area()
     if lawn is None:
         return []
     pts = [tuple(p) for p in lawn.reshape(-1, 2)]
@@ -1506,6 +1536,7 @@ def save_eye(frame, tr, note):
 
 def _eyes_run():
     last_meta = last_mask = last_saved = 0.0
+    mask_zone = None
     seq = -1
     sent = {}
     while True:
@@ -1525,9 +1556,9 @@ def _eyes_run():
         if frame is None:
             continue
         geo = _geo()
-        if now - last_mask > 300 or eyes.mask is None:
-            eyes.set_mask(_eye_mask(geo) if geo else [], frame.shape)
-            last_mask = now
+        if now - last_mask > 300 or eyes.mask is None or mask_zone != _zone_name():
+            eyes.set_mask(_zone_uv(geo) if geo else [], frame.shape)
+            last_mask, mask_zone = now, _zone_name()
         try:
             fresh = eyes.update(frame, now)
         except Exception as exc:                              # noqa: BLE001
@@ -1631,6 +1662,7 @@ node = _start_bus()
 threading.Thread(target=_vps_run, daemon=True).start()
 threading.Thread(target=_vision_run, daemon=True).start()
 threading.Thread(target=_eyes_run, daemon=True).start()
+threading.Thread(target=_zone_run, daemon=True).start()
 
 app = Flask(__name__, template_folder=str(BASE / "templates"))
 
@@ -1737,6 +1769,8 @@ def api_config():
     for key in ("rotate", "grid", "map", "eyes", "eyes_force"):
         if key in data:
             cfg[key] = data[key]
+    if data.get("zone") in ZONES:
+        cfg["zone"] = data["zone"]
     if "tuning" in data and data["tuning"] != cfg.get("tuning"):
         camera.set_tuning(str(data["tuning"]))
         restart = False          # set_tuning startet schon neu
