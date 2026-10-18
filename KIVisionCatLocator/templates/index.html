@@ -223,7 +223,8 @@
       <div class="hint">Kamera-Standort und Objektiv sind gemessen; gesucht ist nur die
         Blickrichtung. Je Referenz „Setzen“ drücken und im Livebild auf ihren
         <b>Fusspunkt</b> klicken (wo sie auf dem Boden steht). Dazu einige Punkte auf
-        der <b>Nulllinie</b> (Veranda-Kante, y&nbsp;=&nbsp;0) verteilt anklicken. Mindestens
+        der <b>Nulllinie</b> (Veranda-Kante, y&nbsp;=&nbsp;0) und auf der sichtbaren
+        <b>Rasenkante</b> (Beet links, Hecke rechts, nicht vorne) verteilt anklicken. Mindestens
         2 Referenzen und zusammen 5 Angaben; mehr Punkte = genauer.</div>
       <div class="cmgrid">
         <label>Kamera x (m)<input id="cmX" type="number" step="0.01"></label>
@@ -237,6 +238,11 @@
         <button id="cmZero">Nulllinie-Punkt setzen</button>
         <span class="val" id="cmZeroN"></span>
         <button id="cmZeroClr">Nulllinie leeren</button>
+      </div>
+      <div class="row">
+        <button id="cmEdge">Rasenkante-Punkt setzen</button>
+        <span class="val" id="cmEdgeN"></span>
+        <button id="cmEdgeClr">Rasenkante leeren</button>
       </div>
       <div class="msg" id="cmPick"></div>
       <div class="row"><button class="wide" id="cmCalc">Speichern &amp; berechnen</button></div>
@@ -344,7 +350,7 @@ function drawOverlay(det) {
     (ov.refs || []).forEach(t => parts.push('<circle cx="' + t[0] * 1000 + '" cy="' + t[1] * 1000 +
       '" r="9" fill="none" stroke="#ffd34d" stroke-width="2" vector-effect="non-scaling-stroke"/>'));
   }
-  // ... und wo sie angeklickt wurden (magenta), Nulllinie-Klicks tuerkis
+  // ... und wo sie angeklickt wurden (magenta), Nulllinie-Klicks tuerkis, Rasenkante gelb
   if (cm && (mapOn || pick)) {
     cm.data.refs.forEach(r => {
       if (!r.uv) return;
@@ -356,6 +362,8 @@ function drawOverlay(det) {
     });
     cm.data.zero.forEach(z => parts.push('<circle cx="' + z[0] * 1000 + '" cy="' + z[1] * 1000 +
       '" r="5" fill="#3fd8e8" stroke="#000" stroke-width="1" vector-effect="non-scaling-stroke"/>'));
+    (cm.data.edge || []).forEach(z => parts.push('<circle cx="' + z[0] * 1000 + '" cy="' + z[1] * 1000 +
+      '" r="5" fill="#ffd34d" stroke="#000" stroke-width="1" vector-effect="non-scaling-stroke"/>'));
   }
   if (grid) {
     for (let i = 1; i < 3; i++) {
@@ -694,11 +702,13 @@ function renderCm() {
     cm.data.refs.splice(Number(b.dataset.del), 1); saveCm().then(loadCm);
   });
   $('cmZeroN').textContent = d.zero.length + ' Punkte';
+  $('cmEdgeN').textContent = (d.edge || []).length + ' Punkte';
   const f = cm.fit;
   $('cmInfo').innerHTML = f
     ? 'Stand ' + new Date(f.fitted * 1000).toLocaleString('de-CH') + ': Restfehler <b>' + f.rms_mm + ' mm</b> (rms). ' +
       f.refs.map(r => esc(r.name) + ' ' + r.err_mm + ' mm').join(', ') +
       (f.zero_mm.length ? '; Nulllinie ' + f.zero_mm.join('/') + ' mm' : '') +
+      (f.edge_mm && f.edge_mm.length ? '; Rasenkante ' + f.edge_mm.join('/') + ' mm' : '') +
       (f.mirror < 0 ? '; Weltsystem gespiegelt' : '') +
       (f.lens_eff_mm ? '; Brennweite wirksam <b>' + f.lens_eff_mm.toFixed(2) + ' mm</b> (' + f.f_px + ' px)' : '') +
       (f.cam && !f.lens_eff_mm ? '; Kamera gerechnet bei <b>' + (f.cam[0] / 1000).toFixed(2) + ' / ' + (f.cam[1] / 1000).toFixed(2) +
@@ -720,12 +730,13 @@ function cmFromInputs() {
 function saveCm() {
   cmFromInputs();
   return post('/api/cammodel', {cam: cm.data.cam, lens_mm: cm.data.lens_mm,
-                                refs: cm.data.refs, zero: cm.data.zero});
+                                refs: cm.data.refs, zero: cm.data.zero, edge: cm.data.edge || []});
 }
 function startPick(what) {
   pick = what;
   $('ov').classList.add('pick');
   $('cmPick').textContent = what.zero ? 'Jetzt im Livebild auf die Veranda-Kante (y = 0) klicken …'
+    : what.edge ? 'Jetzt im Livebild auf die Rasenkante (Übergang Rasen → Beet/Hecke) klicken …'
     : 'Jetzt im Livebild auf den Fusspunkt von „' + cm.data.refs[what.ref].name + '“ klicken …';
   drawOverlay();
 }
@@ -736,7 +747,9 @@ $('ov').addEventListener('click', (ev) => {
   const p = pt.matrixTransform(svg.getScreenCTM().inverse());   // beruecksichtigt die Drehung
   const uv = [Math.round(p.x * 10) / 10000, Math.round(p.y * 10) / 10000];
   if (uv[0] < 0 || uv[0] > 1 || uv[1] < 0 || uv[1] > 1) return;
-  if (pick.zero) cm.data.zero.push(uv); else cm.data.refs[pick.ref].uv = uv;
+  if (pick.zero) cm.data.zero.push(uv);
+  else if (pick.edge) (cm.data.edge = cm.data.edge || []).push(uv);
+  else cm.data.refs[pick.ref].uv = uv;
   pick = null;
   $('ov').classList.remove('pick');
   $('cmPick').textContent = '';
@@ -750,6 +763,11 @@ $('cmZero').onclick = () => startPick({zero: true});
 $('cmZeroClr').onclick = () => {
   if (!confirm('Alle Nulllinie-Punkte löschen?')) return;
   cm.data.zero = []; saveCm().then(loadCm);
+};
+$('cmEdge').onclick = () => startPick({edge: true});
+$('cmEdgeClr').onclick = () => {
+  if (!confirm('Alle Rasenkante-Punkte löschen?')) return;
+  cm.data.edge = []; saveCm().then(loadCm);
 };
 $('cmCalc').onclick = () => {
   $('cmCalc').disabled = true;
