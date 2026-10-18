@@ -158,7 +158,7 @@ class Homography:
         Kalibrieren - sonst stuende jeder Punkt seitenverkehrt."""
         return self.H is not None and self.data.get("flips") == flips
 
-    def to_world(self, u, v):
+    def to_world(self, u, v, z=0.0):         # z: Homographie kennt nur den Boden
         x, y, w = (float(c) for c in self.H @ (u, v, 1.0))
         if w <= 0:
             return None

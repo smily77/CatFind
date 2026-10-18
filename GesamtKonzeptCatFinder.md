@@ -847,6 +847,16 @@ Nachtbilder ist gleichmäßige IR-Ausleuchtung wichtiger als maximale Mittenhell
    - **C. Leuchtende Augen nachts.** Zwei kleine helle Punkte im Augenabstand,
      die sich gemeinsam bewegen: billiger, sehr spezifischer Tier-Detektor, auch
      ausserhalb des IR-Lichts; Abstand und Höhe trennen grob Katze und Fuchs.
+     **Erste Fassung 2026-10-18** (`kivision_eyes.py`): nur nachts (Lux < 50 oder
+     Gain am Anschlag), auf dem vollen 2592er-Bild im Rasen samt 40-px-Rand,
+     2×/s. Top-Hat (Rechteckkern 15 px) + Kontrastverhältnis ≥ 2,5 (auf hellem
+     Grund nur fast gesättigte Punkte), Mäher-Scheinwerfer samt 60 px Umgebung
+     ausgeblendet, ortsfeste Lichter über eine vergessende Wärmekarte
+     (5 min). Ein Auge zählt ab 3 Treffern in Folge; Partnerpunkt = „Paar“.
+     Ausgabe: Galerie „Leuchtende Augen“ (+ Rohbilder `eyes/raw` zum
+     Nachjustieren), `visionObserved` mit `sensor=1` (Augenhöhe 25 cm für die
+     Rasenposition), Bild an den VPS (`kiveye`). Noch nicht an echten
+     Nachtdaten abgestimmt.
    - **D. Eigener Klassifikator (später).** Aus den über A bewerteten Tracks
      Ausschnitte sammeln und einen Garten-eigenen Coral-Klassifikator
      nachtrainieren (Katze/Fuchs/Mäher/Igel/nichts). Lohnt erst ab einigen

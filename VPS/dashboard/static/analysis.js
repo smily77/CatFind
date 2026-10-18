@@ -985,7 +985,7 @@ async function anaLoadPhotos(){
 function trackPhotos(tr){
   // Ausschnitte zuerst, je Aufnahme nebeneinander
   return (ANA.photos||[]).filter(ph=>photoFits(tr, ph))
-    .sort((a,b)=>(a.t-b.t) || ((b.trigger==="kivcrop")-(a.trigger==="kivcrop")));
+    .sort((a,b)=>(a.t-b.t) || ((b.trigger||"").endsWith("crop")-(a.trigger||"").endsWith("crop")));
 }
 
 function renderTracks(){
@@ -1050,7 +1050,7 @@ function renderTracks(){
         det = `<small>Aufnahme: ${fmtDT(t.t0)} → ${fmtDT(t.t1)}</small>` +
               (phs.length ? `<div class="trPhotos">` + phs.map(ph=>
                 `<a href="photo/${ph.id}" target="_blank" title="${fmtDT(ph.t)} · ${escapeHtml(ph.trigger)}${ph.score?" · KI "+ph.score+"%":""}">` +
-                `<img src="photo/${ph.id}" loading="lazy" class="${ph.trigger==="kivcrop"?"crop":""}"></a>`).join("") + `</div>` : "") +
+                `<img src="photo/${ph.id}" loading="lazy" class="${ph.trigger.endsWith("crop")?"crop":""}"></a>`).join("") + `</div>` : "") +
               (sd ? `<small>${sd}</small>` : "") +
               (t.members ? `<div class="mkRow"><button class="mk" data-unmerge="${t.merge_id}">🔗 Klebung lösen</button></div>` : "") +
               `<div class="mkRow">` +

@@ -127,13 +127,14 @@ class CameraModel:
         C = C * (1, self._m, 1)
         return R, C, self._K(f), dist
 
-    def _ground(self, uv, p=None, mirror=None):
-        """Normierte Bildpunkte -> Bodenpunkte (mm); NaN-Zeilen = ueber Horizont."""
+    def _ground(self, uv, p=None, mirror=None, z=0.0):
+        """Normierte Bildpunkte -> Bodenpunkte (mm); NaN-Zeilen = ueber Horizont.
+        z > 0: Schnitt mit der Ebene in dieser Hoehe (z.B. Augen ueber dem Rasen)."""
         R, C, K, dist = self._parts(p, mirror)
         px = np.float64(uv).reshape(-1, 1, 2) * (W, H)
         und = cv2.undistortPoints(px, K, dist).reshape(-1, 2)
         rays = np.c_[und, np.ones(len(und))] @ R      # = R^T * ray (Welt)
-        t = -C[2] / rays[:, 2]
+        t = (z - C[2]) / rays[:, 2]
         P = C[:2] + rays[:, :2] * t[:, None]
         P[t <= 0] = np.nan
         P[:, 1] *= self._m
@@ -142,8 +143,8 @@ class CameraModel:
     def valid(self, flips):
         return bool(self.fit) and self.fit.get("flips") == flips
 
-    def to_world(self, u, v):
-        P = self._ground([[u, v]])[0]
+    def to_world(self, u, v, z=0.0):
+        P = self._ground([[u, v]], z=z)[0]
         if np.isnan(P[0]):
             return None
         return int(round(P[0])), int(round(P[1]))

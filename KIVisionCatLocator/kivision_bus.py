@@ -86,14 +86,14 @@ class BusNode:
         self.bus.broadcast(self.x.poseReport, self.x.pack(
             "worldPosePayload", validWorldPose=0, worldX=0, worldY=0, heading=0.0, mirror=1))
 
-    def send_vision(self, wx, wy, width):
+    def send_vision(self, wx, wy, width, sensor=0):
         """Bewegtes Ziel am Boden (Welt-mm) als visionObserved - nicht als
         catObserved, auf das die PowerActors ohne Absender-Pruefung feuern."""
         if not hasattr(self.x, "visionObserved"):
             return                      # alter Header ohne den Code: lieber nichts senden
         self.bus.broadcast(self.x.visionObserved, self.x.pack(
             "posPayload", x=wx, y=wy, radius=0.0, angle=0.0, targetSpeed=0, res=width,
-            worldX=wx, worldY=wy, worldValid=1, sensor=0))
+            worldX=wx, worldY=wy, worldValid=1, sensor=sensor))
         self.vision_tx += 1
 
     def text(self, line):
