@@ -1370,8 +1370,13 @@ def coverage_profiles():
         cur = poses.get(sid)
         pr["pose_matches"] = bool(cur and catmodel.pose_hash(cur) == pr["pose_hash"])
         pr["device"] = devices.get(sid, {})
+    # aktuell wirksame Polygone (gelernt oder Default-Sektor) - Coverage-Tab
+    polys, sources = _coverage_polygons_for_current(devices, poses)
     return jsonify(profiles={str(k): v for k, v in profs.items()},
-                   poses={str(k): v for k, v in poses.items()})
+                   poses={str(k): v for k, v in poses.items()},
+                   current={str(k): v for k, v in polys.items()},
+                   sources=sources,
+                   names={str(k): d.get("name", "#%d" % k) for k, d in devices.items()})
 
 
 @app.post("/coverage_learn")
@@ -1449,6 +1454,47 @@ def coverage_delete():
         _sysmsg("Coverage loeschen #%d (%s): kein aktives Polygon vorhanden"
                 % (sid, dev_name(sid)))
     return jsonify(ok=True, sender=sid, deactivated=n)
+
+
+@app.post("/coverage_set")
+def coverage_set():
+    # Coverage-Tab: von Hand verschobene Eckpunkte speichern (Maeher kommt z.B.
+    # nicht ganz an die Hecke). Gebunden an die AKTUELLE Pose wie beim Lernen;
+    # Herkunft (Maeherfenster) bleibt erhalten, falls vorher gelernt.
+    d = request.get_json(force=True, silent=True) or {}
+    sid = int(d.get("sender", -1))
+    if sid < 0:
+        return jsonify(error="sender fehlt"), 400
+    try:
+        poly = [[int(round(float(x))), int(round(float(y)))] for x, y in d.get("polygon") or []]
+    except (TypeError, ValueError):
+        return jsonify(error="polygon ungueltig"), 400
+    if len(poly) < 3:
+        return jsonify(error="Polygon braucht mindestens 3 Punkte"), 400
+    name = dev_name(sid)
+    with _lock:
+        pose = dict(_poses.get(sid) or {})
+    if not pose or not pose.get("valid"):
+        return jsonify(error="Sensor hat keine gueltige Pose"), 400
+    ph = catmodel.pose_hash(pose)
+    area = float(catmodel.polygon_area(poly))
+    with _db_lock:
+        old = _db.execute("SELECT point_count,source_t0,source_t1 FROM coverage_polygons "
+                          "WHERE sender=? AND active=1 AND pose_hash=?", (sid, ph)).fetchone()
+        _db.execute("""INSERT OR REPLACE INTO coverage_polygons
+            (sender,active,pose_x,pose_y,pose_head,pose_mir,pose_hash,polygon_json,
+             point_count,source_t0,source_t1,quality,created,note)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (sid, 1, pose["x"], pose["y"], pose["head"], pose["mir"], ph,
+             json.dumps(poly, separators=(",", ":")),
+             old[0] if old else 0, old[1] if old else None, old[2] if old else None,
+             area, time.time(),
+             "gelernt + von Hand angepasst" if old and old[1] else "von Hand gesetzt"))
+        _db.commit()
+    _coverage_dirty()
+    _sysmsg("Coverage VON HAND gespeichert: #%d (%s) - %d Ecken, %.1f m2"
+            % (sid, name, len(poly), area / 1e6))
+    return jsonify(ok=True, sender=sid, polygon=poly, area_mm2=area)
 
 
 @app.get("/coverage_export")

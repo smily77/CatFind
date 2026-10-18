@@ -1134,31 +1134,6 @@ async function anaAddLabel(){
 }
 
 
-async function anaCoverageLearn(){
-  const r = ANA.sel || ANA.win;
-  const sid = +(prompt("Sensor-ID für Coverage lernen (Mäherfenster)", anaEl("anaLblSender")?.value !== "-1" ? anaEl("anaLblSender").value : "1") || -1);
-  if(sid < 0 || !r) return;
-  const qs = {sender:sid, t0:r.t0, t1:r.t1, angle_bin_deg:10, quantile:0.90, target_vertices:8, save:false};
-  try{
-    const prev = await anaJson("/coverage_learn", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(qs)});
-    const q = prev.quality || {};
-    const area = (typeof q.area_mm2 === "number") ? (q.area_mm2/1e6).toFixed(1)+" m²" : "?";
-    if(!confirm(`Coverage-Vorschau #${sid}: ${prev.polygon.length} Eckpunkte, ${q.point_count||prev.point_count} Punkte, Fläche ${area}. Speichern?`)) return;
-    qs.save = true;
-    await anaJson("/coverage_learn", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(qs)});
-    ANA.coverage = await anaJson("/acoverage");
-    anaFetchWindow();
-  }catch(e){ alert("Coverage lernen fehlgeschlagen: " + e.message); }
-}
-async function anaCoverageDelete(){
-  const sid = +(prompt("Sensor-ID des gelernten Coverage-Polygons löschen/deaktivieren", "1") || -1);
-  if(sid < 0) return;
-  if(!confirm(`Coverage-Polygon für Sensor #${sid} deaktivieren?`)) return;
-  await anaJson("/coverage_delete", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sender:sid})});
-  ANA.coverage = await anaJson("/acoverage");
-  anaFetchWindow();
-}
-
 // ------------------------------------------------------------- Geräte neu laden
 
 async function anaDevReload(){
@@ -1269,8 +1244,6 @@ async function anaShow(){
     anaEl("anaBParams").onclick = anaParams;
     anaEl("anaBValid").onclick = anaValidate;
     anaEl("anaBDev").onclick = anaDevReload;
-    anaEl("anaBCovLearn").onclick = anaCoverageLearn;
-    anaEl("anaBCovDel").onclick = anaCoverageDelete;
     anaEl("anaBLabel").onclick = anaAddLabel;
     anaEl("anaLblAll").onchange = async ()=>{
       if(anaEl("anaLblAll").checked) await anaLoadAllLabels();
