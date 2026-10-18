@@ -809,8 +809,40 @@ Nachtbilder ist gleichmäßige IR-Ausleuchtung wichtiger als maximale Mittenhell
    werden zur Sichtprüfung ins Livebild eingeblendet, bewegte Spuren zeigen ihre
    Rasenposition. Offen: Linsenverzeichnung, gültiger `poseReport`. Details
    `KIVisionCatLocator/README.md` („Phase 4").
-5. **Katzenerkennung.** Permanente Erkennung; bei bestätigter Katze `catObserved`
-   senden und ein Bild auf dem VPS ablegen.
+5. **Kamera als Beweismittel und Zusatzsensor** (neu ausgerichtet 2026-10-18).
+   **Zwischenstand:** Die KIVision reagiert auf Radar-Meldungen vom Bus und auf
+   eigene Bewegungserkennung. Echte KI-Katzenerkennungen sind selten: Die Katze
+   ist fern und klein, die Coral-Modelle sind nicht auf diese Sicht trainiert,
+   und das IR-Licht reicht nachts nur bis etwa Dome-C1 (ein zusätzlicher
+   Scheinwerfer für den Bereich dahinter ist bestellt). Nachts sieht man aber oft
+   die Augen leuchten. Als **Katzendetektor** hilft die Kamera deshalb wenig, als
+   **Beweismittel** dagegen enorm: Auf den Bildern lässt sich jeder Track sicher
+   klassifizieren. Damit kann sie das CatIdent-Modell deutlich verbessern
+   (Phase 7). Ziel ist, mehr davon zu profitieren:
+   - **A. Kamerabilder am Track (zuerst).** Zu jedem VPS-Track legt der Pi 1–4
+     kleine Einzelbilder (Ausschnitt + Übersicht) dauerhaft auf dem VPS ab,
+     zugeordnet über Zeit und Weltposition. Sie erscheinen beim Track rechts im
+     Analyse-Tab. Klassifiziert wird wie bisher mit den **Track-Kästchen**
+     (Katze, Person, Vogel, Mäher, Insekt, Sturm, Störung, sicher keine Katze;
+     Tabelle `track_marks`), keine freien Labels. Bilder nur für Tracks, nicht
+     für jedes Ereignis (WLAN 2–3 Mbit/s). Heute fallen die Pi-Galerien nach
+     ~150 Bildern (etwa ein Tag) heraus und tragen keine Track-Nummer; das
+     Nachschauen per Uhrzeit entfällt damit. Stand 2026-10-18: 261 bewertete
+     Tracks (77 Katze, 72 sicher keine, 69 Mäher, 22 Störung, 18 Person,
+     3 Vogel) — mit Bildern wächst diese Ground-Truth schneller und sicherer.
+   - **B. Kamera-Bewegung als Ortung.** Bewegungsspuren haben über das
+     Kamera-Modell Rasenkoordinaten (~10–30 cm). Der Pi sendet sie als
+     `catObserved` mit `worldValid=1` wie ein weiteres Radar; CatIdent bekommt
+     eine unabhängige, genaue Position und verwirft Radar-Geister leichter. Keine
+     Klassifikation nötig. Dazu gültiger `poseReport`. (Deckt Phase 6 weitgehend
+     ab.)
+   - **C. Leuchtende Augen nachts.** Zwei kleine helle Punkte im Augenabstand,
+     die sich gemeinsam bewegen: billiger, sehr spezifischer Tier-Detektor, auch
+     ausserhalb des IR-Lichts; Abstand und Höhe trennen grob Katze und Fuchs.
+   - **D. Eigener Klassifikator (später).** Aus den über A bewerteten Tracks
+     Ausschnitte sammeln und einen Garten-eigenen Coral-Klassifikator
+     nachtrainieren (Katze/Fuchs/Mäher/Igel/nichts). Lohnt erst ab einigen
+     hundert Beispielen.
    **GESTRICHEN 2026-10-18: Tag/Nacht-Automatik** — IR-Sperrfilter und IR-Licht
    schaltet die Kamera selbst, der Pi muss nichts steuern.
 6. **Lokalisierung.** Erkannte Katze → Rasen-Weltkoordinaten (Homographie aus
