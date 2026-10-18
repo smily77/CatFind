@@ -2063,6 +2063,11 @@ def photo_upload():
     x = request.args.get("x", type=int, default=0)
     y = request.args.get("y", type=int, default=0)
     now = time.time()
+    # KIVision schickt die Aufnahmezeit mit (Upload kann im WLAN haengen);
+    # die Cat Cam nicht -> Empfangszeit. Unplausible Zeiten ebenso.
+    t_cap = request.args.get("t", type=float)
+    if t_cap is not None and abs(t_cap - now) < 600:
+        now = t_cap
     blk = _photo_blocked_window(now)
     if blk:                              # tägliche Sperrzeit (z. B. Mäher) -> verwerfen
         return jsonify(ok=True, blocked=True, window=blk)

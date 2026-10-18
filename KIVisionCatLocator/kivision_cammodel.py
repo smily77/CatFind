@@ -148,6 +148,10 @@ class CameraModel:
             return None
         return int(round(P[0])), int(round(P[1]))
 
+    def to_image(self, x, y):
+        """Bodenpunkt (mm) -> normierter Bildpunkt [u, v] oder None."""
+        return self._img([(x, y)])[0]
+
     def _img(self, pts):
         """Weltpunkte (mm, Boden) -> normierte Bildpunkte; None hinter der
         Kamera oder ausserhalb des Bereichs, in dem die Verzeichnung gilt."""

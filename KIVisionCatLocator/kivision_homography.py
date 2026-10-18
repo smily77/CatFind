@@ -164,6 +164,9 @@ class Homography:
             return None
         return int(round(x / w)), int(round(y / w))
 
+    def to_image(self, x, y):
+        return self._img(x, y)
+
     # -- Einblendung ins Livebild ---------------------------------------------
     def overlay(self):
         """Rasenrand, Schussverbot-Zone und 1-m-Gitter als Linienzuege in

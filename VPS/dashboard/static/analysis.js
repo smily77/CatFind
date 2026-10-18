@@ -957,10 +957,42 @@ async function anaUnmerge(mergeId){
   }catch(e){ alert("Lösen fehlgeschlagen: " + e.message); }
 }
 
+// Fotos (Cat Cam + KIVision) zum Track: alles im Zeitfenster des Tracks; hat das
+// Foto eine Rasenposition, muss der Track zur selben Zeit in der Nähe sein
+// (sonst gehört es zu einem gleichzeitigen anderen Ziel).
+const PHOTO_PAD_S = 3, PHOTO_NEAR_MM = 3000;
+function photoFits(tr, ph){
+  if(ph.t < tr.t0-PHOTO_PAD_S || ph.t > tr.t1+PHOTO_PAD_S) return false;
+  if(!ph.x && !ph.y) return true;
+  const near = tr.pts.filter(p=>Math.abs(p[0]-ph.t) <= 5);
+  const pts = near.length ? near : tr.pts;
+  return pts.some(p=>Math.hypot(p[1]-ph.x, p[2]-ph.y) <= PHOTO_NEAR_MM);
+}
+async function anaLoadPhotos(){
+  const trs = (ANA.model && ANA.model.tracks) || [];
+  if(!trs.length) return;
+  const t0 = Math.min(...trs.map(t=>t.t0)) - PHOTO_PAD_S, t1 = Math.max(...trs.map(t=>t.t1)) + PHOTO_PAD_S;
+  // laufendes Fenster wächst ständig: höchstens alle 30 s neu laden
+  const span = t0.toFixed(0)+"-"+Math.ceil(t1/30);
+  if(ANA.photoSpan === span) return;
+  ANA.photoSpan = span;
+  try{
+    const r = await anaJson(`/photos?t0=${t0}&t1=${t1}&limit=500`);
+    ANA.photos = (r.photos||[]).sort((a,b)=>a.t-b.t);
+    renderTracks();
+  }catch(e){ ANA.photos = []; }
+}
+function trackPhotos(tr){
+  // Ausschnitte zuerst, je Aufnahme nebeneinander
+  return (ANA.photos||[]).filter(ph=>photoFits(tr, ph))
+    .sort((a,b)=>(a.t-b.t) || ((b.trigger==="kivcrop")-(a.trigger==="kivcrop")));
+}
+
 function renderTracks(){
   const el = anaEl("anaTracks"); if(!el) return;
   if(!ANA.model){ el.innerHTML = "<div class='hint'>— Modell aus / kein Ergebnis —</div>"; return; }
   const marks = ANA.model.marks || {};
+  anaLoadPhotos();
   const all = ANA.model.tracks.filter(t=>t.n>=2 || t.confirmed);
   const trs = all.slice()
               .sort((a,b)=>(b.confirmed-a.confirmed) || (b.score-a.score) || (b.n-a.n)).slice(0,80);
@@ -1006,6 +1038,8 @@ function renderTracks(){
       const dis = (t.confirmed && mk && mk!=="cat") || (!t.confirmed && mk==="cat");
       const badge = mk ? `<span class="mkBadge" title="meine Bewertung: ${escapeHtml(MARKS[mk]||mk)}">✋${MARK_ICON[mk]||"?"}</span>` : "";
       const num = t.id!=null ? "Nr "+t.id : "läuft…";
+      const phs = trackPhotos(t);
+      const cam = phs.length ? `<span class="flg" title="${phs.length} Kamerabild(er) zu diesem Track">📷${phs.length}</span>` : "";
       const glue = t.members
         ? `<span class="flg" title="Klebung aus ${t.members.map(m=>"Nr "+m.id).join(", ")}">🔗×${t.members.length}</span>` : "";
       const chk = t.id!=null
@@ -1014,6 +1048,9 @@ function renderTracks(){
       if(sel){
         const sd = (t.score_detail||[]).map(d=>`${d[1]>0?'+':''}${d[1]} ${escapeHtml(d[0])}`).join("<br>");
         det = `<small>Aufnahme: ${fmtDT(t.t0)} → ${fmtDT(t.t1)}</small>` +
+              (phs.length ? `<div class="trPhotos">` + phs.map(ph=>
+                `<a href="photo/${ph.id}" target="_blank" title="${fmtDT(ph.t)} · ${escapeHtml(ph.trigger)}${ph.score?" · KI "+ph.score+"%":""}">` +
+                `<img src="photo/${ph.id}" loading="lazy" class="${ph.trigger==="kivcrop"?"crop":""}"></a>`).join("") + `</div>` : "") +
               (sd ? `<small>${sd}</small>` : "") +
               (t.members ? `<div class="mkRow"><button class="mk" data-unmerge="${t.merge_id}">🔗 Klebung lösen</button></div>` : "") +
               `<div class="mkRow">` +
@@ -1024,7 +1061,7 @@ function renderTracks(){
         det = t.confirmed ? "" : `<small>${escapeHtml(t.reject||"")}</small>`;
       }
       return `<div class="anaTrack${t.confirmed?' cat':''}${sel?' sel':''}${dis?' dis':''}" data-key="${t.key}">
-      ${chk}${t.confirmed?'🐱':'·'} <b>${num}</b> · ${t.score}P${badge}${glue} n=${t.n} · ${fmtDur(t.t1-t.t0)} · ${(t.net_mm/1000).toFixed(1)}m
+      ${chk}${t.confirmed?'🐱':'·'} <b>${num}</b> · ${t.score}P${badge}${glue}${cam} n=${t.n} · ${fmtDur(t.t1-t.t0)} · ${(t.net_mm/1000).toFixed(1)}m
       ${t.v_mean? '· '+(t.v_mean/1000).toFixed(1)+'m/s':''} ${chips}
       ${det}</div>`;
     }).join("");
@@ -1041,6 +1078,7 @@ function renderTracks(){
       renderTracks();
     };
     d.onclick = (ev)=>{
+      if(ev.target.closest(".trPhotos")) return;          // Bild öffnet sich im neuen Tab
       const mkBtn = ev.target.closest(".mk");
       if(mkBtn && tr){
         ev.stopPropagation();
