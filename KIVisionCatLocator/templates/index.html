@@ -291,6 +291,17 @@
     </div>
 
     <div class="card">
+      <h2>Leuchtende Augen <span id="eyesCount" class="tag"></span></h2>
+      <div class="hint">Nur nachts: kleine helle Punkte auf dem Rasen, die das IR-Licht
+        zurückwerfen und über mehrere Bilder bleiben. Oben links der Ausschnitt 4× vergrössert,
+        magenta der Kreis ums Auge. Ortsfeste Lichter lernt die Kamera mit der Zeit weg.
+        <span id="eyesStat"></span></div>
+      <div class="gal" id="galEyes"></div>
+      <div class="row"><button id="bEyesClear">Alle Augen-Bilder löschen</button>
+        <button id="bEyesReload">Neu laden</button></div>
+    </div>
+
+    <div class="card">
       <h2>Schnappschüsse</h2>
       <div class="gal" id="gal"></div>
     </div>
@@ -390,6 +401,13 @@ function drawOverlay(det) {
                  esc(('B' + m.id + ' ' + (m.best || '') +
                       (m.world ? ' @' + (m.world[0] / 1000).toFixed(1) + '/' + (m.world[1] / 1000).toFixed(1) + ' m' : '')).trim()) +
                  '</text>');
+    });
+    // Leuchtende Augen magenta
+    (det.eyes || []).forEach(e => {
+      const x = e.uv[0] * 1000, y = e.uv[1] * 1000;
+      parts.push('<circle cx="' + x + '" cy="' + y + '" r="14" fill="none" stroke="#ff50dc" stroke-width="3"/>');
+      parts.push('<text x="' + (x + 16) + '" y="' + (y - 10) + '" fill="#ff50dc" font-size="22" font-family="sans-serif">A' +
+                 e.id + (e.pair ? ' Paar' : '') + '</text>');
     });
     (det.boxes || []).forEach(b => {
       const x = b.x * 1000, y = b.y * 1000, w = b.w * 1000, h = b.h * 1000;
@@ -585,6 +603,11 @@ function pollDetections() {
     $('vDetMs').textContent = (d.ms ? d.ms + ' ms' : '') + (ms && ms.enabled
       ? ' | Bewegung ' + ms.ms + ' ms, ' + ms.moving + '/' + ms.tracks + ' Spuren' : '');
     $('detErr').textContent = d.error || '';
+    const es = d.eyes_status;
+    if (es) $('eyesStat').textContent = es.night
+      ? '— jetzt Nacht: ' + es.frames + ' Bilder geprüft (' + es.ms + ' ms), ' + es.spots + ' Punkte, ' +
+        es.static + ' ortsfest, ' + es.eyes + ' Augen'
+      : '— jetzt Tag, Augensuche ruht.';
     // Der Zaehler kommt vom Pi: steigt er, liegt ein neues Bild bereit. So
     // muss die Galerie nicht im Sekundentakt nachfragen.
     if (hits !== null && d.hits > hits) loadHits();
@@ -643,6 +666,8 @@ const loadRadar = () => loadAuto('radar', 'galRadar', 'radarCount',
 
 const loadMotion = () => loadAuto('motion', 'galMotion', 'motionCount',
   'Noch kein Bewegungs-Bild.');
+const loadEyes = () => loadAuto('eyes', 'galEyes', 'eyesCount',
+  'Noch keine Augen gesehen (sucht nur nachts).');
 
 function clock(ts) {
   const d = new Date(ts * 1000), z = (n) => String(n).padStart(2, '0');
@@ -912,7 +937,12 @@ document.addEventListener('visibilitychange', () => {
 // Abgerissenes Livebild (Neustart, Funkloch) von selbst wieder holen.
 $('live').onerror = () => setTimeout(() => { if (!document.hidden) reloadStream(); }, 3000);
 
-refreshState(true).then(() => { loadHom(); loadCm(); loadGallery(); loadHits(); loadRadar(); loadMotion(); });
+refreshState(true).then(() => { loadHom(); loadCm(); loadGallery(); loadHits(); loadRadar(); loadMotion(); loadEyes(); });
+$('bEyesReload').onclick = loadEyes;
+$('bEyesClear').onclick = () => {
+  if (!confirm('Alle Augen-Bilder löschen?')) return;
+  post('/api/eyes/clear').then(r => { say(r.deleted + ' Augen-Bilder gelöscht'); loadEyes(); });
+};
 $('bMotionReload').onclick = loadMotion;
 $('bMotionClear').onclick = () => {
   if (!confirm('Alle Bewegungs-Bilder löschen?')) return;

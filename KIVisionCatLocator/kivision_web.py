@@ -28,6 +28,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_from_
 
 from kivision_cammodel import CameraModel
 from kivision_homography import Homography, pairs as load_pairs, _read_poly
+from kivision_eyes import Eyes
 from kivision_motion import Motion, cv2
 from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
@@ -83,6 +84,20 @@ VISION_STILL_MM = 200
 VISION_STILL_EVERY = 3.0
 VISION_MERGE_MM = 700
 VISION_MAX_W = 2500
+# Leuchtende Augen nachts (kivision_eyes.py, Phase 5C): eigene Galerie, ein
+# Bild je bestaetigtem Auge (hoechstens alle EYE_GAP s); auf den Bus als
+# visionObserved mit sensor=EYE_SENSOR, Hoehe der Augen ueber dem Rasen fuer
+# die Rasenposition. Nacht = Kamera am Anschlag (Gain) oder kaum Licht.
+EYE_DIR = HOME / "eyes"
+MAX_EYES = 150
+EYE_EVERY = 0.5           # s zwischen zwei ausgewerteten Bildern
+EYE_GAP = 5.0
+EYE_RAW_KEEP = 40         # Rohbilder (je ~1,5 MB) unter eyes/raw
+EYE_VPS_EVERY = 20.0      # je Auge hoechstens so oft ein Bild zum VPS
+EYE_Z = 250               # mm, Augenhoehe einer Katze
+EYE_SENSOR = 1            # posPayload.sensor: 0 = Bewegung, 1 = Auge
+NIGHT_LUX = 50
+NIGHT_GAIN = 6.0
 MOTION_SNAP_AGE = 1.5
 MOTION_GAP = 10.0
 # Radar-Ziel <-> Kamera-Fusspunkt, gleichzeitig beobachtet: Rohstoff fuer die
@@ -197,6 +212,8 @@ DEFAULTS = {
     "rotate": 0,          # nur Browser-Anzeige (der ISP kann kein 90-Grad)
     "grid": True,
     "map": True,          # Rasenkarte per Homographie ins Livebild (Phase 4)
+    "eyes": True,         # Augensuche nachts (Phase 5C)
+    "eyes_force": False,  # Augensuche auch bei Tag (nur zum Testen)
     "tuning": "auto",     # auto | normal | noir (NoIR-Modul: Magenta bei Tag)
     "controls": {},
     "detect": {
@@ -1292,6 +1309,7 @@ RADAR_DIR.mkdir(parents=True, exist_ok=True)
 camera = Camera(cfg)
 detector = Detector(camera, cfg)
 motion = Motion()
+eyes = Eyes()
 detector.motion = motion
 detector.pump = FramePump(camera, motion)
 homography = Homography(HOMOGRAPHY_FILE, MAP_DIR)
@@ -1394,7 +1412,7 @@ _vps_queue = []
 _vps_cond = threading.Condition()
 
 
-def vps_upload(path, frame, world, best):
+def vps_upload(path, frame, world, best, trig="kivision"):
     """Radar-Bild in die Warteschlange zum VPS (eigener Thread, WLAN ist langsam)."""
     if not cfg.get("vps_photos", True):
         return
@@ -1402,7 +1420,7 @@ def vps_upload(path, frame, world, best):
         if len(_vps_queue) >= VPS_QUEUE:
             print("[web] VPS-Bild verworfen (Warteschlange voll)")
             return
-        _vps_queue.append((time.time(), path, frame, world, best))
+        _vps_queue.append((time.time(), path, frame, world, best, trig))
         _vps_cond.notify()
 
 
@@ -1412,13 +1430,13 @@ def _vps_jpeg(img, quality=72):
     return base64.b64encode(buf.getvalue())
 
 
-def _vps_images(path, frame, world):
+def _vps_images(path, frame, world, trig="kivision"):
     """Uebersicht (beschriftetes Radar-Bild, verkleinert) und Ausschnitt um die
     Rasenposition aus dem vollen Bild. Liefert [(trigger, x, y, base64)]."""
     from PIL import Image
     over = Image.open(path)
     over = over.resize((VPS_WIDTH, round(over.size[1] * VPS_WIDTH / over.size[0])), Image.BILINEAR)
-    out = [("kivision", _vps_jpeg(over))]
+    out = [(trig, _vps_jpeg(over))]
     geo = _geo()
     uv = geo.to_image(*world) if geo and world else None
     if uv and 0 <= uv[0] <= 1 and 0 <= uv[1] <= 1:
@@ -1428,8 +1446,117 @@ def _vps_images(path, frame, world):
         x0 = min(max(0, round(uv[0] * w - cw / 2)), w - cw)
         y0 = min(max(0, round(uv[1] * h - ch * 0.6)), h - ch)   # Ziel etwas unter der Mitte
         crop = Image.fromarray(frame[y0:y0 + ch, x0:x0 + cw])
-        out.insert(0, ("kivcrop", _vps_jpeg(crop, 80)))
+        out.insert(0, ({"kivision": "kivcrop"}.get(trig, trig + "crop"), _vps_jpeg(crop, 80)))
     return out
+
+
+def _eye_mask(geo):
+    """Rasen (vorne bis zur Nulllinie) ins Bild projizieren - dicht abgetastet,
+    weil die Verzeichnung gerade Kanten biegt."""
+    lawn = _lawn_area()
+    if lawn is None:
+        return []
+    pts = [tuple(p) for p in lawn.reshape(-1, 2)]
+    uv = []
+    for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+        n = max(1, int(math.hypot(bx - ax, by - ay) / 300))
+        for i in range(n):
+            q = geo.to_image(ax + (bx - ax) * i / n, ay + (by - ay) * i / n)
+            if q:
+                uv.append((min(1.2, max(-0.2, q[0])), min(1.2, max(-0.2, q[1]))))
+    return uv
+
+
+def save_eye(frame, tr, note):
+    """Uebersicht mit Kreis ums Auge, oben links der Ausschnitt 4x vergroessert."""
+    from PIL import Image, ImageDraw
+    H, W = frame.shape[:2]
+    cx, cy = tr.px
+    cw, ch = 160, 120
+    x0 = int(min(max(0, cx - cw / 2), W - cw))
+    y0 = int(min(max(0, cy - ch / 2), H - ch))
+    crop = Image.fromarray(np.ascontiguousarray(frame[y0:y0 + ch, x0:x0 + cw])).resize(
+        (cw * 4, ch * 4), Image.NEAREST)
+    img = Image.fromarray(frame).resize((SAVE_WIDTH, round(H * SAVE_WIDTH / W)), Image.BILINEAR)
+    k = SAVE_WIDTH / W
+    draw = ImageDraw.Draw(img)
+    r = 22
+    draw.ellipse([cx * k - r, cy * k - r, cx * k + r, cy * k + r], outline=(255, 80, 220), width=3)
+    img.paste(crop, (0, 0))
+    draw.rectangle([0, 0, cw * 4, ch * 4], outline=(255, 80, 220), width=3)
+    font = _font(max(12, round(SAVE_WIDTH / 45)))
+    fh = (font.size if hasattr(font, "size") else 14) + 8
+    stamp = datetime.now()
+    draw.rectangle([0, img.size[1] - fh, img.size[0], img.size[1]], fill=(0, 0, 0))
+    draw.text((6, img.size[1] - fh + 3), stamp.strftime("%d.%m. %H:%M:%S") + "  " + note,
+              font=font, fill=(220, 230, 240))
+    EYE_DIR.mkdir(parents=True, exist_ok=True)
+    path = EYE_DIR / ("%s_%02d.jpg" % (stamp.strftime("%Y%m%d_%H%M%S"),
+                                       min(99, round(tr.peak * 100 / 255))))
+    img.save(path, "JPEG", quality=80)
+    write_thumb(img, path)
+    prune_dir(EYE_DIR, MAX_EYES)
+    # Rohbild ohne Einzeichnungen zum Nachjustieren (gross, darum nur wenige)
+    raw = EYE_DIR / "raw"
+    raw.mkdir(exist_ok=True)
+    Image.fromarray(frame).save(raw / path.name, "JPEG", quality=92)
+    prune_dir(raw, EYE_RAW_KEEP)
+    return path
+
+
+def _eyes_run():
+    last_meta = last_mask = last_saved = 0.0
+    seq = -1
+    sent = {}
+    while True:
+        time.sleep(EYE_EVERY)
+        if not (cfg.get("eyes", True) and _bus_active[0]):
+            continue
+        now = time.monotonic()
+        if now - last_meta > 30:
+            meta = camera.metadata()
+            eyes.night = (bool(cfg.get("eyes_force"))      # zum Testen bei Tag
+                          or (meta.get("Lux") or 999) < NIGHT_LUX
+                          or (meta.get("AnalogueGain") or 0) >= NIGHT_GAIN)
+            last_meta = now
+        if not eyes.night:
+            continue
+        frame, _tracks, seq = detector.pump.wait(seq)
+        if frame is None:
+            continue
+        geo = _geo()
+        if now - last_mask > 300 or eyes.mask is None:
+            eyes.set_mask(_eye_mask(geo) if geo else [], frame.shape)
+            last_mask = now
+        try:
+            fresh = eyes.update(frame, now)
+        except Exception as exc:                              # noqa: BLE001
+            print("[web] Augen: %s" % exc)
+            continue
+        for tr in eyes.active():
+            w = geo.to_world(tr.uv[0], tr.uv[1], EYE_Z) if geo else None
+            if w and node and cfg.get("vision_observed", True) and now - sent.get(tr.id, 0) >= VISION_EVERY:
+                sent[tr.id] = now
+                node.send_vision(w[0], w[1], 0, sensor=EYE_SENSOR)
+            new = tr in fresh
+            if not new and now - tr.t_sent < EYE_VPS_EVERY:
+                continue
+            if not new and now - last_saved < EYE_GAP:
+                continue
+            tr.t_sent = last_saved = now
+            note = "Auge A%d%s  hell %d  %s" % (
+                tr.id, " (Paar)" if tr.pair else "", tr.peak,
+                "Welt %.1f/%.1f m" % (w[0] / 1000.0, w[1] / 1000.0) if w else "")
+            print("[web] %s" % note)
+            try:
+                path = save_eye(frame, tr, note)
+            except Exception as exc:                          # noqa: BLE001
+                print("[web] Augen-Bild: %s" % exc)
+                continue
+            vps_upload(path, frame, w, tr.peak / 255.0, trig="kiveye")
+        alive = {t.id for t in eyes.tracks}
+        for k in [k for k in sent if k not in alive]:
+            del sent[k]
 
 
 def _vps_run():
@@ -1438,9 +1565,9 @@ def _vps_run():
         with _vps_cond:
             while not _vps_queue:
                 _vps_cond.wait()
-            t, path, frame, world, best = _vps_queue.pop(0)
+            t, path, frame, world, best, trig = _vps_queue.pop(0)
         try:
-            imgs = _vps_images(path, frame, world)
+            imgs = _vps_images(path, frame, world, trig)
         except Exception as exc:                              # noqa: BLE001
             print("[web] VPS-Bild: %s" % exc)
             continue
@@ -1503,6 +1630,7 @@ apply_detect()
 node = _start_bus()
 threading.Thread(target=_vps_run, daemon=True).start()
 threading.Thread(target=_vision_run, daemon=True).start()
+threading.Thread(target=_eyes_run, daemon=True).start()
 
 app = Flask(__name__, template_folder=str(BASE / "templates"))
 
@@ -1606,7 +1734,7 @@ def api_config():
             if cfg[key] != value:
                 cfg[key] = value
                 restart = True
-    for key in ("rotate", "grid", "map"):
+    for key in ("rotate", "grid", "map", "eyes", "eyes_force"):
         if key in data:
             cfg[key] = data[key]
     if "tuning" in data and data["tuning"] != cfg.get("tuning"):
@@ -1684,6 +1812,9 @@ def api_detections():
     if geo and data.get("motion"):
         data["motion"] = [dict(m, world=geo.to_world(m["foot"][0], m["foot"][1]))
                           if m.get("foot") else m for m in data["motion"]]
+    data["eyes"] = [{"id": t.id, "uv": [round(t.uv[0], 4), round(t.uv[1], 4)], "pair": t.pair}
+                    for t in eyes.active()]
+    data["eyes_status"] = eyes.status()
     return jsonify(data)
 
 
@@ -1811,10 +1942,10 @@ def api_snapshots():
 # Treffer (vom Modell ausgeloest) und Radar-Bilder (vom Bus ausgeloest) teilen
 # sich dieselben Endpunkte: /api/<art>, /<art>/<name>, DELETE, /api/<art>/clear.
 GALLERIES = {"hits": (HIT_DIR, MAX_HITS), "radar": (RADAR_DIR, MAX_RADAR),
-             "motion": (MOTION_DIR, MAX_MOTION)}
+             "motion": (MOTION_DIR, MAX_MOTION), "eyes": (EYE_DIR, MAX_EYES)}
 
 
-@app.route("/api/<any(hits, radar, motion):kind>")
+@app.route("/api/<any(hits, radar, motion, eyes):kind>")
 def api_hits(kind):
     """Die von selbst entstandenen Bilder, neueste zuerst."""
     directory, keep = GALLERIES[kind]
@@ -1836,12 +1967,12 @@ def api_hits(kind):
 IMG_MAX_AGE = 7 * 24 * 3600
 
 
-@app.route("/<any(hits, radar, motion):kind>/<path:name>")
+@app.route("/<any(hits, radar, motion, eyes):kind>/<path:name>")
 def hit_file(kind, name):
     return send_from_directory(GALLERIES[kind][0], name, max_age=IMG_MAX_AGE)
 
 
-@app.route("/thumb/<any(hits, radar, motion, snapshots):kind>/<name>")
+@app.route("/thumb/<any(hits, radar, motion, eyes, snapshots):kind>/<name>")
 def thumb_file(kind, name):
     directory = SNAP_DIR if kind == "snapshots" else GALLERIES[kind][0]
     src = (directory / name).resolve()
@@ -1855,7 +1986,7 @@ def thumb_file(kind, name):
     return send_from_directory(dst.parent, dst.name, max_age=IMG_MAX_AGE)
 
 
-@app.route("/api/<any(hits, radar, motion):kind>/<path:name>", methods=["DELETE"])
+@app.route("/api/<any(hits, radar, motion, eyes):kind>/<path:name>", methods=["DELETE"])
 def hit_delete(kind, name):
     directory = GALLERIES[kind][0]
     target = (directory / name).resolve()
@@ -1865,7 +1996,7 @@ def hit_delete(kind, name):
     return jsonify({"ok": True})
 
 
-@app.route("/api/<any(hits, radar, motion):kind>/clear", methods=["POST"])
+@app.route("/api/<any(hits, radar, motion, eyes):kind>/clear", methods=["POST"])
 def hits_clear(kind):
     count = 0
     for path in GALLERIES[kind][0].glob("*.jpg"):
