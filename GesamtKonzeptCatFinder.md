@@ -855,8 +855,22 @@ Nachtbilder ist gleichmäßige IR-Ausleuchtung wichtiger als maximale Mittenhell
      (5 min). Ein Auge zählt ab 3 Treffern in Folge; Partnerpunkt = „Paar“.
      Ausgabe: Galerie „Leuchtende Augen“ (+ Rohbilder `eyes/raw` zum
      Nachjustieren), `visionObserved` mit `sensor=1` (Augenhöhe 25 cm für die
-     Rasenposition), Bild an den VPS (`kiveye`). Noch nicht an echten
-     Nachtdaten abgestimmt.
+     Rasenposition), Bild an den VPS (`kiveye`).
+     **Ergebnis erste Nacht:** 0 von 5 Katzen erkannt, 1 Fehltreffer (Mäher-LED).
+     Ursache: das Nachtbild (Regen, IR-Licht am Dome-C1) hatte fast immer über
+     40 Einzelpunkte → 98 % der Bilder als „verrauscht“ verworfen, 2,2 s je Bild.
+     **Paarsuche 2026-10-19:** In den Radar-Ausschnitten der Tracks
+     81603/81605/81607/81624/81628 sind die Augen am hinteren Rasenende je
+     ~5–7 px groß, Mitte zu Mitte ~8–10 px, fast waagrecht. Neu: Gauß 5 px gegen
+     Pixelrauschen, Top-Hat 21 px, Flecken = örtliche Helligkeitsspitzen (zwei
+     nahe Augen verschmelzen an einer Schwelle zu einer Fläche), Größe auf halber
+     Höhe gemessen. **Auge = zwei Flecken waagrecht nebeneinander** (Abstand
+     6–60 px, |dy| ≤ 0,3·dx+2, Abstand 1–7 Fleckbreiten, ähnlich groß und hell,
+     dunklere Lücke dazwischen). Spur entsteht nur aus einem Paar, ein einzelnes
+     Auge (Kopf gedreht) hält eine bestehende Spur am Leben; bestätigt ab
+     2 Paar-Treffern. Offline-Test: alle Nacht-Ausschnitte mit Augen gefunden
+     (10 Bilder, alle 5 Tracks), 0 Fehlpaare in Nachtbildern ohne Katze; ~0,3 s
+     je Vollbild auf dem Pi.
    - **D. Eigener Klassifikator (später).** Aus den über A bewerteten Tracks
      Ausschnitte sammeln und einen Garten-eigenen Coral-Klassifikator
      nachtrainieren (Katze/Fuchs/Mäher/Igel/nichts). Lohnt erst ab einigen
