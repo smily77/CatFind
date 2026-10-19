@@ -618,8 +618,8 @@ function pollDetections() {
     $('detErr').textContent = d.error || '';
     const es = d.eyes_status;
     if (es) $('eyesStat').textContent = es.night
-      ? '— jetzt Nacht: ' + es.frames + ' Bilder geprüft (' + es.ms + ' ms), ' + es.spots + ' Punkte, ' +
-        es.static + ' ortsfest, ' + es.eyes + ' Augen'
+      ? '— jetzt Nacht: ' + es.frames + ' Bilder geprüft (' + es.ms + ' ms, ' + es.noisy + ' verrauscht), ' +
+        es.spots + ' Punkte, ' + es.pairs + ' Paare, ' + es.static + ' ortsfest, ' + es.eyes + ' Augen'
       : '— jetzt Tag, Augensuche ruht.';
     // Der Zaehler kommt vom Pi: steigt er, liegt ein neues Bild bereit. So
     // muss die Galerie nicht im Sekundentakt nachfragen.

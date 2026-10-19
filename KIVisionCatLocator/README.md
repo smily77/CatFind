@@ -466,7 +466,7 @@ Der Dienst ist `enabled`, startet also nach jedem Stromausfall von selbst.
 ## Neu ausrollen
 
 ```bash
-scp kivision_web.py kivision_motion.py kivision_homography.py kivision_cammodel.py xcom.py kivision_bus.py ../Controller/Manager6_3_0/xComDef6_3.h pi@192.168.0.186:~/kivision/web/
+scp kivision_web.py kivision_motion.py kivision_eyes.py kivision_homography.py kivision_cammodel.py xcom.py kivision_bus.py ../Controller/Manager6_3_0/xComDef6_3.h pi@192.168.0.186:~/kivision/web/
 scp templates/index.html pi@192.168.0.186:~/kivision/web/templates/
 scp ../Controller/Manager6_3_0/data/rasen.csv ../Controller/Manager6_3_0/data/noshot.csv pi@192.168.0.186:~/kivision/web/maps/
 ssh pi@192.168.0.186 sudo systemctl restart kivision-web

@@ -1659,10 +1659,6 @@ def _start_bus():
 
 apply_detect()
 node = _start_bus()
-threading.Thread(target=_vps_run, daemon=True).start()
-threading.Thread(target=_vision_run, daemon=True).start()
-threading.Thread(target=_eyes_run, daemon=True).start()
-threading.Thread(target=_zone_run, daemon=True).start()
 
 app = Flask(__name__, template_folder=str(BASE / "templates"))
 
@@ -2060,6 +2056,14 @@ def snapshot_delete(name):
     unlink_with_thumb(target)
     return jsonify({"ok": True})
 
+
+# Hintergrund-Threads erst hier am Ende starten, wenn alle Funktionen (z.B.
+# _geo) definiert sind - frueher weiter oben gestartet, starb je nach Timing
+# ein Thread beim Start mit NameError (2026-10-19: _vision_run).
+threading.Thread(target=_vps_run, daemon=True).start()
+threading.Thread(target=_vision_run, daemon=True).start()
+threading.Thread(target=_eyes_run, daemon=True).start()
+threading.Thread(target=_zone_run, daemon=True).start()
 
 if __name__ == "__main__":
     from werkzeug.serving import WSGIRequestHandler, make_server
