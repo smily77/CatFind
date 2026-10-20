@@ -16,7 +16,7 @@
  *   - pendelt dann alle SWING_PERIOD_MS zwischen SWING_LEFT und SWING_RIGHT
  *     (innerhalb der alten Anschlaege leftStopp 760 / rightStopp 3400)
  *   - gibt Soll/Ist-Position, Temperatur und Strom aus
- *   - WLAN mit fester IP 192.168.0.181 (PowerActor1 = PA2i in xComDef) + ArduinoOTA
+ *   - WLAN mit fester IP 192.168.0.181 + ArduinoOTA, Hostname PowerActor2
  *
  * Ausgabe: Serial (115200) UND Telnet Port 23 (ohne USB: telnet 192.168.0.181).
  *          Beim Verbinden per Telnet laeuft die Diagnose sofort neu.
@@ -66,7 +66,7 @@ static void logf(const char *fmt, ...) {
 
 // ── WLAN / OTA ───────────────────────────────────────────────────────────────
 
-#define HOST_NAME   "PowerActor1"
+#define HOST_NAME   "PowerActor2"
 #define LAST_OCTET  181
 
 static void setUpWifi() {
