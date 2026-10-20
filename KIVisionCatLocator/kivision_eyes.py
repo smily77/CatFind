@@ -112,6 +112,7 @@ class Eyes:
         self.mask = None         # Rasen (+Rand) im 2592er-Bild, uint8
         self.box = None          # x0, y0, x1, y1 des Rasens
         self.night = False
+        self.dark = None         # Helligkeit oben/Mitte (kivision_web._dark_ratio)
         self.stats = {"frames": 0, "spots": 0, "pairs": 0, "static": 0, "noisy": 0,
                       "eyes": 0, "ms": 0.0}
         # Rechteckkern: OpenCV rechnet ihn zerlegt und viel schneller als eine
@@ -350,5 +351,5 @@ class Eyes:
 
     def status(self):
         with self.lock:
-            return dict(self.stats, night=self.night, tracks=len(self.tracks),
+            return dict(self.stats, night=self.night, dark=self.dark, tracks=len(self.tracks),
                         masked=self.mask is not None)

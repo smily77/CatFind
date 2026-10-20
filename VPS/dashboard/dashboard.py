@@ -2183,7 +2183,7 @@ AMARKS = ("cat", "person", "bird", "mower", "insect", "storm",
 @app.post("/amark")
 def amark():
     # manuelle Bewertung eines Tracks setzen/löschen. mark: "cat" (ist Katze),
-    # "person"/"bird"/"mower"/"insect"/"storm" (was es stattdessen war), "nocat"
+    # "person"/"bird"/"mower"/"insect"(=Fuchs)/"storm" (was es stattdessen war), "nocat"
     # (Störung/sonstiges), "surenocat" (sicher keine Katze, Ursache egal),
     # "" = Markierung entfernen (= einverstanden mit der Modellbewertung). Die
     # Modellbewertung selbst bleibt unberührt — der Vergleich Modell vs. Mensch
