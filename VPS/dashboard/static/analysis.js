@@ -922,11 +922,12 @@ const FLAG_TXT = {STATIONAER:"sitzt! (koten?)", OFFEN:"läuft noch", EINTRITT:"E
 const FLAG_CHIP = {STATIONAER:"⏺ sitzt", OFFEN:"… offen", EINTRITT:"→ rein",
                    AUSTRITT:"raus →", FUSION:"⧉ 2+ Sensoren"};
 // manuelle Track-Bewertung: was war es wirklich? (alles ausser "cat" = keine Katze)
+// "insect" heisst im UI "Fuchs" (DB-Wert bleibt, Insekten braucht es nicht)
 const MARKS = {cat:"🐱 Katze", person:"🧍 Person", bird:"🐦 Vogel",
-               mower:"🤖 Mäher", insect:"🦗 Insekt", storm:"⛈ Sturm",
+               mower:"🤖 Mäher", insect:"🦊 Fuchs", storm:"⛈ Sturm",
                nocat:"✕ Störung", surenocat:"🚫 sicher keine Katze"};
 const MARK_ICON = {cat:"🐱", person:"🧍", bird:"🐦", mower:"🤖",
-                   insect:"🦗", storm:"⛈", nocat:"✕", surenocat:"🚫"};
+                   insect:"🦊", storm:"⛈", nocat:"✕", surenocat:"🚫"};
 
 // manuelle Bewertung eines Tracks setzen/entfernen (Klick auf gesetzten Haken = entfernen)
 async function anaSetMark(tr, mark){
@@ -997,7 +998,7 @@ function renderTracks(){
   const trs = all.slice()
               .sort((a,b)=>(b.confirmed-a.confirmed) || (b.score-a.score) || (b.n-a.n)).slice(0,80);
   // Übereinstimmung Modell vs. Mensch: ohne Markierung gilt "einverstanden";
-  // jede Markierung ausser "cat" (Person/Vogel/…/Sturm/Insekt) = "keine Katze".
+  // jede Markierung ausser "cat" (Person/Vogel/…/Sturm/Fuchs) = "keine Katze".
   let diffNoCat = 0, diffCat = 0;
   for(const t of all){
     const mk = marks[t.key];

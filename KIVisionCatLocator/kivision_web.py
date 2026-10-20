@@ -87,7 +87,10 @@ VISION_MAX_W = 2500
 # Leuchtende Augen nachts (kivision_eyes.py, Phase 5C): eigene Galerie, ein
 # Bild je bestaetigtem Auge (hoechstens alle EYE_GAP s); auf den Bus als
 # visionObserved mit sensor=EYE_SENSOR, Hoehe der Augen ueber dem Rasen fuer
-# die Rasenposition. Nacht = Kamera am Anschlag (Gain) oder kaum Licht.
+# die Rasenposition. Nacht = Kamera am Anschlag (Gain) oder kaum Licht UND
+# das IR-Licht der Kamera brennt: dann ist der ferne Rasen oben im Bild viel
+# dunkler als die Bildmitte (gemessen 2026-10-20: Tag 1,5, Daemmerung 0,6-1,0,
+# Nacht 0,23-0,27). Lux/Gain allein meldeten auch bei Tag/Daemmerung "Nacht".
 EYE_DIR = HOME / "eyes"
 MAX_EYES = 150
 EYE_EVERY = 0.5           # s zwischen zwei ausgewerteten Bildern
@@ -98,6 +101,7 @@ EYE_Z = 250               # mm, Augenhoehe einer Katze
 EYE_SENSOR = 1            # posPayload.sensor: 0 = Bewegung, 1 = Auge
 NIGHT_LUX = 50
 NIGHT_GAIN = 6.0
+NIGHT_DARK_RATIO = 0.45   # Helligkeit oben / Mitte, darunter = IR-Nacht
 MOTION_SNAP_AGE = 1.5
 MOTION_GAP = 10.0
 # Radar-Ziel <-> Kamera-Fusspunkt, gleichzeitig beobachtet: Rohstoff fuer die
@@ -1534,6 +1538,16 @@ def save_eye(frame, tr, note):
     return path
 
 
+def _dark_ratio(frame):
+    """Helligkeit des fernen Rasens (oberes Sechstel) / Bildmitte, mittlere
+    Bildhaelfte quer. Klein = nur das IR-Licht der Kamera beleuchtet."""
+    a = frame[::8, ::8]
+    h, w = a.shape[:2]
+    top = float(a[:h // 6, w // 4:3 * w // 4].mean())
+    mid = float(a[h // 2:3 * h // 4, w // 4:3 * w // 4].mean())
+    return top / max(mid, 1.0)
+
+
 def _eyes_run():
     last_meta = last_mask = last_saved = 0.0
     mask_zone = None
@@ -1546,9 +1560,13 @@ def _eyes_run():
         now = time.monotonic()
         if now - last_meta > 30:
             meta = camera.metadata()
+            latest = detector.pump.latest()[0]
+            eyes.dark = round(_dark_ratio(latest), 2) if latest is not None else None
             eyes.night = (bool(cfg.get("eyes_force"))      # zum Testen bei Tag
-                          or (meta.get("Lux") or 999) < NIGHT_LUX
-                          or (meta.get("AnalogueGain") or 0) >= NIGHT_GAIN)
+                          or (((meta.get("Lux") or 999) < NIGHT_LUX
+                               or (meta.get("AnalogueGain") or 0) >= NIGHT_GAIN)
+                              and eyes.dark is not None
+                              and eyes.dark < NIGHT_DARK_RATIO))
             last_meta = now
         if not eyes.night:
             continue
