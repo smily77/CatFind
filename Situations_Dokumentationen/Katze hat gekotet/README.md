@@ -7,7 +7,7 @@ die wichtigste Referenz, um das Koten vom normalen Durchgangsverkehr zu untersch
 
 | | |
 |---|---|
-| **Track** | Nr **384530** (VPS-Analyse-Tab) |
+| **Track** | Nr **384530**, nach Neunummerierung (Stand 21.10.2026) Nr **81320**, key `1792178320418_7309_10768` |
 | **Datum / Zeit** | Freitag, 16.10.2026, ca. 21:18:30 – 21:19:40 |
 | **Tier** | **Schwarze Katze**, laut Beobachtung des Users die Kot-Verursacherin |
 | **Kotplatz** | ca. **(6150, 9780) mm** in Weltkoordinaten, Fund des Users am Folgetag |
@@ -83,6 +83,9 @@ Der User hat einen zweiten, wenige Tage alten Kot gefunden. Seine Fundstelle pas
 
 Diese Tracks liegen alle bei ungefähr (7550–7600, 9480–9700) mm. Der passende Track ist
 noch nicht gefunden.
+
+Am 21.10.2026 wurde ein weiterer, frischer Kot in der Nähe gefunden. Vermutlich stammt er vom
+Fuchs (Track 81680), siehe `../Fuchs hat vermutlich gekotet/`.
 
 ## Folgerungen für die Erkennung
 
