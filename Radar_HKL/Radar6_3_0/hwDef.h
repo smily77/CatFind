@@ -20,6 +20,9 @@
   #define statusLightDuration 10
   #define deadZone 500
 
+  // Nur beim Dome strahlen die beiden Pixel nach vorne raus -> als Leuchte nutzbar
+  #define hasFrontLight
+
 #elif defined MiniDomeDevice
   #define ID MiniDome
   
@@ -128,9 +131,16 @@
 #else
   #define STG_IR 0u
 #endif
-#define STG_SUPPORTED ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCopyPose)|(1u<<stgAutoCalib)|(1u<<stgRadarFullRasen)|(1u<<stgActive)|STG_IR)
+// Front-Licht (nur Dome): stgLight + stgLightAuto bilden den Schalter AUS / EIN / AUTO,
+// beide persistiert, Default AUS (nicht im STG_DEFAULT).
+#ifdef hasFrontLight
+  #define STG_LIGHT ((1u<<stgLight)|(1u<<stgLightAuto))
+#else
+  #define STG_LIGHT 0u
+#endif
+#define STG_SUPPORTED ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCopyPose)|(1u<<stgAutoCalib)|(1u<<stgRadarFullRasen)|(1u<<stgActive)|STG_IR|STG_LIGHT)
 #define STG_DEFAULT   ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCalib)|(1u<<stgActive)|STG_IR)   // Auto-Kalib + aktiv default an
-#define STG_PERSIST   ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCopyPose)|(1u<<stgAutoCalib)|STG_IR)
+#define STG_PERSIST   ((1u<<stgHbLed)|(1u<<stgCatLed)|(1u<<stgAutoCopyPose)|(1u<<stgAutoCalib)|STG_IR|STG_LIGHT)
 #define STG_ACTIONS   ((1u<<actCopyPose)|(1u<<actCalibrate)|(1u<<actClearPose))
 
 byte radarBuffer[30];

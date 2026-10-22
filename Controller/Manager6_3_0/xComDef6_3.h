@@ -330,7 +330,13 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
                             // ob es Nacht ist, entscheidet weiterhin der LDR des Scheinwerfers.
                             // Schalterstellung: AUS = Light aus | EIN = Light an+Auto aus |
                             // AUTO = Light an+Auto an.                                  [persistiert]
-#define STG_COUNT      11
+#define stgLight       11   // Dome: die beiden Front-Pixel als weisse Leuchte (volle Helligkeit).
+                            // Statusanzeigen haben Vorrang: leuchtet erst nach dem Boot und nur,
+                            // wenn HB- UND Cat-Anzeige aus sind.                         [persistiert]
+#define stgLightAuto   12   // Dome: Licht nur nach EIGENER catObserved (~60 s). Wirkt nur mit
+                            // stgLight AN. Schalter wie IR: AUS = Light aus | EIN = Light an+Auto
+                            // aus | AUTO = Light an+Auto an.                              [persistiert]
+#define STG_COUNT      13
 
 // Ausloesbare Aktionen (Bit-Position in settingsPayload.actions).
 #define actCopyPose     0   // Welt-Pose jetzt aus der Gruppe kopieren  -> cmdCopyPose

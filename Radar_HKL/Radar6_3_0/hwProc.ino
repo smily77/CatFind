@@ -12,7 +12,7 @@ void  heardBeat() {
   }
   if (statusLightOn && (millis() - timer >= statusLightDuration)) {
     statusLightOn = false;
-    setPixel(minPix,0x000000);
+    if (!lightIsOn) setPixel(minPix,0x000000);   // Front-Licht nicht wegloeschen
     timer = millis();
   }
 }

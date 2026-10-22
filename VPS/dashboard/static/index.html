@@ -347,9 +347,12 @@ function fmtTime(t){ return new Date(t*1000).toLocaleTimeString(); }
 function minMaxArr(a){ let lo=Infinity, hi=-Infinity; for(const v of a){ if(v<lo)lo=v; if(v>hi)hi=v; } return [lo,hi]; }
 
 // Einstellungen/Aktionen (Bit-Index = stg*/act* aus xComDef6_3.h)
-const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor","CatDetected-Anzeige","Kamera-KI","Radar: volle RasenKarte melden","Aktiv (Sensor an)","IR-Scheinwerfer","IR nur bei Katze (Auto)"];
-// IR-Scheinwerfer (Dome-C1): die zwei Bits bilden EINEN Schalter AUS/EIN/AUTO
-const STG_IR_LIGHT=9, STG_IR_AUTO=10;
+const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor","CatDetected-Anzeige","Kamera-KI","Radar: volle RasenKarte melden","Aktiv (Sensor an)","IR-Scheinwerfer","IR nur bei Katze (Auto)","Front-Licht","Licht nur bei Katze (Auto)"];
+// Je zwei Bits bilden EINEN Schalter AUS/EIN/AUTO (AUS: Light 0 | EIN: Light 1, Auto 0 | AUTO: beide 1)
+const TRI=[
+  {l:9,  a:10, name:"IR-Scheinwerfer", tip:"AUS = immer aus · EIN = nachts an (LDR) · AUTO = nachts an, nur wenn ein Sensor catObserved meldet (60 s)"},
+  {l:11, a:12, name:"Front-Licht (weiss)", tip:"Dome: beide Pixel weiss, volle Helligkeit · EIN = dauernd · AUTO = 60 s nach eigener catObserved · leuchtet nur, wenn HB- und Cat-Anzeige AUS sind"},
+];
 const ACT=[{l:"Pose kopieren",cmd:21,info:0},{l:"Kalibrieren",cmd:18,info:45000},{l:"Pose löschen",cmd:19,info:0},{l:"Parameter laden",cmd:22,info:0},{l:"Foto jetzt",cmd:23,info:0}];
 const CMD_SET_SETTING=20;
 const CMD_REBOOT=30;   // Fernwartung: Geraet neu starten (jedes Geraet, ueber Manager-Bus)
@@ -545,12 +548,12 @@ function applyPending(){
 }
 function doAct(id,cmd,info){ postCmd(id,cmd,info); }
 // Schalterstellung -> beide Bits setzen (AUS: Light 0 | EIN: Light 1, Auto 0 | AUTO: beide 1)
-function setIr(id,mode){
+function setTri(id,l,a,mode){
   const light=mode==="AUS"?0:1, auto=mode==="AUTO"?1:0;
-  postCmd(id,CMD_SET_SETTING,(STG_IR_LIGHT<<1)|light);
-  _pending[id+":"+STG_IR_LIGHT]={val:light, until:Date.now()+6000};
-  if(light){ postCmd(id,CMD_SET_SETTING,(STG_IR_AUTO<<1)|auto);
-             _pending[id+":"+STG_IR_AUTO]={val:auto, until:Date.now()+6000}; }
+  postCmd(id,CMD_SET_SETTING,(l<<1)|light);
+  _pending[id+":"+l]={val:light, until:Date.now()+6000};
+  if(light){ postCmd(id,CMD_SET_SETTING,(a<<1)|auto);
+             _pending[id+":"+a]={val:auto, until:Date.now()+6000}; }
   applyPending();
   renderCtrl(lastSettings,true);
 }
@@ -580,11 +583,12 @@ function renderCtrl(settings,force){
   for(const id of ids){
     const s=settings[id], sup=s.sup, val=s.val, act=s.act;
     h+=`<div class="card"><h3>${s.name} <small style="color:#666">#${id}${s.ip?` .${s.ip}`:""} · ${Math.round(s.age)}s</small></h3>`;
-    const hasIr=(sup&(1<<STG_IR_LIGHT))!==0;
-    if(hasIr){
-      const mode=!(val&(1<<STG_IR_LIGHT))?"AUS":((val&(1<<STG_IR_AUTO))?"AUTO":"EIN");
-      h+=`<div class="srow"><span title="AUS = immer aus · EIN = nachts an (LDR) · AUTO = nachts an, nur wenn ein Sensor catObserved meldet (60 s)">IR-Scheinwerfer</span><span class="seg" style="flex:none">`+
-         ["AUS","EIN","AUTO"].map(m=>`<button class="sw ${m===mode?'sel':''}" onclick="setIr(${id},'${m}')">${m}</button>`).join("")+`</span></div>`;
+    const triBits=new Set();
+    for(const t of TRI) if(sup&(1<<t.l)){
+      triBits.add(t.l); triBits.add(t.a);
+      const mode=!(val&(1<<t.l))?"AUS":((val&(1<<t.a))?"AUTO":"EIN");
+      h+=`<div class="srow"><span title="${t.tip}">${t.name}</span><span class="seg" style="flex:none">`+
+         ["AUS","EIN","AUTO"].map(m=>`<button class="sw ${m===mode?'sel':''}" onclick="setTri(${id},${t.l},${t.a},'${m}')">${m}</button>`).join("")+`</span></div>`;
     }
     const e=lastEnv[id];
     if(e){
@@ -595,7 +599,7 @@ function renderCtrl(settings,force){
          ` <button class="act" onclick="envRequest()">▶ Temp./Druck messen</button></div>`;
     }
     for(let i=0;i<STG.length;i++) if(sup&(1<<i)){
-      if(hasIr && (i===STG_IR_LIGHT||i===STG_IR_AUTO)) continue;   // oben als Dreifach-Schalter
+      if(triBits.has(i)) continue;   // oben als Dreifach-Schalter
       const on=(val&(1<<i))!==0;
       h+=`<div class="srow"><span>${STG[i]}</span><button class="sw ${on?'on':'off'}" onclick="toggle(${id},${i},${on?0:1})">${on?'AN':'AUS'}</button></div>`;
     }
