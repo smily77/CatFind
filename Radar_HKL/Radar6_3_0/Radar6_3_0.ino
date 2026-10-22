@@ -57,6 +57,11 @@ posPayload obsData;
 // IR-Scheinwerfer (Dome-C1): Schalter AUS/EIN/AUTO ueber stgIrLight/stgIrAuto (xComDef6_3.h).
 // AUTO: nach jeder catObserved (eigene oder von irgendeinem Sensor) so lange freigeben.
 #define IR_HOLD_MS         60000
+// Front-Licht (Dome): Schalter AUS/EIN/AUTO ueber stgLight/stgLightAuto (xComDef6_3.h).
+// AUTO: nach jeder EIGENEN catObserved so lange an.
+#define LIGHT_HOLD_MS      60000
+#define LIGHT_YIELD_MS      6000  // so lange weicht das Licht einer Kalibrier-/Pose-Farbe
+                                  // (die naechste HB-Runde loescht sie wieder)
 // Umweltsensor (Dome-C1/BMP180): so oft selbsttaetig envReport broadcasten
 #define ENV_PERIOD_MS      60000
 
@@ -64,6 +69,13 @@ int32_t  lastTargetX = 0, lastTargetY = 0;   // juengste eigene Detektion (fuer 
 unsigned long lastTargetMs = 0;              // wann zuletzt ein Radar-Target aktiv war
 unsigned long lastWorldObsMs = 0;            // wann zuletzt eine welt-valide catObserved kam
 unsigned long autoArmMs = 0;                 // seit wann Co-Observation anliegt (0 = nicht)
+
+// Front-Licht (siehe serviceLight) - hier oben, weil processTargets/heardBeat sie lesen
+bool          bootDone        = false;
+bool          lightIsOn       = false;
+unsigned long lightLastCatMs  = 0;
+bool          lightHadCat     = false;
+unsigned long lightYieldUntil = 0;
 
 // Zwei unabhaengig gepflegte Karten-Slots (NoShot/Rasen, struct MapSlot in hwDef.h -
 // Auto-Prototypen!); insideNoShot() wirkt aber immer nur auf EINEN im RAM geladenen
@@ -112,6 +124,7 @@ void setup() {
 #endif
   sendSettingsReport();              // Einstellungen annoncieren (Display/VPS lernen sie)
   timer = millis();  //heardBeat
+  bootDone = true;                   // ab jetzt darf das Front-Licht (Statusanzeigen zuerst)
 }
 
 void loop() {
@@ -124,6 +137,7 @@ void loop() {
   serviceCalibration();
   serviceFilterMaps();
   serviceIr();
+  serviceLight();
   serviceEnv();
 }
 
@@ -134,6 +148,7 @@ void handleCommand(const xMsg& m) {
   cmdPayload cmd;
   if (!getPayload(m, cmd)) return;
   if (cmd.cmd == cmdCopyPose) {      // Aktion: Welt-Pose aus der Gruppe uebernehmen
+    lightYield();
     setPixel(minPix, 0xFFFF00);
     bool ok = copyPoseFromGroup(1500);
     setPixel(minPix, ok ? 0x00FF00 : 0xFF0000);
@@ -141,6 +156,7 @@ void handleCommand(const xMsg& m) {
   else if (cmd.cmd == cmdCalibrate) {
     unsigned long win = (cmd.info > 0) ? (unsigned long)cmd.info : CALIB_WINDOW_MS;
     coCalibBegin(calib, win, false);
+    lightYield();
     setPixel(minPix, 0xFF00FF);   // Kalibriermodus sichtbar
     sendUdpTextln("calib Knopf: Fenster " + String(win / 1000) + "s");
   }
@@ -150,6 +166,7 @@ void handleCommand(const xMsg& m) {
     myPose.validWorldPose = false;
     myPose.worldX = 0; myPose.worldY = 0;
     health = coHealth();                           // Health-Check zuruecksetzen
+    lightYield();
     setPixel(minPix, 0xFF0000);
     sendUdpTextln("Pose geloescht -> nicht lokalisiert (Neukalibrierung noetig)");
   }
@@ -208,7 +225,7 @@ void handleObservation(const xMsg& m) {
 // Referenzperson koennte am Rand stehen).
 void processTargets() {
   // Ruhemodus (stgActive AUS): keine Zielauswertung/-meldung, nur HB laeuft weiter.
-  if (!deviceActive()) { setPixel(maxPix, 0x000000); return; }
+  if (!deviceActive()) { if (!lightIsOn) setPixel(maxPix, 0x000000); return; }
   boolean validTarget = false;
   for (int i = 0; i < 3; i++) {
     if (target[i].active && (target[i].l > deadZone)) {
@@ -227,9 +244,11 @@ void processTargets() {
           !insideNoShot(obsData.worldX, obsData.worldY)) continue;   // ausserhalb der Filterkarte
       broadcastMsg(catObserved, obsData);
       irNoteCat();                                     // IR-AUTO: eigenes Ziel zaehlt auch
+      lightNoteCat();                                  // Licht-AUTO: nur eigene Ziele
     }
   }
-  setPixel(maxPix, (validTarget && settingOn(stgCatLed)) ? 0x0000FF : 0x000000);  // Anzeige schaltbar
+  if (!lightIsOn)                                      // Licht an -> Cat-Anzeige ist ohnehin aus
+    setPixel(maxPix, (validTarget && settingOn(stgCatLed)) ? 0x0000FF : 0x000000);  // Anzeige schaltbar
 }
 
 // Einen Karten-Slot beschaffen (lokaler LittleFS-Cache + Versionsabgleich beim Manager,
@@ -277,6 +296,7 @@ void serviceFilterMaps() {
 // Kalibrierfenster abschliessen bzw. Auto-Trigger bedienen.
 void serviceCalibration() {
   if (coCalibElapsed(calib)) {                          // Fenster zu Ende -> VPS + Quality-Gate
+    lightYield();
     setPixel(minPix, 0xFFFF00);                         // "rechnet"
     bool ok = coCalibFinish(calib, CALIB_MIN_INLIER);
     setPixel(minPix, ok ? 0x00FF00 : 0xFF0000);
@@ -303,6 +323,7 @@ void serviceCalibration() {
       if (autoArmMs == 0) autoArmMs = millis();
       else if (millis() - autoArmMs > AUTO_ARM_MS) {
         coCalibBegin(calib, CALIB_WINDOW_MS, true);
+        lightYield();
         setPixel(minPix, 0xFF00FF);
         sendUdpTextln("auto-calib gestartet (Co-Observation)");
         autoArmMs = 0;
@@ -343,6 +364,53 @@ void serviceIr() {
                     (want ? "frei (LDR entscheidet)" : "gesperrt"));
     irFree = want;
   }
+#endif
+}
+
+// --- Front-Licht (Dome) --------------------------------------------------------------
+// Die beiden Pixel strahlen beim Dome nach vorne und leuchten dann weiss mit VOLLER
+// Helligkeit (255) - die Statusanzeigen bleiben bei BRIGHTNESS. Weil FastLED nur eine
+// globale Helligkeit kennt, wird sie beim Ein-/Ausschalten umgestellt.
+//   AUS  (stgLight aus)                  -> aus
+//   EIN  (stgLight an, stgLightAuto aus) -> dauernd an
+//   AUTO (stgLight an, stgLightAuto an)  -> LIGHT_HOLD_MS nach jeder EIGENEN catObserved
+// Vorrang der Statusanzeigen: erst nach dem Boot (WLAN/NTP-Farben), nur wenn HB- UND
+// Cat-Anzeige aus sind, nicht waehrend eines Kalibrierfensters und LIGHT_YIELD_MS nach
+// einer Kalibrier-/Pose-Farbe (lightYield vor jedem solchen setPixel).
+void lightNoteCat() { lightLastCatMs = millis(); lightHadCat = true; }
+
+void lightOff() {
+#ifdef containLed
+  allPixel(0x000000);
+  FastLED.setBrightness(BRIGHTNESS);
+#endif
+  lightIsOn = false;
+}
+
+// Vor einer Status-Farbe aufrufen: Licht sofort aus, Helligkeit zurueck auf BRIGHTNESS.
+void lightYield() {
+  lightYieldUntil = millis() + LIGHT_YIELD_MS;
+  if (lightIsOn) lightOff();
+}
+
+void serviceLight() {
+#ifdef hasFrontLight
+  bool want = bootDone && settingOn(stgLight) && !settingOn(stgHbLed) && !settingOn(stgCatLed)
+              && !calib.active && (long)(millis() - lightYieldUntil) >= 0;
+  if (want && settingOn(stgLightAuto))
+    want = lightHadCat && (millis() - lightLastCatMs < LIGHT_HOLD_MS);
+  if (want == lightIsOn) return;
+  if (want) {
+    FastLED.setBrightness(255);
+    allPixel(0xFFFFFF);
+    lightIsOn = true;
+  } else {
+    lightOff();
+  }
+  const char* mode = !settingOn(stgLight) ? "AUS" : (settingOn(stgLightAuto) ? "AUTO" : "EIN");
+  sendUdpTextln(String("Front-Licht ") + mode + ": " + (want ? "an" : "aus") +
+                ((settingOn(stgLight) && (settingOn(stgHbLed) || settingOn(stgCatLed)))
+                   ? " (HB-/Cat-Anzeige hat Vorrang)" : ""));
 #endif
 }
 
