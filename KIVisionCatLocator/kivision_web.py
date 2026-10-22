@@ -20,6 +20,7 @@ import socket
 import subprocess
 import threading
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -27,7 +28,7 @@ import numpy as np
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
 from kivision_cammodel import CameraModel
-from kivision_homography import Homography, pairs as load_pairs, _read_poly
+from kivision_homography import Homography, pairs as load_pairs, _read_poly, write_atomic
 from kivision_eyes import Eyes
 from kivision_motion import Motion, cv2
 from picamera2 import Picamera2
@@ -123,6 +124,7 @@ WIT_EP_MAX = 120.0        # Dauermeldung (Maeher, Geist) zaehlt danach als neue 
 WIT_SHOTS = 4
 WIT_EVERY = 2.0
 WIT_HOLD = 3.0            # nur fotografieren, solange das Radar noch meldet
+DET_STALE_S = 10.0        # so lange ohne gelungenen KI-Durchlauf -> Bild ohne KI
 # Zwei getrennte Stroeme (seit 2026-10-04):
 #   main  = KI-Bild in "ai_size" (Standard volle 2592x1944), geht nie ins WLAN
 #   lores = Livebild in "size" (YUV420, der JPEG-Encoder kodiert es direkt) und
@@ -278,7 +280,7 @@ def load_config():
 def save_config(cfg):
     try:
         CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+        write_atomic(CONFIG_FILE, json.dumps(cfg, indent=2))
     except OSError as exc:
         print("[web] Konfiguration nicht speicherbar: %s" % exc)
 
@@ -675,6 +677,11 @@ class Detector:
         self.lock = threading.Lock()
         self.thread = None
         self.stop_event = threading.Event()
+        # set_enabled wird aus Web- und beiden Bus-Empfangsthreads gerufen;
+        # der Coral-Interpreter verkraftet keine zwei Durchlaeufe gleichzeitig.
+        self.enable_lock = threading.Lock()
+        self.infer_lock = threading.Lock()
+        self.ok_at = 0.0            # monotonic des letzten gelungenen Durchlaufs
         self.result = {"boxes": [], "ms": 0.0, "ts": 0.0, "tiles": []}
         self.error = ""
         self.hit_at = None          # monotonic der letzten Aufnahme
@@ -1022,7 +1029,10 @@ class Detector:
             self.ep_world = world
             if force:
                 self.ep_force = True
-            running = self.thread is not None and self.thread.is_alive()
+            # Nur ein Erkennungs-Thread, der auch Ergebnisse liefert, macht das
+            # Bild selbst - scheitert etwa das Modell, gibt es das nackte Bild.
+            running = (self.thread is not None and self.thread.is_alive()
+                       and now - self.ok_at < DET_STALE_S)
             due = not running and not self.ep_busy and self._witness_due(now)
             if due:
                 self.ep_busy = True
@@ -1060,7 +1070,7 @@ class Detector:
     def _maybe_witness(self, frame, raw, tracks=()):
         now = time.monotonic()
         with self.lock:
-            if not self._witness_due(now):
+            if self.ep_busy or not self._witness_due(now):
                 return
             info, shot = self._witness_take(now)
         self._save_witness(frame, raw, info, shot, tracks)
@@ -1092,24 +1102,21 @@ class Detector:
         vps_upload(path, frame, world, best)
 
     # -- Thread ----------------------------------------------------------
-    def _run(self):
+    def _run(self, stop):
         seq = -1
-        while not self.stop_event.is_set():
+        while not stop.is_set():
             pause = max(0.05, float(self.cfg["detect"].get("interval", 0.3)))
             try:
-                self._ensure_model()
                 frame, tracks, seq = self.pump.wait(seq)
                 if frame is None:
-                    time.sleep(0.2)
+                    stop.wait(0.2)
                     continue
-                # Bewegt sich etwas, zaehlt Tempo: nur die Ausschnitte um die
-                # Spuren (je ~25 ms), das ganze Kachelraster (~0,4 s) nur noch
-                # jede vierte Runde. Sonst wie bisher das ganze Bild.
-                self.loops += 1
-                full = not tracks or self.loops % 4 == 0
-                result = self._infer(frame, full, tracks)
-                raw = result.pop("raw", [])
-                result["motion"] = self.motion.moving() if self.motion else []
+                with self.infer_lock:
+                    if stop.is_set():
+                        break
+                    self._ensure_model()
+                    result, raw = self._pass(frame, tracks)
+                self.ok_at = time.monotonic()
                 with self.lock:
                     self.result = result
                     self.error = ""
@@ -1121,20 +1128,36 @@ class Detector:
                 with self.lock:
                     self.error = "%s: %s" % (type(exc).__name__, exc)
                 print("[web] Erkennung fehlgeschlagen: %s" % exc)
-                self.stop_event.wait(2.0)
+                stop.wait(2.0)
             if pause:
-                self.stop_event.wait(pause)
+                stop.wait(pause)
+
+    def _pass(self, frame, tracks):
+        """Ein Erkennungsdurchlauf (unter self.infer_lock)."""
+        # Bewegt sich etwas, zaehlt Tempo: nur die Ausschnitte um die
+        # Spuren (je ~25 ms), das ganze Kachelraster (~0,4 s) nur noch
+        # jede vierte Runde. Sonst wie bisher das ganze Bild.
+        self.loops += 1
+        full = not tracks or self.loops % 4 == 0
+        result = self._infer(frame, full, tracks)
+        raw = result.pop("raw", [])
+        result["motion"] = self.motion.moving() if self.motion else []
+        return result, raw
 
     def set_enabled(self, enabled):
-        if enabled and (self.thread is None or not self.thread.is_alive()):
-            self.stop_event.clear()
-            self.thread = threading.Thread(target=self._run, daemon=True)
-            self.thread.start()
-        elif not enabled and self.thread is not None:
-            self.stop_event.set()
-            self.thread = None
-            with self.lock:
-                self.result = {"boxes": [], "ms": 0.0, "ts": 0.0, "tiles": []}
+        # Jeder Lauf hat sein eigenes Stopp-Ereignis: ein gerade gestoppter
+        # Durchlauf darf durch schnelles Wiedereinschalten nicht weiterlaufen.
+        with self.enable_lock:
+            if enabled and (self.thread is None or not self.thread.is_alive()):
+                self.stop_event = threading.Event()
+                self.thread = threading.Thread(target=self._run, args=(self.stop_event,),
+                                               daemon=True)
+                self.thread.start()
+            elif not enabled and self.thread is not None:
+                self.stop_event.set()
+                self.thread = None
+                with self.lock:
+                    self.result = {"boxes": [], "ms": 0.0, "ts": 0.0, "tiles": []}
 
     def snapshot_state(self):
         gap = max(5.0, float(self.cfg["detect"].get("snap_gap", 60)))
@@ -1444,6 +1467,7 @@ def _vision_run():
 
 _vps_queue = []
 _vps_cond = threading.Condition()
+_vps_stats = {"ok": 0, "fail": 0, "err": ""}
 
 
 def vps_upload(path, frame, world, best, trig="kivision"):
@@ -1549,7 +1573,8 @@ def _dark_ratio(frame):
 
 
 def _eyes_run():
-    last_meta = last_mask = last_saved = 0.0
+    last_meta = last_saved = 0.0
+    last_mask = None
     mask_zone = None
     seq = -1
     sent = {}
@@ -1574,7 +1599,7 @@ def _eyes_run():
         if frame is None:
             continue
         geo = _geo()
-        if now - last_mask > 300 or eyes.mask is None or mask_zone != _zone_name():
+        if last_mask is None or now - last_mask > 300 or mask_zone != _zone_name():
             eyes.set_mask(_zone_uv(geo) if geo else [], frame.shape)
             last_mask, mask_zone = now, _zone_name()
         try:
@@ -1627,8 +1652,11 @@ def _vps_run():
             try:
                 req = urllib.request.Request(url, data=data, headers={"Content-Type": "text/plain"})
                 urllib.request.urlopen(req, timeout=30).read()
+                _vps_stats["ok"] += 1
             except Exception as exc:                          # noqa: BLE001
                 print("[web] VPS-Bild %s: %s" % (trig, exc))
+                _vps_stats["fail"] += 1
+                _vps_stats["err"] = "%s %s" % (time.strftime("%H:%M"), exc)
                 break
 
 
@@ -1640,7 +1668,7 @@ def _log_pair(m, kind, p):
     if not tracks:
         return
     row = {"t": round(time.time(), 2), "sender": m.sender, "kind": kind,
-           "wx": p["worldX"], "wy": p["worldY"],
+           "wx": p["worldX"], "wy": p["worldY"], "flips": _flips(),
            "tracks": [{"id": t["id"], "foot": t["foot"], "w": t["w"], "h": t["h"],
                        "age": t["age"], "best": t["best"]} for t in tracks]}
     try:
@@ -1680,6 +1708,7 @@ node = _start_bus()
 
 app = Flask(__name__, template_folder=str(BASE / "templates"))
 
+HEALTH_EVERY = 600       # s, Lebenszeichen-Zeile im Journal
 SOCKET_TIMEOUT = 20      # s, dann gilt ein haengender Client als weg
 STREAM_PAUSE_MAX = 1.0   # s, laengste Pause zwischen zwei Livebildern
 
@@ -1904,6 +1933,8 @@ def api_cammodel_set():
             d["zero"] = [[float(u), float(v)] for u, v in data["zero"]][:30]
         if "edge" in data:
             d["edge"] = [[float(u), float(v)] for u, v in data["edge"]][:60]
+        if any(k in data for k in ("refs", "zero", "edge")):
+            d["flips"] = _flips()       # Klicks gelten nur in dieser Spiegelung
     except (TypeError, ValueError, KeyError, IndexError) as exc:
         return jsonify({"ok": False, "error": "ungueltige Eingabe: %s" % exc})
     cammodel.save()
@@ -1919,7 +1950,8 @@ def api_cammodel_calibrate():
         return jsonify({"ok": False, "error": str(exc)})
     # Nebenbei: wie weit liegt jedes Sensor-Weltsystem neben der Kamera?
     try:
-        src, dst, _, snd = load_pairs([PAIRS_FILE.with_suffix(".old"), PAIRS_FILE], senders=None)
+        src, dst, _, snd = load_pairs([PAIRS_FILE.with_suffix(".old"), PAIRS_FILE], senders=None,
+                                   flips=_flips())
         fit["radar"] = cammodel.radar_offsets(src / (1640.0, 1232.0), dst, snd)
         cammodel.save()
     except Exception as exc:                                  # noqa: BLE001
@@ -2041,6 +2073,11 @@ def hit_delete(kind, name):
     if target.parent != directory.resolve() or not target.exists():
         return jsonify({"ok": False}), 404
     unlink_with_thumb(target)
+    if kind == "eyes":                  # Rohbild gleichen Namens mit weg
+        try:
+            (EYE_DIR / "raw" / target.name).unlink()
+        except OSError:
+            pass
     return jsonify({"ok": True})
 
 
@@ -2053,7 +2090,8 @@ def hits_clear(kind):
             count += 1
         except OSError:
             pass
-    for path in (GALLERIES[kind][0] / ".thumbs").glob("*"):
+    extra = list((EYE_DIR / "raw").glob("*.jpg")) if kind == "eyes" else []
+    for path in list((GALLERIES[kind][0] / ".thumbs").glob("*")) + extra:
         try:
             path.unlink()
         except OSError:
@@ -2078,10 +2116,47 @@ def snapshot_delete(name):
 # Hintergrund-Threads erst hier am Ende starten, wenn alle Funktionen (z.B.
 # _geo) definiert sind - frueher weiter oben gestartet, starb je nach Timing
 # ein Thread beim Start mit NameError (2026-10-19: _vision_run).
-threading.Thread(target=_vps_run, daemon=True).start()
-threading.Thread(target=_vision_run, daemon=True).start()
-threading.Thread(target=_eyes_run, daemon=True).start()
-threading.Thread(target=_zone_run, daemon=True).start()
+def _forever(fn):
+    """Hintergrund-Schleife am Leben halten: eine Ausnahme beendete den Thread
+    frueher still und fuer immer (Web und HB sahen weiter gesund aus)."""
+    def run():
+        while True:
+            try:
+                fn()
+            except Exception:                                 # noqa: BLE001
+                print("[web] %s abgestuerzt, Neustart in 5 s:\n%s"
+                      % (fn.__name__, traceback.format_exc()), flush=True)
+                _thread_crashes[fn.__name__] = _thread_crashes.get(fn.__name__, 0) + 1
+                time.sleep(5.0)
+    threading.Thread(target=run, name=fn.__name__, daemon=True).start()
+
+
+_thread_crashes = {}
+
+
+def _health_run():
+    """Lebenszeichen ins Journal: zeigt nach einem Ausfall, ab wann welcher
+    Teil stillstand (journalctl -u kivision-web -b -1 | grep Lebenszeichen)."""
+    while True:
+        time.sleep(HEALTH_EVERY)
+        st = node.status() if node else {}
+        det = detector.snapshot_state()
+        print("[web] Lebenszeichen: bus tx %s rx %s (letztes vor %s s) hb %s vision %s | "
+              "radar %d, ki %s%s | augen %s | vps ok %d fehl %d%s | abstuerze %s"
+              % (st.get("tx"), st.get("rx"), st.get("rx_age"), st.get("hb_tx"),
+                 st.get("vision_tx"), det.get("radar", 0),
+                 "an" if det.get("running") else "aus",
+                 (" (" + det["error"] + ")") if det.get("error") else "",
+                 "Nacht" if eyes.night else "Tag", _vps_stats["ok"], _vps_stats["fail"],
+                 (" (" + _vps_stats["err"] + ")") if _vps_stats["err"] else "",
+                 _thread_crashes or "keine"), flush=True)
+
+
+_forever(_vps_run)
+_forever(_vision_run)
+_forever(_eyes_run)
+_forever(_zone_run)
+_forever(_health_run)
 
 if __name__ == "__main__":
     from werkzeug.serving import WSGIRequestHandler, make_server

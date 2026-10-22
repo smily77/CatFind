@@ -24,6 +24,8 @@ gerechnet, damit die RANSAC-Schwelle sich auf Pixel und Millimeter bezieht.
 
 import json
 import math
+import os
+import threading
 import time
 from pathlib import Path
 
@@ -43,6 +45,20 @@ STEP_MM = 150                             # Linien so fein zerlegt projizieren
 _FRAME = (1640.0, 1232.0)
 
 
+def write_atomic(path, text):
+    """Erst in eine Nebendatei, dann umbenennen: ein Stromausfall oder
+    cmdReboot mitten im Schreiben laesst sonst eine leere Datei zurueck, und
+    der Neustart faellt still auf die Vorgaben (Kalibrierung weg)."""
+    path = Path(path)
+    # je Thread eine eigene Nebendatei - save_config kommt auch parallel
+    tmp = path.with_name("%s.%d.tmp" % (path.name, threading.get_ident()))
+    with tmp.open("w") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
 def _rows(paths):
     for path in paths:
         try:
@@ -57,11 +73,19 @@ def _rows(paths):
                     continue
 
 
-def pairs(paths, senders=FIT_SENDERS):
-    """Paare (Fusspunkt in Pixel des 1640er-Rasters, Welt-mm, Zeit, Sender)."""
+# Zeilen von vor 2026-10-22 tragen keine Spiegelung - bis dahin lief die
+# Kamera immer ungespiegelt.
+NO_FLIPS = {"hflip": False, "vflip": False}
+
+
+def pairs(paths, senders=FIT_SENDERS, flips=None):
+    """Paare (Fusspunkt in Pixel des 1640er-Rasters, Welt-mm, Zeit, Sender).
+    flips: nur Zeilen, die unter dieser Spiegelung entstanden sind."""
     src, dst, t, snd = [], [], [], []
     for r in _rows(paths):
         if senders is not None and r.get("sender") not in senders:
+            continue
+        if flips is not None and r.get("flips", NO_FLIPS) != flips:
             continue
         tracks = [k for k in r.get("tracks", []) if k.get("age", 0) >= MIN_AGE]
         if len(tracks) != 1:
@@ -79,7 +103,7 @@ def fit(paths, flips):
     Speichern) oder wirft ValueError mit einer lesbaren Begruendung."""
     if cv2 is None:
         raise ValueError("OpenCV fehlt")
-    src, dst, t, _ = pairs(paths)
+    src, dst, t, _ = pairs(paths, flips=flips)
     if len(src) < MIN_INLIERS:
         raise ValueError("zu wenig Paare (%d)" % len(src))
     h_px, mask = cv2.findHomography(src, dst, cv2.RANSAC, RANSAC_MM,
@@ -149,7 +173,7 @@ class Homography:
 
     def calibrate(self, pair_paths, flips):
         data = fit(pair_paths, flips)
-        self.path.write_text(json.dumps(data, indent=1))
+        write_atomic(self.path, json.dumps(data, indent=1))
         self._set(data)
         return data
 
