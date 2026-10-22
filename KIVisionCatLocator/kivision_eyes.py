@@ -243,11 +243,12 @@ class Eyes:
 
     def update(self, frame, now=None):
         """Neue Augen-Spuren, die gerade bestaetigt wurden."""
-        if cv2 is None or self.mask is None:
+        if cv2 is None:
             return []
         now = time.monotonic() if now is None else now
         t = time.perf_counter()
-        x0, y0, x1, y1 = self.box
+        # ohne Zone (keine Karte/Abbildung) das ganze Bild, wie die Bewegung
+        x0, y0, x1, y1 = self.box or (0, 0, frame.shape[1], frame.shape[0])
         g = np.ascontiguousarray(frame[y0:y1, x0:x1, 1])
         spots, gb = self.spots(g)
         self._decay(now, frame.shape)

@@ -15,6 +15,7 @@ Neustart ist das Geraet immer aktiv, cmdReboot ist also zugleich "zurueck auf
 normal".
 """
 
+import math
 import os
 import threading
 import time
@@ -23,6 +24,8 @@ from xcom import Bus
 
 HB_PERIOD_MS = 10000     # == periodeForHB der CatCam; VPS erwartet 10 s fuer Kameras
 REJOIN_S = 60            # Multicast-Mitgliedschaft auffrischen (WLAN-Abrisse)
+DEDUP_S = 1.5            # CatIdent sendet jede catDetected doppelt (40 ms Abstand)
+WORLD_MAX_MM = 1000000   # unplausible Weltpunkte (Horizont) gar nicht erst packen
 
 
 class BusNode:
@@ -42,6 +45,8 @@ class BusNode:
         self.actions = 0
         self.last_cmd = ""
         self.vision_tx = 0
+        self.hb_tx = 0
+        self._last_det = {}     # Absender -> (Zeit, Payload) fuer den Doppel-Filter
         self.started = time.time()
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -69,10 +74,12 @@ class BusNode:
             "peers": len(self.bus.device_ips),
             "last_cmd": self.last_cmd,
             "vision_tx": self.vision_tx,
+            "hb_tx": self.hb_tx,
         }
 
     # -- Senden ------------------------------------------------------------
     def send_hb(self):
+        self.hb_tx += 1
         self.bus.broadcast(self.x.HB, self.x.pack("hbPayload", ip=self.bus.octet,
                                                    HBperiode=HB_PERIOD_MS))
 
@@ -91,6 +98,8 @@ class BusNode:
         catObserved, auf das die PowerActors ohne Absender-Pruefung feuern."""
         if not hasattr(self.x, "visionObserved"):
             return                      # alter Header ohne den Code: lieber nichts senden
+        if not all(math.isfinite(v) and abs(v) < WORLD_MAX_MM for v in (wx, wy, width)):
+            return                      # sonst struct.error beim Packen
         self.bus.broadcast(self.x.visionObserved, self.x.pack(
             "posPayload", x=wx, y=wy, radius=0.0, angle=0.0, targetSpeed=0, res=width,
             worldX=wx, worldY=wy, worldValid=1, sensor=sensor))
@@ -113,6 +122,8 @@ class BusNode:
         elif m.code in (x.catObserved, x.catDetected) and self._on_target:
             kind, name = (("observed", "posPayload") if m.code == x.catObserved
                           else ("detected", "catDetectedPayload"))
+            if kind == "detected" and self._duplicate(m):
+                return
             p = x.unpack_prefix(name, m.payload)
             if p:
                 self._on_target(m, kind, p)
@@ -120,6 +131,15 @@ class BusNode:
             c = x.unpack("cmdPayload", m.payload)
             if c:
                 self._command(m, c["cmd"], c["info"])
+
+    def _duplicate(self, m):
+        """Zweite Kopie einer catDetected (gleicher Absender, gleiche Payload
+        innerhalb DEDUP_S) - so dedupen auch Manager und CatCam."""
+        now = time.monotonic()
+        with self._lock:
+            last = self._last_det.get(m.sender)
+            self._last_det[m.sender] = (now, m.payload)
+        return last is not None and last[1] == m.payload and now - last[0] < DEDUP_S
 
     def _command(self, m, cmd, info):
         x = self.x
@@ -160,9 +180,13 @@ class BusNode:
         last_hb = last_join = time.monotonic()
         while not self._stop.wait(0.5):
             now = time.monotonic()
-            if now - last_hb >= HB_PERIOD_MS / 1000.0:
-                self.send_hb()
-                last_hb = now
-            if now - last_join >= REJOIN_S:
-                self.bus.rejoin()
-                last_join = now
+            # Jeder Fehler hier haette sonst den HB-Thread fuer immer beendet.
+            try:
+                if now - last_hb >= HB_PERIOD_MS / 1000.0:
+                    last_hb = now
+                    self.send_hb()
+                if now - last_join >= REJOIN_S:
+                    last_join = now
+                    self.bus.rejoin()
+            except Exception as exc:                          # noqa: BLE001
+                print("[bus] HB/Rejoin-Fehler: %r" % exc, flush=True)

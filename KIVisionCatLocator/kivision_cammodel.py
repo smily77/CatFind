@@ -33,6 +33,8 @@ from pathlib import Path
 
 import numpy as np
 
+from kivision_homography import NO_FLIPS, write_atomic
+
 try:
     import cv2
 except ImportError:
@@ -106,7 +108,7 @@ class CameraModel:
 
     def save(self):
         out = dict(self.data, fit=self.fit)
-        self.path.write_text(json.dumps(out, indent=1))
+        write_atomic(self.path, json.dumps(out, indent=1))
         self._overlay = None
 
     # -- Modell ---------------------------------------------------------------
@@ -115,29 +117,32 @@ class CameraModel:
 
     def _parts(self, p=None, mirror=None):
         """R, C, K, dist im "physischen" System: Welt-y mal mirror (+1/-1),
-        falls das Weltsystem gegenueber der Wirklichkeit gespiegelt ist."""
-        p = self.fit["p"] if p is None else p
-        self._m = float(self.fit["mirror"] if mirror is None else mirror)
+        falls das Weltsystem gegenueber der Wirklichkeit gespiegelt ist.
+        mirror kommt als fuenfter Wert zurueck - nicht am Objekt ablegen, sonst
+        verdreht eine laufende Kalibrierung das Vorzeichen anderer Threads."""
+        fit = self.fit
+        p = fit["p"] if p is None else p
+        m = float(fit["mirror"] if mirror is None else mirror)
         f = float(p[7]) if len(p) > 7 else float(self.data["lens_mm"]) / PIXEL_MM
         R = _rot(p[0], p[1], p[2])
         dist = np.float64([p[3], p[4], 0, 0, 0])
         C = np.float64(self.data["cam"])
         if len(p) > 5:                    # Standort mitgerechnet (Hoehe bleibt)
             C = np.float64([p[5], p[6], C[2]])
-        C = C * (1, self._m, 1)
-        return R, C, self._K(f), dist
+        C = C * (1, m, 1)
+        return R, C, self._K(f), dist, m
 
     def _ground(self, uv, p=None, mirror=None, z=0.0):
         """Normierte Bildpunkte -> Bodenpunkte (mm); NaN-Zeilen = ueber Horizont.
         z > 0: Schnitt mit der Ebene in dieser Hoehe (z.B. Augen ueber dem Rasen)."""
-        R, C, K, dist = self._parts(p, mirror)
+        R, C, K, dist, m = self._parts(p, mirror)
         px = np.float64(uv).reshape(-1, 1, 2) * (W, H)
         und = cv2.undistortPoints(px, K, dist).reshape(-1, 2)
         rays = np.c_[und, np.ones(len(und))] @ R      # = R^T * ray (Welt)
         t = (z - C[2]) / rays[:, 2]
         P = C[:2] + rays[:, :2] * t[:, None]
         P[t <= 0] = np.nan
-        P[:, 1] *= self._m
+        P[:, 1] *= m
         return P
 
     def valid(self, flips):
@@ -156,8 +161,8 @@ class CameraModel:
     def _img(self, pts):
         """Weltpunkte (mm, Boden) -> normierte Bildpunkte; None hinter der
         Kamera oder ausserhalb des Bereichs, in dem die Verzeichnung gilt."""
-        R, C, K, dist = self._parts()
-        pts = np.float64(pts).reshape(-1, 2) * (1, self._m)
+        R, C, K, dist, m = self._parts()
+        pts = np.float64(pts).reshape(-1, 2) * (1, m)
         cam = (np.c_[pts, np.zeros(len(pts))] - C) @ R.T
         out = [None] * len(pts)
         ok = cam[:, 2] > 100
@@ -203,6 +208,8 @@ class CameraModel:
     def calibrate(self, flips):
         if cv2 is None:
             raise ValueError("OpenCV fehlt")
+        if self.data.get("flips", NO_FLIPS) != flips:
+            raise ValueError("Klicks stammen aus anders gespiegeltem Bild - bitte neu klicken")
         n_ref = sum(1 for r in self.data["refs"] if r.get("uv"))
         n_eq = 2 * n_ref + len(self.data["zero"]) + len(self._edges())
         if n_ref < 2 or n_eq < 5:

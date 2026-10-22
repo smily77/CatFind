@@ -607,15 +607,16 @@ const fetchState = (first) => fetch('/api/state').then(r => r.json()).then(s => 
 // Nach einer Bedienung (first) immer frisch laden, nur der Takt wird gesperrt.
 const refreshState = (first) => first ? fetchState(true) : once('state', () => fetchState(false));
 
+// Laeuft auch bei KI aus: Radar-Bilder ("KI aus"), Bewegung und Augen
+// arbeiten trotzdem, nur Rahmen und Treffer-Text gibt es dann nicht.
 function pollDetections() {
-  if (!detOn) { drawOverlay(null); $('hitState').textContent = ''; return; }
   once('det', () => fetch('/api/detections').then(r => r.json()).then(d => {
-    drawOverlay(d);
+    drawOverlay(detOn ? d : null);
     const ms = d.motion_status;
-    $('vDetMs').textContent = (d.ms ? d.ms + ' ms' : '') + (ms && ms.enabled
+    $('vDetMs').textContent = (detOn && d.ms ? d.ms + ' ms' : '') + (ms && ms.enabled
       ? ' | Bewegung ' + ms.ms + ' ms, ' + ms.moving + '/' + ms.tracks + ' Spuren' : '');
     if (ms) $('vZone').textContent = ms.zone ? ms.zone_drop + ' Flecken ausserhalb verworfen' : 'ganzes Bild';
-    $('detErr').textContent = d.error || '';
+    $('detErr').textContent = detOn ? (d.error || '') : '';
     const es = d.eyes_status;
     if (es) $('eyesStat').textContent = es.night
       ? '— jetzt Nacht: ' + es.frames + ' Bilder geprüft (' + es.ms + ' ms, ' + es.noisy + ' verrauscht), ' +
@@ -627,6 +628,7 @@ function pollDetections() {
     hits = d.hits;
     if (radarN !== null && d.radar > radarN) loadRadar();
     radarN = d.radar;
+    if (!detOn) { $('hitState').textContent = ''; return; }
     const mode = state ? (state.config.detect.snap_mode || 'animal') : 'animal';
     $('hitState').textContent = mode === 'off' ? 'Festhalten ist aus.'
       : (d.hit_wait ? 'Nächstes Bild frühestens in ' + d.hit_wait + ' s.'
@@ -963,7 +965,9 @@ $('bMotionClear').onclick = () => {
   post('/api/motion/clear').then(r => { say(r.deleted + ' Bewegungs-Bilder gelöscht'); loadMotion(); });
 };
 setInterval(() => { if (!document.hidden) refreshState(false); }, 2000);
-setInterval(() => { if (!document.hidden) pollDetections(); }, 300);
+// Ohne KI reichen Zaehler und Status alle ~2 s (schont die Funkstrecke).
+let detTick = 0;
+setInterval(() => { if (!document.hidden && (detOn || detTick++ % 7 === 0)) pollDetections(); }, 300);
 </script>
 </body>
 </html>
