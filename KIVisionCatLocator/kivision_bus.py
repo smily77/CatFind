@@ -46,7 +46,7 @@ class BusNode:
         self.last_cmd = ""
         self.vision_tx = 0
         self.hb_tx = 0
-        self._last_det = {}     # Absender -> (Zeit, Payload) fuer den Doppel-Filter
+        self._last_det = {}     # (Absender, Code) -> (Zeit, Payload) fuer den Doppel-Filter
         self.started = time.time()
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -122,7 +122,9 @@ class BusNode:
         elif m.code in (x.catObserved, x.catDetected) and self._on_target:
             kind, name = (("observed", "posPayload") if m.code == x.catObserved
                           else ("detected", "catDetectedPayload"))
-            if kind == "detected" and self._duplicate(m):
+            # catDetected kommt vom CatIdent doppelt, beide Codes zusaetzlich
+            # als Unicast-Kopie vom Manager (forwardToKIVision) -> nur einmal.
+            if self._duplicate(m):
                 return
             p = x.unpack_prefix(name, m.payload)
             if p:
@@ -133,12 +135,13 @@ class BusNode:
                 self._command(m, c["cmd"], c["info"])
 
     def _duplicate(self, m):
-        """Zweite Kopie einer catDetected (gleicher Absender, gleiche Payload
-        innerhalb DEDUP_S) - so dedupen auch Manager und CatCam."""
+        """Zweite Kopie einer Ziel-Meldung (gleicher Absender und Code, gleiche
+        Payload innerhalb DEDUP_S) - so dedupen auch Manager und CatCam."""
         now = time.monotonic()
         with self._lock:
-            last = self._last_det.get(m.sender)
-            self._last_det[m.sender] = (now, m.payload)
+            key = (m.sender, m.code)
+            last = self._last_det.get(key)
+            self._last_det[key] = (now, m.payload)
         return last is not None and last[1] == m.payload and now - last[0] < DEDUP_S
 
     def _command(self, m, cmd, info):

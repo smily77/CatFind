@@ -117,6 +117,8 @@ void loop() {
   while (mcQueuePop(mcMsg)) {
     if (PRINT_BUS_TRAFFIC) printSensorData(mcMsg);
     handleCommonMsg(mcMsg);            // settingsRequest/poseRequest generisch beantworten
+    if (mcMsg.header.msgCode == catObserved || mcMsg.header.msgCode == catDetected)
+      forwardToKIVision(mcMsg);        // Notbehelf: Pi empfaengt kaum Multicast (s. unten)
 
     if (mcMsg.header.msgCode == HB) {
       hbPayload hb;
@@ -198,4 +200,17 @@ void loop() {
     targetAlarm = false;
   }
 
+}
+
+// Notbehelf (2026-10-23): Der KIVision-Pi empfaengt im WLAN kaum Multicast - sein
+// Onboard-WLAN erreicht den AP nur knapp, Gruppen-Pakete werden nie wiederholt,
+// Unicast schon. Ziel-Meldungen deshalb zusaetzlich UNVERAENDERT (Original-Absender
+// und -Zeitstempel) per Unicast an den Pi. Der Pi verwirft doppelte Kopien selbst.
+// Rein additiv: ohne Manager bekommt der Pi sie weiter nur per Multicast.
+void forwardToKIVision(const xMsg &m) {
+  uint8_t octet = device[KIVision].IP;
+  if (octet == 0 || m.header.sender == KIVision) return;
+  if (m.header.payloadLen > maxPayloadLen) return;
+  udpUc.writeTo((const uint8_t*)&m, sizeof(msgHeader) + m.header.payloadLen,
+                IPAddress(192, 168, 0, octet), UC_PORT);
 }
