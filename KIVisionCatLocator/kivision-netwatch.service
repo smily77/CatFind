@@ -1,0 +1,12 @@
+[Unit]
+Description=KIVision WLAN-Waechter (Verbindung neu anstossen, notfalls Neustart)
+After=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /home/pi/kivision/web/kivision-netwatch.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
