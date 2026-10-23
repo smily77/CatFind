@@ -127,6 +127,7 @@ class Bus:
         self._tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 0)
         self._set_mc_if()
         self._mc = None
+        self._mreq = None
         self._uc = None
         self._handler = None
 
@@ -159,22 +160,32 @@ class Bus:
         for sock, uni in ((self._mc, False), (self._uc, True)):
             threading.Thread(target=self._rx_loop, args=(sock, uni), daemon=True).start()
 
-    def _join(self):
+    def _join(self, fresh=False):
         """Gruppe (erneut) beitreten. Nach einem WLAN-Abriss verliert Linux die
-        Mitgliedschaft; deshalb ruft der Knoten das periodisch auf."""
+        Mitgliedschaft; deshalb ruft der Knoten das periodisch auf.
+        fresh: erst austreten, dann neu beitreten. Nur so schickt der Kernel
+        einen neuen IGMP-Report - ein ADD auf eine bestehende Mitgliedschaft
+        tut nichts. Ohne frische Reports vergisst das WLAN (IGMP-Snooping) den
+        Pi nach einigen Stunden und leitet keine Bus-Pakete mehr zu ihm
+        (2026-10-23: Empfang ab 22:40 eingeschlafen, Senden lief weiter)."""
         ip = local_ip()
+        if fresh and self._mreq:
+            try:
+                self._mc.setsockopt(socket.IPPROTO_IP, socket.IP_DROP_MEMBERSHIP, self._mreq)
+            except OSError:
+                pass                  # schon weg (WLAN-Abriss)
         if ip and ip != self.ip:
             self.ip = ip
             self._set_mc_if()
-        mreq = socket.inet_aton(self.MC_GROUP) + socket.inet_aton(self.ip)
+        self._mreq = socket.inet_aton(self.MC_GROUP) + socket.inet_aton(self.ip)
         try:
-            self._mc.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            self._mc.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, self._mreq)
         except OSError:
             pass                      # EADDRINUSE: schon Mitglied
 
     def rejoin(self):
         if self._mc is not None:
-            self._join()
+            self._join(fresh=True)
 
     def _rx_loop(self, sock, unicast):
         hsize = self.x.header.size
