@@ -220,6 +220,11 @@ DEFAULTS = {
     "map": True,          # Rasenkarte per Homographie ins Livebild (Phase 4)
     "eyes": True,         # Augensuche nachts (Phase 5C)
     "eyes_force": False,  # Augensuche auch bei Tag (nur zum Testen)
+    # Bewegte Spuren als visionObserved auf den Bus. Seit 2026-10-24 aus: auf dem
+    # VPS fast nur Wind-Punkte, und sie fluten den Bus (~2/s). Die Bewegung
+    # selbst laeuft weiter (Bewegungs-Bilder, Ausschnitte fuer die KI); Augen
+    # gehen unabhaengig davon raus.
+    "vision_motion": False,
     # Bewegung/Augen nur innerhalb dieser Karte (rasen | noshot): ausserhalb
     # entstehen weder Spuren noch Bilder noch visionObserved.
     "zone": "rasen",
@@ -1425,7 +1430,8 @@ def _vision_run():
     lawn, lawn_at, lawn_zone = None, 0.0, None
     while True:
         time.sleep(0.25)
-        if not (node and _bus_active[0] and cfg.get("vision_observed", True)):
+        if not (node and _bus_active[0] and cfg.get("vision_observed", True)
+                and cfg.get("vision_motion", False)):
             continue
         geo = _geo()
         if not geo:
