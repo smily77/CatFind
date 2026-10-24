@@ -8,14 +8,27 @@
 #   - 3 min kein Kontakt -> Verbindung neu anstossen (hebt die NM-Sperre auf)
 #   - 15 min kein Kontakt -> Pi neu starten
 # Laeuft als root (kivision-netwatch.service), unabhaengig vom Kameraprogramm.
+#
+# 2026-10-24: Der Pi hoert im WLAN gar keine Broadcasts/Multicasts (0 Pakete,
+# auch direkt nach Neuverbinden), also auch keine ARP-Anfragen. Laeuft der
+# ARP-Eintrag des Managers nach ruhigen 5 min ab, fragt er per Broadcast neu
+# und die Unicast-Weiterleitung (catObserved) geht ins Leere - 8:59 kein
+# Radar-Bild. Deshalb fragt der Pi selbst alle STEP s beim Manager an (legt den
+# Eintrag dort an) und kuendigt sich allen an (frischt bestehende auf, z.B. PC).
+# Braucht iputils-arping.
 
 CON=preconfigured
 STEP=30
 KICK_S=180
 REBOOT_S=900
+MANAGER=192.168.0.180
 
 down=0
 while true; do
+    if command -v arping >/dev/null; then
+        arping -q -c 1 -w 2 -I wlan0 "$MANAGER"
+        arping -q -U -c 1 -I wlan0 "$(ip -4 -o addr show wlan0 | awk '{split($4,a,"/"); print a[1]; exit}')"
+    fi
     gw=$(ip -4 route show default | awk '{print $3; exit}')
     if [ -n "$gw" ] && ping -c 2 -W 3 "$gw" >/dev/null 2>&1; then
         [ "$down" -gt 0 ] && echo "WLAN wieder da nach ${down} s"
