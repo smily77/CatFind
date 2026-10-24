@@ -207,7 +207,8 @@ static void handleUdp() {
         case S2_FAST:
             servoGoTo(c.value, SERVO_FAST);
             logf("Schnellfahrt nach %u (%s)\n", servoGoal,
-                 servoGoal <= SERVO_CENTER ? "links" : "rechts");
+                 servoGoal < SERVO_CENTER ? "links" :
+                 servoGoal > SERVO_CENTER ? "rechts" : "Mitte");
             break;
         default:
             break;                           // S2_POLL: nur Zustand melden

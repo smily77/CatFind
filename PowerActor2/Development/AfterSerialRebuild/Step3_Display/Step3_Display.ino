@@ -1,13 +1,14 @@
 // =============================================================================
 //  Step3_Display - Display-/Encoder-Seite zu Step3_ServoFull (PowerActor2)
-//  Basis: Step2_Display, Relais-Zeilen ersetzt durch zwei Schnellfahrt-Knoepfe.
+//  Basis: Step2_Display, Relais-Zeilen ersetzt durch drei Schnellfahrt-Knoepfe.
 //
-//  Bedienung (Drehknopf + Taste):
-//    Drehen             : Auswahl  Servo / << LINKS / RECHTS >>
-//    Taste auf Servo    : Servo-Modus EIN -> Drehen faehrt den Servo
-//                         (ENC_STEP Ticks je Raste), Taste nochmals = zurueck
-//    Taste auf LINKS    : so schnell wie moeglich an den linken Rand (0 = -180 Grad)
-//    Taste auf RECHTS   : so schnell wie moeglich an den rechten Rand (4095 = +180 Grad)
+//  Bedienung:
+//    Drehknopf          : faehrt den Servo direkt (ENC_STEP Ticks je Raste)
+//    Touch << LINKS     : so schnell wie moeglich an den linken Rand (0 = -180 Grad)
+//    Touch MITTE        : so schnell wie moeglich in die Mitte (2048 = 0 Grad)
+//    Touch RECHTS >>    : so schnell wie moeglich an den rechten Rand (4095 = +180 Grad)
+//  Touch: XPT2046 des CYD28, von LGFX_AUTODETECT eingerichtet (wie
+//  Displays/Bedienung_Einstellungen), nur die Druck-Flanke loest aus.
 //  Das Display schickt die Kommandos per UDP an den PowerActor2 und fragt alle
 //  POLL_MS den Zustand ab (Soll/Ist-Position, Temperatur).
 //
@@ -27,7 +28,6 @@ LGFX gfx;
 // Encoder am CYD28 (aus Pa1_1_encoderTest6_3_1/dispDef.h)
 #define ENC_A 22
 #define ENC_B 27
-#define taste 35
 
 #define ENC_STEP  16          // Servo-Ticks je Raste (~1,4 Grad)
 #define POLL_MS   300
@@ -41,6 +41,7 @@ LGFX gfx;
 #define STEP2_MAGIC       0x53
 #define SERVO_MIN         0
 #define SERVO_MAX         4095
+#define SERVO_CENTER      2048
 
 enum : uint8_t { S2_POLL = 0, S2_SERVO = 1, S2_FAST = 3 };
 
@@ -66,11 +67,20 @@ uint32_t lastRx    = 0;
 
 // ── Bedienzustand ────────────────────────────────────────────────────────────
 
-enum { SEL_SERVO = 0, SEL_LEFT = 1, SEL_RIGHT = 2, SEL_COUNT = 3 };
-int  sel       = SEL_SERVO;
-bool servoEdit = false;       // Drehknopf faehrt den Servo
-int  target    = 2048;        // Servo-Soll am Display
+int  target    = SERVO_CENTER; // Servo-Soll am Display
 bool targetDirty = false;
+bool touchDown = false;       // Entprellung: nur Druck-Flanke feuert
+int  flashBtn  = -1;          // zuletzt gedrueckter Knopf (kurz hell)
+uint32_t flashUntil = 0;
+
+// Touch-Knoepfe: nebeneinander, gleiche Breite
+struct FastBtn { const char *text; uint16_t pos; };
+const FastBtn BTNS[3] = {{"<< LINKS", SERVO_MIN}, {"MITTE", SERVO_CENTER}, {"RECHTS >>", SERVO_MAX}};
+#define BTN_Y   110
+#define BTN_H   80
+#define BTN_W   100
+#define BTN_GAP 7
+int btnX(int i) { return BTN_GAP + i * (BTN_W + BTN_GAP); }
 
 // ── Encoder (1:1 aus Pa1_1_encoderTest6_3_1/dispProc.ino) ───────────────────
 
@@ -94,17 +104,6 @@ bool readEncoder(int &encoderValue, int counterStep) {
   if (lastCounter != counter) {
     if (counter > lastCounter) encoderValue += counterStep;
     if (counter < lastCounter) encoderValue -= counterStep;
-    return true;
-  }
-  return false;
-}
-
-// Taste gedrueckt? (entprellt, aktiv LOW)
-bool tastePressed() {
-  static uint32_t tLast = 0;
-  if (!digitalRead(taste) && millis() - tLast > 250) {
-    while (!digitalRead(taste)) delay(5);
-    tLast = millis();
     return true;
   }
   return false;
@@ -137,12 +136,13 @@ bool receiveState() {
 
 float ticksToDeg(int t) { return (t - 2048) * 360.0f / 4096.0f; }
 
-void drawButton(int x, int y, int w, const char *text, bool selected) {
-  uint16_t bg = selected ? TFT_YELLOW : TFT_DARKGREY;
-  gfx.fillRoundRect(x, y, w, 50, 8, bg);
+void drawButton(int i) {
+  uint16_t bg = (i == flashBtn) ? TFT_YELLOW : TFT_DARKGREY;
+  int x = btnX(i);
+  gfx.fillRoundRect(x, BTN_Y, BTN_W, BTN_H, 10, bg);
   gfx.setTextColor(TFT_BLACK, bg);
-  gfx.setCursor(x + (w - (int)strlen(text) * 12) / 2, y + 17);
-  gfx.print(text);
+  gfx.setCursor(x + (BTN_W - (int)strlen(BTNS[i].text) * 12) / 2, BTN_Y + BTN_H / 2 - 8);
+  gfx.print(BTNS[i].text);
 }
 
 void drawScreen() {
@@ -160,11 +160,9 @@ void drawScreen() {
 
   // Zeile Servo
   int y = 40;
-  gfx.setTextColor(sel == SEL_SERVO ? (servoEdit ? TFT_BLACK : TFT_YELLOW) : TFT_WHITE,
-                   sel == SEL_SERVO && servoEdit ? TFT_YELLOW : TFT_BLACK);
-  if (sel == SEL_SERVO && servoEdit) gfx.fillRect(0, y - 4, 320, 24, TFT_YELLOW);
+  gfx.setTextColor(TFT_YELLOW, TFT_BLACK);
   gfx.setCursor(6, y);
-  gfx.printf("%sServo %4d %6.1f", sel == SEL_SERVO ? ">" : " ", target, ticksToDeg(target));
+  gfx.printf(" Soll  %4d %6.1f", target, ticksToDeg(target));
 
   gfx.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
   gfx.setCursor(6, y + 26);
@@ -175,18 +173,16 @@ void drawScreen() {
   else
     gfx.print("  warte auf PowerActor2");
 
-  // Schnellfahrt-Knoepfe
-  drawButton(6,   120, 148, "<< LINKS",  sel == SEL_LEFT);
-  drawButton(166, 120, 148, "RECHTS >>", sel == SEL_RIGHT);
+  // Schnellfahrt-Knoepfe (Touch)
+  for (int i = 0; i < 3; i++) drawButton(i);
   gfx.setTextSize(1);
   gfx.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-  gfx.setCursor(6, 178);
-  gfx.print("so schnell wie moeglich an den Rand (-180 / +180 Grad)");
+  gfx.setCursor(6, BTN_Y + BTN_H + 8);
+  gfx.print("Touch: so schnell wie moeglich nach -180 / 0 / +180 Grad");
 
   gfx.setTextColor(TFT_DARKGREY, TFT_BLACK);
   gfx.setCursor(6, 228);
-  gfx.print(servoEdit ? "Drehen = Servo fahren, Taste = fertig"
-                      : "Drehen = Auswahl, Taste = ausloesen / Servo-Modus");
+  gfx.print("Drehknopf = Servo fahren");
   gfx.endWrite();
 }
 
@@ -204,7 +200,6 @@ void setup() {
   gfx.print("WiFi ...");
   pinMode(ENC_A, INPUT_PULLUP);
   pinMode(ENC_B, INPUT_PULLUP);
-  pinMode(taste, INPUT_PULLUP);
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
@@ -219,28 +214,35 @@ void loop() {
   static uint32_t tPoll = 0, tSend = 0, tDraw = 0;
   static bool redraw = false;
 
-  int v = servoEdit ? target : sel;
-  if (readEncoder(v, servoEdit ? ENC_STEP : 1)) {
-    if (servoEdit) {
-      target = constrain(v, SERVO_MIN, SERVO_MAX);
-      targetDirty = true;
-    } else {
-      sel = (v % SEL_COUNT + SEL_COUNT) % SEL_COUNT;
-    }
+  int v = target;
+  if (readEncoder(v, ENC_STEP)) {
+    target = constrain(v, SERVO_MIN, SERVO_MAX);
+    targetDirty = true;
     redraw = true;
   }
 
-  if (tastePressed()) {
-    if (sel == SEL_SERVO) {
-      servoEdit = !servoEdit;
-    } else {
-      target = sel == SEL_LEFT ? SERVO_MIN : SERVO_MAX;
-      targetDirty = false;
-      sendCmd(S2_FAST, target);
-      tSend = tPoll = millis();
+  uint16_t tx, ty;
+  if (gfx.getTouch(&tx, &ty)) {
+    if (!touchDown) {
+      touchDown = true;
+      for (int i = 0; i < 3; i++) {
+        if ((int)tx >= btnX(i) && (int)tx < btnX(i) + BTN_W &&
+            (int)ty >= BTN_Y && (int)ty < BTN_Y + BTN_H) {
+          target = BTNS[i].pos;
+          targetDirty = false;
+          sendCmd(S2_FAST, target);
+          tSend = tPoll = millis();
+          flashBtn = i;
+          flashUntil = millis() + 300;
+          redraw = true;
+          break;
+        }
+      }
     }
-    redraw = true;
+  } else {
+    touchDown = false;
   }
+  if (flashBtn >= 0 && millis() > flashUntil) { flashBtn = -1; redraw = true; }
 
   if (targetDirty && millis() - tSend > SEND_GAP) {
     sendCmd(S2_SERVO, target);
