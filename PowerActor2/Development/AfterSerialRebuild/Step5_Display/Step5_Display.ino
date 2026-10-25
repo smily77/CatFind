@@ -8,7 +8,7 @@
 //    Touch << LINKS     : so schnell wie moeglich an den linken Rand (0 = -180 Grad)
 //    Touch MITTE        : so schnell wie moeglich in die Mitte (2048 = 0 Grad)
 //    Touch RECHTS >>    : so schnell wie moeglich an den rechten Rand (4095 = +180 Grad)
-//    Touch Ventil/R26/R23/Spot : Relais umschalten (gruen = EIN)
+//    Touch Ventil/LD06/Radar/Spot : Relais umschalten (gruen = EIN)
 //  Anzeige: Servo Soll/Ist/Temperatur, Lidar-Distanz (bzw. Fehler), Laser EIN/AUS,
 //  rechts oben das IR-Kamerabild (1024 x 768 auf 128 x 96 verkleinert) mit den
 //  Punkten 1..4 (rot/gruen/cyan/gelb), unten deren Koordinaten.
@@ -110,7 +110,7 @@ const FastBtn BTNS[3] = {{"<< LINKS", SERVO_MIN}, {"MITTE", SERVO_CENTER}, {"REC
 int btnX(int i) { return BTN_GAP + i * (BTN_W + BTN_GAP); }
 
 // Relais-Knoepfe (Reihenfolge = Relais 1..4 am PowerActor2)
-const char *RELAY_TEXT[4] = {"Ventil", "R26", "R23", "Spot"};
+const char *RELAY_TEXT[4] = {"Ventil", "LD06", "Radar", "Spot"};
 #define REL_Y   182
 #define REL_H   40
 #define REL_W   74

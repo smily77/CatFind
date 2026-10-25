@@ -25,7 +25,8 @@
  *   sonst AUS - nicht vom Display schaltbar.
  *
  * Relais (aktiv HIGH), vom Display einzeln schaltbar:
- *   1 = GPIO27 Ventil, 2 = GPIO26, 3 = GPIO23, 4 = GPIO32 Spot
+ *   1 = GPIO27 Ventil, 2 = GPIO26 Speisung LD06-Lidar,
+ *   3 = GPIO23 Speisung Radar (Compact Dome), 4 = GPIO32 Spot
  *   Sicherheit: kommt RELAY_TIMEOUT_MS kein Kommando vom Display (Display aus,
  *   WLAN weg), gehen alle Relais AUS - das Ventil bleibt nie offen haengen.
  *
@@ -93,7 +94,7 @@ static bool     laserOn   = false;
 #define RELAY_COUNT       4
 #define RELAY_TIMEOUT_MS  3000     // so lange kein Display-Kommando -> alle AUS
 static const uint8_t RELAY_PINS[RELAY_COUNT] = {27, 26, 23, 32};
-static const char   *RELAY_NAMES[RELAY_COUNT] = {"Ventil", "R26", "R23", "Spot"};
+static const char   *RELAY_NAMES[RELAY_COUNT] = {"Ventil", "LD06", "Radar", "Spot"};
 static uint8_t  relayMask = 0;             // Bit i = Relais i+1 ein
 static uint32_t lastCmdAt = 0;             // millis() des letzten Display-Kommandos
 
