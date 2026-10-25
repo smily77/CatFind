@@ -112,6 +112,7 @@ NIGHT_DARK_RATIO = 0.45   # Helligkeit oben / Mitte, darunter = IR-Nacht
 PERSON_EVERY = 2.0        # s zwischen zwei fireInhibit (Sperre wird so verlaengert)
 PERSON_VPS_EVERY = 5.0    # s, gesammelte Sichtungen gehen gebuendelt zum VPS
 PERSON_KEEP = 60          # hoechstens so viele Sichtungen warten auf den VPS
+PERSON_LOG_MIN = 0.4      # ab hier jede KI-Runde mit Person ins Journal (ueber dem Blumen-Fehlalarm)
 MOTION_SNAP_AGE = 1.5
 MOTION_GAP = 10.0
 # Radar-Ziel <-> Kamera-Fusspunkt, gleichzeitig beobachtet: Rohstoff fuer die
@@ -1389,6 +1390,12 @@ class PersonGuard:
         need = max(1, min(window, int(pc.get("need", 2))))
         persons = [b for b in raw or [] if b["label"] == "person" and b["score"] >= threshold]
         now = time.monotonic()
+        # Zum Nachjustieren (nachts kam je Gang nur eine Sperre): jede Runde
+        # mit einer halbwegs sicheren Person ins Journal.
+        best = max((b["score"] for b in raw or [] if b["label"] == "person"), default=0.0)
+        if best >= PERSON_LOG_MIN:
+            print("[person] %d%% %s" % (round(best * 100), "Nacht" if eyes.night else "Tag"),
+                  flush=True)
         with self.lock:
             self.recent = (self.recent + [bool(persons)])[-window:]
             if not persons or sum(self.recent) < need or now - self.sent_at < PERSON_EVERY:
@@ -1403,6 +1410,7 @@ class PersonGuard:
         hold = max(1.0, float(pc.get("hold", 60)))
         if pc.get("inhibit", True) and node:
             node.send_inhibit(node.x.inhibitPerson, int(hold * 1000), score, world)
+        print("[person] Feuersperre gesendet (%d%%, %s)" % (score, world or "ohne Ort"), flush=True)
         with self.lock:
             self.sent += 1
             self.seen_at = time.time()
