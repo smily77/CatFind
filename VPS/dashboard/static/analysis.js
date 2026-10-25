@@ -1057,8 +1057,6 @@ function renderTracks(){
               `<div class="mkRow">` +
                 Object.entries(MARKS).map(([k,txt])=>
                   `<button class="mk${mk===k?' on':''}" data-mk="${k}" title="meine Einschätzung: das war ${escapeHtml(txt)} (nochmal klicken = entfernen)">${txt}</button>`).join("") +
-                // Bewertung löschen (auch die automatische "Person" von KIVision)
-                (mk ? `<button class="mk del" data-mk="" title="Bewertung entfernen (verklickt)">🗑 löschen</button>` : "") +
               `</div>`;
       } else {
         det = t.confirmed ? "" : `<small>${escapeHtml(t.reject||"")}</small>`;
