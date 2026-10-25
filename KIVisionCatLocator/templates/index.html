@@ -584,9 +584,13 @@ function applyState(s, first) {
   if (!b) { $('sBus').textContent = 'aus'; $('sBus').style.color = 'var(--bad)'; }
   else {
     const quiet = b.rx_age == null || b.rx_age > 30;
-    $('sBus').textContent = '#' + b.id + (b.active ? '' : ' Ruhemodus') + (quiet ? ' still' : ' ok');
-    $('sBus').style.color = !b.active || quiet ? 'var(--warn)' : '';
+    // Personen-Sperre: solange aktiv, feuert kein Aktor (fireInhibit)
+    const p = s.person || {};
+    $('sBus').textContent = '#' + b.id + (b.active ? '' : ' Ruhemodus') + (quiet ? ' still' : ' ok')
+      + (p.active ? ' | Person ' + p.score + '% -> Feuer gesperrt' : '');
+    $('sBus').style.color = !b.active || quiet || p.active ? 'var(--warn)' : '';
     $('sBus').title = 'gesendet ' + b.tx + ', empfangen ' + b.rx + ', Geraete ' + b.peers
+      + ', Feuersperren ' + (b.inhibit_tx || 0)
       + (b.last_cmd ? ' | letztes Kommando: ' + b.last_cmd : '');
     if (!first && b.ai !== detOn && Date.now() - detClickAt > 4000) { detOn = b.ai; setDetButton(); }
   }

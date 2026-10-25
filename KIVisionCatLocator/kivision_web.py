@@ -68,6 +68,7 @@ THUMB_WIDTH = 360
 # Je Bild eine Uebersicht und, wenn die Rasenposition bekannt ist, ein Ausschnitt
 # um das Ziel aus dem vollen KI-Bild. Klein halten: das Pi-WLAN schafft ~60 kB/s.
 VPS_PHOTO_URL = os.environ.get("KIVISION_VPS_PHOTO", "http://46.225.81.240/photo")
+VPS_PERSON_URL = os.environ.get("KIVISION_VPS_PERSON", "http://46.225.81.240/person")
 VPS_WIDTH = 1024
 VPS_CROP = 0.22            # Ausschnittbreite als Anteil der Bildbreite (4:3)
 VPS_QUEUE = 16             # mehr wartende Bilder -> neue verwerfen (WLAN haengt)
@@ -103,6 +104,14 @@ EYE_SENSOR = 1            # posPayload.sensor: 0 = Bewegung, 1 = Auge
 NIGHT_LUX = 50
 NIGHT_GAIN = 6.0
 NIGHT_DARK_RATIO = 0.45   # Helligkeit oben / Mitte, darunter = IR-Nacht
+# Sicher erkannte Person -> Feuersperre fuer alle Aktoren (fireInhibit, ablaufend)
+# und Meldung an den VPS, der die Tracks dazu als "person" markiert. Echte
+# Personen bei Tag lagen 2026-10-22..25 bei 80-100 %, nah im IR bei 98 %; der
+# feste Fehlalarm in den Blumen oben links bei 23-28 %, Nacht-Fehlalarme bis 67 %.
+# Sicher = Schwelle in need der letzten window KI-Runden (und in der aktuellen).
+PERSON_EVERY = 2.0        # s zwischen zwei fireInhibit (Sperre wird so verlaengert)
+PERSON_VPS_EVERY = 5.0    # s, gesammelte Sichtungen gehen gebuendelt zum VPS
+PERSON_KEEP = 60          # hoechstens so viele Sichtungen warten auf den VPS
 MOTION_SNAP_AGE = 1.5
 MOTION_GAP = 10.0
 # Radar-Ziel <-> Kamera-Fusspunkt, gleichzeitig beobachtet: Rohstoff fuer die
@@ -228,7 +237,10 @@ DEFAULTS = {
     # Bewegung/Augen nur innerhalb dieser Karte (rasen | noshot): ausserhalb
     # entstehen weder Spuren noch Bilder noch visionObserved.
     "zone": "rasen",
-    "tuning": "auto",     # auto | normal | noir (NoIR-Modul: Magenta bei Tag)
+    # Personen-Sperre (siehe PERSON_EVERY): inhibit = fireInhibit auf den Bus,
+    # die VPS-Meldung (Track-Markierung) laeuft auch ohne.
+    "person": {"inhibit": True, "threshold": 0.7, "need": 2, "window": 3, "hold": 60},
+    "tuning": "auto",    # auto | normal | noir (NoIR-Modul: Magenta bei Tag)
     "controls": {},
     "detect": {
         "enabled": False,
@@ -1125,6 +1137,7 @@ class Detector:
                 with self.lock:
                     self.result = result
                     self.error = ""
+                persons.feed(raw)
                 self._maybe_hit(frame, result)
                 self._maybe_witness(frame, raw, result["motion"])
                 if tracks:
@@ -1349,6 +1362,88 @@ detector.motion = motion
 detector.pump = FramePump(camera, motion)
 homography = Homography(HOMOGRAPHY_FILE, MAP_DIR)
 cammodel = CameraModel(CAMMODEL_FILE)
+
+
+class PersonGuard:
+    """Sicher erkannte Person -> fireInhibit an alle Aktoren + Sichtung zum VPS.
+
+    feed() bekommt nach jeder KI-Runde alle Rahmen (raw). Eine Person gilt als
+    sicher, wenn sie in der aktuellen Runde und in mindestens need der letzten
+    window Runden ueber der Schwelle lag. Solange das so bleibt, geht alle
+    PERSON_EVERY s ein fireInhibit raus - die Aktoren sperren bis hold s nach
+    dem letzten. Verschwindet die Person, laeuft die Sperre von selbst ab."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.recent = []
+        self.sent_at = 0.0
+        self.sent = 0
+        self.seen_at = 0.0          # time.time() der letzten sicheren Sichtung
+        self.score = 0
+        self.samples = []           # warten auf den VPS
+
+    def feed(self, raw):
+        pc = cfg.get("person") or {}
+        threshold = float(pc.get("threshold", 0.7))
+        window = max(1, int(pc.get("window", 3)))
+        need = max(1, min(window, int(pc.get("need", 2))))
+        persons = [b for b in raw or [] if b["label"] == "person" and b["score"] >= threshold]
+        now = time.monotonic()
+        with self.lock:
+            self.recent = (self.recent + [bool(persons)])[-window:]
+            if not persons or sum(self.recent) < need or now - self.sent_at < PERSON_EVERY:
+                return
+            self.sent_at = now
+        top = max(persons, key=lambda b: b["score"])
+        score = round(top["score"] * 100)
+        world = None
+        geo = _geo()
+        if geo:
+            world = geo.to_world(top["x"] + top["w"] / 2, top["y"] + top["h"])
+        hold = max(1.0, float(pc.get("hold", 60)))
+        if pc.get("inhibit", True) and node:
+            node.send_inhibit(node.x.inhibitPerson, int(hold * 1000), score, world)
+        with self.lock:
+            self.sent += 1
+            self.seen_at = time.time()
+            self.score = score
+            sample = {"t": round(self.seen_at, 2), "score": score}
+            if world:
+                sample["x"], sample["y"] = world
+            self.samples = (self.samples + [sample])[-PERSON_KEEP:]
+
+    def take(self):
+        with self.lock:
+            out, self.samples = self.samples, []
+        return out
+
+    def status(self):
+        hold = float((cfg.get("person") or {}).get("hold", 60))
+        with self.lock:
+            age = time.time() - self.seen_at if self.seen_at else None
+            return {"active": age is not None and age < hold, "score": self.score,
+                    "age": round(age, 1) if age is not None else None, "sent": self.sent}
+
+
+persons = PersonGuard()
+node = None                 # Busgeraet, gesetzt von _start_bus() weiter unten
+
+
+def _person_vps_run():
+    """Sichtungen gebuendelt zum VPS (markiert die Tracks als Person)."""
+    import urllib.request
+    while True:
+        time.sleep(PERSON_VPS_EVERY)
+        samples = persons.take()
+        if not samples:
+            continue
+        body = json.dumps({"sender": node.id if node else 20, "samples": samples}).encode()
+        try:
+            req = urllib.request.Request(VPS_PERSON_URL, data=body,
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=15).read()
+        except Exception as exc:                              # noqa: BLE001
+            print("[web] VPS-Person: %s" % exc, flush=True)
 
 # -- Busgeraet (Phase 3) ------------------------------------------------------
 # Die KI laeuft nur, wenn sie eingeschaltet ist (detect.enabled, auch vom VPS
@@ -1779,6 +1874,7 @@ def api_state():
         "viewers": camera.viewers,
         "system": system_info(),
         "bus": node.status() if node else None,
+        "person": persons.status(),
         "meta": {
             "ExposureTime": meta.get("ExposureTime"),
             "AnalogueGain": round(meta.get("AnalogueGain") or 0, 2),
@@ -2148,18 +2244,19 @@ def _health_run():
         st = node.status() if node else {}
         det = detector.snapshot_state()
         print("[web] Lebenszeichen: bus tx %s rx %s (letztes vor %s s) hb %s vision %s | "
-              "radar %d, ki %s%s | augen %s | vps ok %d fehl %d%s | abstuerze %s"
+              "radar %d, ki %s%s | augen %s | person-sperren %d | vps ok %d fehl %d%s | abstuerze %s"
               % (st.get("tx"), st.get("rx"), st.get("rx_age"), st.get("hb_tx"),
                  st.get("vision_tx"), det.get("radar", 0),
                  "an" if det.get("running") else "aus",
                  (" (" + det["error"] + ")") if det.get("error") else "",
-                 "Nacht" if eyes.night else "Tag", _vps_stats["ok"], _vps_stats["fail"],
+                 "Nacht" if eyes.night else "Tag", persons.sent, _vps_stats["ok"], _vps_stats["fail"],
                  (" (" + _vps_stats["err"] + ")") if _vps_stats["err"] else "",
                  _thread_crashes or "keine"), flush=True)
 
 
 _forever(_vps_run)
 _forever(_vision_run)
+_forever(_person_vps_run)
 _forever(_eyes_run)
 _forever(_zone_run)
 _forever(_health_run)

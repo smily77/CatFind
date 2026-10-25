@@ -69,7 +69,7 @@ der Geräte per /ingest ("poses", aus poseReport). Daraus baut catmodel.
 build_coverage_geo die Abdeckungs-Sektoren — nach dem Versetzen eines Sensors
 stimmt der Bereich sofort wieder. Fallback ohne Posen: empirische Abdeckung.
 """
-import contextlib, os, re, time, json, base64, sqlite3, threading, hashlib, traceback, urllib.request, urllib.error, zoneinfo
+import contextlib, math, os, re, time, json, base64, sqlite3, threading, hashlib, traceback, urllib.request, urllib.error, zoneinfo
 from datetime import datetime
 from collections import deque, OrderedDict
 from flask import Flask, request, jsonify, send_from_directory, Response
@@ -124,6 +124,7 @@ DEVICE_ROUTES = {
     ("GET",  "/commands"),              # Manager   gatewayProc.ino:370
     ("POST", "/mapsync"),               # Manager   gatewayProc.ino:239
     ("POST", "/photo"),                 # CatCam    CatCam6_3_0.ino:315
+    ("POST", "/person"),                # KIVision  kivision_web.py _person_vps_run
     ("GET",  "/aparams.csv"),           # CatIdent  catTrack.ino:119
     ("GET",  "/coverage_export.csv"),   # CatIdent  catTrack.ino:245
 }
@@ -1747,7 +1748,92 @@ def _analyzer_loop():
             traceback.print_exc()
             _ana_state["err"] = str(e)
             more = False
+        try:
+            _person_mark()
+        except Exception:                                        # noqa: BLE001
+            traceback.print_exc()
         time.sleep(0.3 if more else 5.0)
+
+
+# ------------------------------------------------- Personen von KIVision
+# KIVision meldet sicher erkannte Personen (POST /person, gebuendelt alle 5 s;
+# dieselbe Erkennung sperrt per fireInhibit das Feuern der Aktoren). Passende
+# Tracks bekommen hier direkt die Bewertung "person" in track_marks - nur
+# Tracks ohne Bewertung und jeden nur einmal: wer sie loescht oder aendert,
+# behaelt das. Die Sichtungen leben nur im Speicher (kein neues DB-Schema).
+PERSON_DT = 5.0                # s, Sichtung darf so weit neben dem Track liegen
+PERSON_MM = 2500               # mm, nur wenn die Sichtung eine Weltposition hat
+PERSON_KEEP_S = 6 * 3600       # so lange warten Sichtungen auf ihren Track
+_persons = []                  # [{"t", "score", ("x", "y")}]
+_person_done = {}              # Track-key -> t1 (schon einmal markiert)
+_person_lock = threading.Lock()
+
+
+@app.post("/person")
+def person_report():
+    d = request.get_json(force=True, silent=True) or {}
+    now = time.time()
+    add = []
+    for smp in (d.get("samples") or [])[:200]:
+        try:
+            p = {"t": float(smp["t"]), "score": int(smp.get("score", 0))}
+            if "x" in smp and "y" in smp:
+                p["x"], p["y"] = int(smp["x"]), int(smp["y"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if abs(p["t"] - now) < 600:
+            add.append(p)
+    with _person_lock:
+        _persons.extend(add)
+        _persons[:] = [p for p in _persons if p["t"] > now - PERSON_KEEP_S]
+    return jsonify(ok=True, n=len(add))
+
+
+def _person_hits(tr, data, ps):
+    """Passt eine Sichtung zum Track? Mit Weltposition: ein Trackpunkt nahe
+    Zeit UND Ort; ohne: die Zeit allein."""
+    for p in ps:
+        if not (tr[1] - PERSON_DT <= p["t"] <= tr[2] + PERSON_DT):
+            continue
+        if "x" not in p:
+            return True
+        for pt in data.get("pts") or ():
+            if (abs(pt[0] - p["t"]) <= PERSON_DT
+                    and math.hypot(pt[1] - p["x"], pt[2] - p["y"]) <= PERSON_MM):
+                return True
+    return False
+
+
+def _person_mark():
+    now = time.time()
+    with _person_lock:
+        ps = list(_persons)
+        for k in [k for k, t1 in _person_done.items() if t1 < now - PERSON_KEEP_S]:
+            del _person_done[k]
+    if not ps:
+        return
+    lo = min(p["t"] for p in ps) - PERSON_DT
+    hi = max(p["t"] for p in ps) + PERSON_DT
+    marked = []
+    with _db_lock:
+        rows = _db.execute(
+            "SELECT t.key,t.t0,t.t1,t.id,t.data FROM tracks t "
+            "LEFT JOIN track_marks m ON m.key=t.key "
+            "WHERE t.t1>=? AND t.t0<=? AND m.key IS NULL", (lo, hi)).fetchall()
+        for tr in rows:
+            if tr[0] in _person_done:
+                continue
+            if not _person_hits(tr, json.loads(tr[4] or "{}"), ps):
+                continue
+            _db.execute("INSERT OR IGNORE INTO track_marks(key,t0,t1,mark,created) "
+                        "VALUES(?,?,?,?,?)", (tr[0], tr[1], tr[2], "person", now))
+            _person_done[tr[0]] = tr[2]
+            marked.append(tr[3])
+        if marked:
+            _db.commit()
+    if marked:
+        _sysmsg("KIVision-Person: Track %s als Person markiert"
+                % ", ".join("Nr %s" % i for i in marked))
 
 
 # ------------------------------------------------- Tracks servieren (aus der DB)

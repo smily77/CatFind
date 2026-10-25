@@ -151,6 +151,10 @@ stationDefinitions device[deviceCount] = {
                              // Bewusst KEIN catObserved: die PowerActors feuern auf jedes catObserved
                              // ohne Absender-Filter. Ausgewertet nur vom Manager (-> VPS) und vom
                              // Cat Identifier (nur mit Modell-Parameter cam_feed=1).
+#define fireInhibit     17   // Feuersperre fuer ALLE Aktoren (Multicast, fireInhibitPayload): heute
+                             // sendet KIVision sie, solange sie sicher eine Person sieht. Ablaufende
+                             // Sperre: der Aktor feuert bis holdMs nach der letzten Meldung nicht.
+                             // readyToFire (Button) bleibt davon unberuehrt.
 
 // Karten-Typen (fuer mapRequest/mapInfo/mapChunk)
 #define mapNoShot   1   // Schusszonen-/No-Shot-Karte (innerhalb = Feuern erlaubt)
@@ -241,6 +245,19 @@ struct __attribute__((packed)) catDetectedPayload {
   uint8_t  flags;       // catDetFlag*-Bits
   uint32_t trackMs;     // bisherige Track-Dauer bei Ausloesung (ms)
   int32_t  netMm;       // bisherige Netto-Verschiebung des Tracks (mm)
+};
+
+// fireInhibit: Sperre setzen/verlaengern. Der Aktor rechnet inhibitUntil =
+// jetzt + holdMs und uebernimmt nur ein spaeteres Ende (nie verkuerzen).
+#define inhibitPerson  1
+#define inhibitButton  2
+struct __attribute__((packed)) fireInhibitPayload {
+  uint8_t  reason;      // inhibit*
+  uint32_t holdMs;      // so lange ab Empfang nicht feuern
+  uint8_t  score;       // Sicherheit der Erkennung 0..100
+  uint8_t  worldValid;  // 1 = worldX/worldY gueltig
+  int32_t  worldX;      // Position der Person (mm)
+  int32_t  worldY;
 };
 
 // envReport: Umweltwerte eines Geraets (Antwort auf envRequest / periodische Annonce).

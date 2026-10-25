@@ -5,6 +5,8 @@ Der Pi verhaelt sich auf dem xCom-Bus wie ein ESP32-Sensor:
   * settingsReport beim Start, auf settingsRequest und nach jeder Aenderung
   * poseReport auf poseRequest (bis Phase 4 ohne gueltige Pose)
   * visionObserved: bewegte Spuren der Kamera in Welt-mm (Phase 5B)
+  * fireInhibit: Feuersperre fuer alle Aktoren, solange eine Person sicher
+    erkannt ist (PersonGuard in kivision_web.py)
   * Kommandos: cmdSetSetting (stgCamAi = KI-Erkennung, stgActive = Ruhemodus),
     cmdReboot (startet das Programm neu, systemd holt es zurueck)
   * Debug-Text auf den Text-Multicast -> VPS-Debugfenster
@@ -45,6 +47,7 @@ class BusNode:
         self.actions = 0
         self.last_cmd = ""
         self.vision_tx = 0
+        self.inhibit_tx = 0
         self.hb_tx = 0
         self._last_det = {}     # (Absender, Code) -> (Zeit, Payload) fuer den Doppel-Filter
         self.started = time.time()
@@ -74,6 +77,7 @@ class BusNode:
             "peers": len(self.bus.device_ips),
             "last_cmd": self.last_cmd,
             "vision_tx": self.vision_tx,
+            "inhibit_tx": self.inhibit_tx,
             "hb_tx": self.hb_tx,
         }
 
@@ -104,6 +108,18 @@ class BusNode:
             "posPayload", x=wx, y=wy, radius=0.0, angle=0.0, targetSpeed=0, res=width,
             worldX=wx, worldY=wy, worldValid=1, sensor=sensor))
         self.vision_tx += 1
+
+    def send_inhibit(self, reason, hold_ms, score, world=None):
+        """Feuersperre fuer alle Aktoren (fireInhibit, Multicast). Die Aktoren
+        sperren hold_ms ab Empfang; wer sie halten will, sendet erneut."""
+        if not hasattr(self.x, "fireInhibit"):
+            return                      # alter Header ohne den Code
+        ok = bool(world) and all(math.isfinite(v) and abs(v) < WORLD_MAX_MM for v in world)
+        wx, wy = (int(world[0]), int(world[1])) if ok else (0, 0)
+        self.bus.broadcast(self.x.fireInhibit, self.x.pack(
+            "fireInhibitPayload", reason=reason, holdMs=hold_ms,
+            score=max(0, min(100, int(score))), worldValid=int(ok), worldX=wx, worldY=wy))
+        self.inhibit_tx += 1
 
     def text(self, line):
         self.bus.text("KIVision: " + line)

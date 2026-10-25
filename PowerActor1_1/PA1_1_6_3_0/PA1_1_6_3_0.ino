@@ -47,6 +47,12 @@ unsigned long HBtimer;
 unsigned long fireTimer;
 bool fireOn = false;
 
+// Feuersperre (fireInhibit, z. B. KIVision sieht eine Person): ablaufend,
+// readyToFire bleibt unberuehrt. Rechnung ueberlaufsicher ueber Differenzen.
+unsigned long inhibitStart = 0;
+unsigned long inhibitHold = 0;
+bool inhibited() { return inhibitHold && millis() - inhibitStart < inhibitHold; }
+
 #include <xComProc6_3.h>
 
 void setup() {
@@ -115,10 +121,22 @@ void loop() {
   // --- Zielmeldungen (Multicast) ---
   if (mcDataReceived) {
     mcDataReceived = false;
+    if (lastMcMsg.header.msgCode == fireInhibit) {
+      fireInhibitPayload inh;
+      if (getPayload(lastMcMsg, inh)) {
+        // nur verlaengern, nie verkuerzen
+        unsigned long left = inhibited() ? inhibitHold - (millis() - inhibitStart) : 0;
+        if (inh.holdMs > left) {
+          if (!inhibited()) sendUdpTextln("Feuersperre (Person) aktiv");
+          inhibitStart = millis();
+          inhibitHold = inh.holdMs;
+        }
+      }
+    }
     if (lastMcMsg.header.msgCode == catObserved) {
       posPayload obs;
       if (getPayload(lastMcMsg, obs)) {
-        if (hbState.readyToFire && targetWithinLimits(obs)) {
+        if (hbState.readyToFire && !inhibited() && targetWithinLimits(obs)) {
           digitalWrite(laser, HIGH);
           aimAt(obs.angle);            // Turm auf Ziel drehen (blockierend)
           fireWater();                 // Wasserstoss ausloesen
