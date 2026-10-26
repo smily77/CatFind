@@ -38,7 +38,7 @@
     <canvas id="cv" width="800" height="800"></canvas>
     <div class="legend"><i style="background:var(--lp)"></i>LP40B (Vordergrund kräftig)
       <i style="background:var(--ld)"></i>LD06 <i style="background:var(--rd)"></i>Compact Dome
-      <i style="background:var(--ref)"></i>Standpunkt (Referenz)
+      <i style="background:var(--ref)"></i>Standpunkt live <i style="background:#c6f"></i>Gesamtauswertung
       &nbsp; Zoom <input id="zoom" type="range" min="1" max="8" step="0.5" value="4"> <span id="zv"></span> m</div>
   </div>
   <div>
@@ -48,6 +48,7 @@
       <button onclick="act('point')">Punkt jetzt</button>
       <button onclick="act('undo')">letzten Punkt löschen</button>
       <button onclick="act('stop')">Stopp</button>
+      <button class="big" onclick="act('analyze')">3. Gesamtauswertung</button>
       <h2>Speisung</h2>
       <button id="r2" onclick="act('relay',{bit:2})">LD06</button>
       <button id="r4" onclick="act('relay',{bit:4})">Compact Dome</button>
@@ -58,6 +59,8 @@
     <div class="card">
       <h2>Ergebnis</h2>
       <pre id="res">noch keine Punkte</pre>
+      <h2>Gesamtauswertung (alle Standphasen der Aufnahme)</h2>
+      <pre id="ana">noch nicht ausgewertet</pre>
     </div>
     <div class="card">
       <h2>Einstellungen</h2>
@@ -125,6 +128,16 @@ function draw() {
     g.moveTo(a - 8, b - 8); g.lineTo(a + 8, b + 8); g.moveTo(a + 8, b - 8); g.lineTo(a - 8, b + 8); g.stroke();
     g.fillStyle = '#f88'; g.fillText(p.n, a + 10, b - 8);
   }
+  // Standpunkte der Gesamtauswertung (violett)
+  for (const p of S.apoints) {
+    const [a, b] = P(p.px, p.py);
+    for (const [k, col] of [['ld06', '#4af'], ['radar', '#4d4']]) if (p[k]) {
+      const [c, d] = P(p[k][0], p[k][1]); g.strokeStyle = col; g.lineWidth = 1;
+      g.beginPath(); g.moveTo(a, b); g.lineTo(c, d); g.stroke();
+    }
+    g.strokeStyle = '#c6f'; g.lineWidth = 2; g.beginPath(); g.arc(a, b, 9, 0, 7); g.stroke();
+    g.fillStyle = '#c9f'; g.fillText(p.n, a - 24, b + 4);
+  }
   // Turm + Sensoren
   dot(0, 0, 6, '#fff'); dot(0, S.cfg.ld06_mm, 4, '#4af'); dot(0, S.cfg.radar_mm, 4, '#4d4');
 }
@@ -155,6 +168,7 @@ function render() {
     `<div><span>Person LP40B</span>${s.cand ? s.cand[0].toFixed(1) + '° ' + Math.round(s.cand[1]) + ' mm' : '-'}</div>` +
     `<div><span>Rohdaten</span>${s.run}</div>`;
   document.getElementById('res').textContent = fmtRes(s.result);
+  document.getElementById('ana').textContent = s.analysis || 'noch nicht ausgewertet';
   const rows = s.table.map(p => {
     const v = (k) => p[k] ? `${p[k].x} / ${p[k].y} (±${p[k].std}, ${p[k].n})` : '-';
     const rl = s.result.ld06 ? s.result.ld06.res_deg : null;

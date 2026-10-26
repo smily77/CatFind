@@ -39,6 +39,10 @@ import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import calib_core as core
+from calib_core import (LP40B_OFFSET_MM, FG_MARGIN_MM, LP_BIN_DEG, pos_to_deg, wrap180,
+                        median, spread, cluster)
+
 # ── Netz ─────────────────────────────────────────────────────────────────────
 
 PA2_IP = "192.168.0.181"
@@ -57,41 +61,14 @@ RELAY_LD06, RELAY_RADAR = 0x02, 0x04
 
 # ── Geometrie / Erkennung ────────────────────────────────────────────────────
 
-LP40B_OFFSET_MM = 15          # LP40B 1,5 cm vor der Drehachse (auf dem Strahl)
-FG_MARGIN_MM = 250            # Vordergrund = so viel naeher als der Hintergrund
-LP_BIN_DEG = 0.5
 LD_BIN_DEG = 1.0
 LD_MIN_MM, LD_MAX_MM = 400, 8000   # naeher: Turm und Traeger (drehen mit)
-CLUSTER_GAP_MM = 300          # Punkte einer Person (ein Bein)
-CLUSTER_MERGE_MM = 500        # zweites Bein / Koerper dazunehmen
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def pos_to_deg(pos):
-    return (pos - 2048) * 360.0 / 4096.0
-
-
 def deg_to_pos(deg):
     return int(round(2048 + deg * 4096.0 / 360.0))
-
-
-def wrap180(a):
-    return (a + 180.0) % 360.0 - 180.0
-
-
-def median(v):
-    s = sorted(v)
-    n = len(s)
-    if not n:
-        return None
-    return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
-
-
-def circ_mean_deg(v):
-    sx = sum(math.cos(math.radians(a)) for a in v)
-    sy = sum(math.sin(math.radians(a)) for a in v)
-    return math.degrees(math.atan2(sy, sx))
 
 
 def local_ip():
@@ -160,6 +137,9 @@ class Calib:
         self.focus_t0 = 0.0
         self.points = []
         self.result = {}
+        self.analysis = ""
+        self.analysis_pts = []
+        self.analysis_res = {}
         self.inhibit_sent = 0
         self.run_dir = os.path.join(HERE, "runs", time.strftime("%Y%m%d_%H%M%S"))
         os.makedirs(self.run_dir, exist_ok=True)
@@ -179,18 +159,8 @@ class Calib:
 
     # ── LP40B ────────────────────────────────────────────────────────────────
 
-    def lp_bg_at(self, deg):
-        b = int(math.floor(deg / LP_BIN_DEG))
-        vals = [self.lp_bg[i] for i in (b - 1, b, b + 1) if i in self.lp_bg]
-        return min(vals) if vals else None
-
     def lp_is_fg(self, deg, mm, err):
-        if err != 0 or mm < 150:
-            return False
-        bg = self.lp_bg_at(deg)
-        if bg is None:
-            return False
-        return mm < bg - max(FG_MARGIN_MM, 0.08 * bg)
+        return core.lp_is_fg(self.lp_bg, deg, mm, err)
 
     def add_lp(self, pos, mm, err):
         now = time.time()
@@ -211,23 +181,8 @@ class Calib:
             self.lp_bg_raw.setdefault(int(math.floor(deg / LP_BIN_DEG)), []).append(mm)
 
     def runs_in(self, samples):
-        """Vordergrund-Laeufe einer Schwenkbewegung: [(mitte_deg, mm, breite_deg, n)]"""
-        fg = sorted((d, mm) for d, mm, e in samples if self.lp_is_fg(d, mm, e))
-        runs, cur = [], []
-        for d, mm in fg:
-            if cur and (d - cur[-1][0] > 2.5 or abs(mm - cur[-1][1]) > 400):
-                runs.append(cur)
-                cur = []
-            cur.append((d, mm))
-        if cur:
-            runs.append(cur)
-        out = []
-        for r in runs:
-            if len(r) < 2:
-                continue
-            out.append((0.5 * (r[0][0] + r[-1][0]), median([m for _, m in r]),
-                        r[-1][0] - r[0][0], len(r)))
-        return out
+        """Personen-Laeufe einer Schwenkbewegung: [(mitte_deg, mm, breite_deg, n)]"""
+        return core.person_runs(self.lp_bg, samples)
 
     # ── LD06 ─────────────────────────────────────────────────────────────────
 
@@ -308,11 +263,7 @@ class Calib:
         last = recent[-1]
         runs = self.runs_in(last[2])
         if runs:
-            prev = self.cand[-1] if self.cand else None
-            if prev:
-                best = min(runs, key=lambda r: abs(r[0] - prev[1]))
-            else:
-                best = max(runs, key=lambda r: r[3])
+            best = max(runs, key=lambda r: r[3])             # breitester Lauf = Person
             if not self.cand or self.cand[-1][0] != last[0]:
                 self.cand.append((last[0], best[0], best[1]))
         if not self.cfg["auto"] or len(self.cand) < 2:
@@ -344,7 +295,7 @@ class Calib:
         for t, d, samples, ts in self.passes:
             if ts < t0 or d == 0:
                 continue
-            runs = [r for r in self.runs_in(samples) if r[3] >= 3]
+            runs = self.runs_in(samples)
             if not runs:
                 continue
             r = min(runs, key=lambda r: abs(r[0] - fd))
@@ -394,43 +345,31 @@ class Calib:
     # ── Fit ──────────────────────────────────────────────────────────────────
 
     def fit(self):
-        res = {}
-        for key, off in (("ld06", self.cfg["ld06_mm"]), ("radar", self.cfg["radar_mm"])):
-            pairs = [((p["px"], p["py"] - off), (p[key]["x"], p[key]["y"]))
-                     for p in self.points if key in p]
-            if not pairs:
-                continue
-            best = None
-            for s in (1, -1):
-                diffs = [wrap180(math.degrees(math.atan2(ry, rx)) -
-                                 math.degrees(math.atan2(my, s * mx)))
-                         for (rx, ry), (mx, my) in pairs]
-                rot = circ_mean_deg(diffs)
-                rms = math.sqrt(sum(wrap180(d - rot) ** 2 for d in diffs) / len(diffs))
-                if best is None or rms < best["rms_deg"]:
-                    best = {"mirror": s, "rot_deg": round(rot, 2), "rms_deg": round(rms, 2),
-                            "res_deg": [round(wrap180(d - rot), 2) for d in diffs]}
-            s = best["mirror"]
-            best["n"] = len(pairs)
-            best["range_bias_mm"] = round(sum(math.hypot(mx, my) - math.hypot(rx, ry)
-                                              for (rx, ry), (mx, my) in pairs) / len(pairs))
-            if len(pairs) >= 3:
-                best["free"] = procrustes([(rx, ry + off) for (rx, ry), _ in pairs],
-                                          [(s * mx, my) for _, (mx, my) in pairs])
-            res[key] = best
+        res = core.fit_points(self.points, self.cfg["ld06_mm"], self.cfg["radar_mm"])
+        for r in res.values():
+            r["res_deg"] = [r["res_deg"][p["n"]] for p in self.points if p["n"] in r["res_deg"]]
         self.result = res
         self.log("fit", **res)
         with open(os.path.join(self.run_dir, "result.json"), "w", encoding="utf-8") as f:
             json.dump({"cfg": self.cfg, "points": self.points, "result": res}, f, indent=1)
 
+    def analyze(self):
+        """Gesamtauswertung der bisherigen Aufnahme (alle Standphasen, auch aus der Suche)"""
+        self.log_f.flush()
+        a = core.analyze(os.path.join(self.run_dir, "raw.jsonl"),
+                         self.cfg["ld06_mm"], self.cfg["radar_mm"])
+        with open(os.path.join(self.run_dir, "analysis.json"), "w", encoding="utf-8") as f:
+            json.dump(a, f, indent=1)
+        self.analysis = core.report(a)
+        self.analysis_pts = a["points"]
+        self.analysis_res = a["result"]
+        self.msg = "Gesamtauswertung: %d Punkte aus %d Standphasen." % (len(a["points"]), a["segments"])
+
     def transform(self, key, x, y):
         """Sensor-lokal -> PA-Koordinaten mit aktuellem Fit (sonst ungedreht)"""
-        r = self.result.get(key)
+        res = self.analysis_res or self.result
         off = self.cfg["ld06_mm"] if key == "ld06" else self.cfg["radar_mm"]
-        s, rot = (r["mirror"], r["rot_deg"]) if r else (1, 0.0)
-        a = math.radians(rot)
-        x = s * x
-        return (x * math.cos(a) - y * math.sin(a), x * math.sin(a) + y * math.cos(a) + off)
+        return core.transform(res.get(key), off, x, y)
 
     # ── Anzeige ──────────────────────────────────────────────────────────────
 
@@ -483,65 +422,12 @@ class Calib:
             "focus": self.focus_deg if self.mode == "focus" else None,
             "lp": lp, "ld": ld, "ldc": ldc, "rd": rd, "points": pts,
             "table": self.points, "result": self.result, "run": os.path.relpath(self.run_dir, HERE),
+            "analysis": self.analysis,
+            "apoints": [{"n": p["n"], "px": p["px"], "py": p["py"],
+                         "ld06": [round(v) for v in self.transform("ld06", p["ld06"]["x"], p["ld06"]["y"])],
+                         "radar": [round(v) for v in self.transform("radar", p["radar"]["x"], p["radar"]["y"])]
+                         if "radar" in p else None} for p in self.analysis_pts],
         }
-
-
-def spread(pts):
-    """mittlere Abweichung vom Schwerpunkt (mm)"""
-    if len(pts) < 2:
-        return 0.0
-    mx = sum(p[0] for p in pts) / len(pts)
-    my = sum(p[1] for p in pts) / len(pts)
-    return math.sqrt(sum((p[0] - mx) ** 2 + (p[1] - my) ** 2 for p in pts) / len(pts))
-
-
-def cluster(fg):
-    """groesste Punktgruppe (Person) aus Vordergrund-Punkten (x, y, deg)"""
-    if not fg:
-        return None
-    fg = sorted(fg, key=lambda p: p[2])
-    groups, cur = [], [fg[0]]
-    for p in fg[1:]:
-        if math.hypot(p[0] - cur[-1][0], p[1] - cur[-1][1]) < CLUSTER_GAP_MM:
-            cur.append(p)
-        else:
-            groups.append(cur)
-            cur = [p]
-    groups.append(cur)
-    if len(groups) > 1 and math.hypot(groups[0][0][0] - groups[-1][-1][0],
-                                      groups[0][0][1] - groups[-1][-1][1]) < CLUSTER_GAP_MM:
-        groups[0] = groups.pop() + groups[0]          # ueber 0/360 Grad hinweg
-    groups.sort(key=len, reverse=True)
-    main = groups[0]
-    if len(main) < 3:
-        return None
-    cx = sum(p[0] for p in main) / len(main)
-    cy = sum(p[1] for p in main) / len(main)
-    for g in groups[1:]:
-        gx = sum(p[0] for p in g) / len(g)
-        gy = sum(p[1] for p in g) / len(g)
-        if math.hypot(gx - cx, gy - cy) < CLUSTER_MERGE_MM:
-            main = main + g
-    return main
-
-
-def procrustes(ref, meas):
-    """Drehung + Verschiebung (ohne Massstab): ref ~ R*meas + t"""
-    n = len(ref)
-    rx, ry = sum(p[0] for p in ref) / n, sum(p[1] for p in ref) / n
-    mx, my = sum(p[0] for p in meas) / n, sum(p[1] for p in meas) / n
-    sxx = sxy = 0.0
-    for (ax, ay), (bx, by) in zip(ref, meas):
-        ax, ay, bx, by = ax - rx, ay - ry, bx - mx, by - my
-        sxx += bx * ax + by * ay
-        sxy += bx * ay - by * ax
-    a = math.atan2(sxy, sxx)
-    c, s = math.cos(a), math.sin(a)
-    tx, ty = rx - (c * mx - s * my), ry - (s * mx + c * my)
-    err = math.sqrt(sum((ax - (c * bx - s * by + tx)) ** 2 + (ay - (s * bx + c * by + ty)) ** 2
-                        for (ax, ay), (bx, by) in zip(ref, meas)) / n)
-    return {"rot_deg": round(math.degrees(a), 2), "tx_mm": round(tx), "ty_mm": round(ty),
-            "rms_mm": round(err)}
 
 
 CAL = Calib()
@@ -554,8 +440,7 @@ ST_KEYS = ("magic", "kind", "servoOk", "tempC", "servoGoal", "servoPos", "relays
 SAMPLE_FMT = "<IHHB"
 SAMPLE_LEN = struct.calcsize(SAMPLE_FMT)
 
-pa2_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-pa2_sock.bind(("", PA2_STATE_PORT))
+pa2_sock = None
 
 
 def pa2_cmd(typ, a=0, b=0, c=0):
@@ -579,9 +464,7 @@ def pa2_rx():
                     CAL.log_f.write('{"k":"lp","d":%d,"p":%d,"mm":%d,"e":%d}\n' % (t, pos, mm, err))
 
 
-ld_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-ld_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-ld_sock.bind(("", LD06_DATA_PORT))
+ld_sock = None
 
 
 def ld_rx():
@@ -728,6 +611,11 @@ class Handler(BaseHTTPRequestHandler):
                     CAL.start_focus(c[1])
                 else:
                     CAL.msg = "LP40B sieht gerade niemanden im Sektor."
+            elif act == "analyze":
+                try:
+                    CAL.analyze()
+                except Exception as e:                  # Auswertung darf das Tool nicht stoppen
+                    CAL.msg = "Gesamtauswertung fehlgeschlagen: %s" % e
             elif act == "undo":
                 if CAL.points:
                     CAL.log("undo", n=CAL.points.pop()["n"])
@@ -747,6 +635,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global pa2_sock, ld_sock
+    pa2_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    pa2_sock.bind(("", PA2_STATE_PORT))
+    ld_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    ld_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    ld_sock.bind(("", LD06_DATA_PORT))
     lip = local_ip()
     mc = mc_socket(lip)
     for fn, args in ((pa2_rx, ()), (ld_rx, ()), (mc_rx, (mc,)), (ticker, (mc,))):
