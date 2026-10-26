@@ -915,7 +915,8 @@ montiert. Alle drei liegen auf einer Linie, die der **0°-Ausrichtung des Servos
 und des Radars** entspricht. Der LD06 ist um 90° gedreht montiert, liegt aber
 ebenfalls auf dieser Linie.
 
-Abstände zur Drehachse des PowerActor2:
+Abstände zur Drehachse des PowerActor2 — alle liegen **in 0°-Richtung vor der
+Drehachse** (Versatz `+d` entlang der 0°-Linie):
 
 | Komponente   | Abstand zur Drehachse |
 |--------------|-----------------------|
