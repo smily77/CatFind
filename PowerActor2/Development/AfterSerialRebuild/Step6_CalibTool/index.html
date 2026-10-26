@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PA2-Kalibrierung</title>
+<style>
+  :root { --bg:#111; --fg:#ddd; --mut:#888; --card:#1b1b1b; --line:#333;
+          --lp:#f90; --ld:#4af; --rd:#4d4; --ref:#f44; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px system-ui, sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:10px 16px; display:grid; gap:12px;
+         grid-template-columns: minmax(0,1fr) 340px; }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px; }
+  h1 { font-size:16px; margin:0 0 6px; } h2 { font-size:14px; margin:8px 0 4px; color:var(--mut); }
+  canvas { width:100%; aspect-ratio:1; background:#0a0a0a; border-radius:6px; display:block; }
+  button { background:#2a2a2a; color:var(--fg); border:1px solid #444; border-radius:6px;
+           padding:8px 10px; margin:2px; font:inherit; cursor:pointer; }
+  button.on { background:#264; border-color:#4a6; }
+  button.big { font-size:16px; padding:12px 14px; }
+  #msg { font-size:15px; padding:8px; background:#222; border-radius:6px; margin:6px 0; min-height:2.4em; }
+  .stat span { display:inline-block; min-width:9em; }
+  .ok { color:#6d6; } .bad { color:#f66; }
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  td, th { border-bottom:1px solid var(--line); padding:3px 4px; text-align:right; }
+  th { color:var(--mut); font-weight:normal; }
+  label { display:flex; justify-content:space-between; margin:2px 0; }
+  label input[type=number] { width:6em; background:#222; color:var(--fg); border:1px solid #444; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:5px; margin:0 4px 0 10px; }
+  pre { white-space:pre-wrap; font-size:12px; margin:0; }
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <h1>PowerActor2 – Winkel-Kalibrierung LD06 / Compact Dome</h1>
+    <div id="msg">…</div>
+    <canvas id="cv" width="800" height="800"></canvas>
+    <div class="legend"><i style="background:var(--lp)"></i>LP40B (Vordergrund kräftig)
+      <i style="background:var(--ld)"></i>LD06 <i style="background:var(--rd)"></i>Compact Dome
+      <i style="background:var(--ref)"></i>Standpunkt (Referenz)
+      &nbsp; Zoom <input id="zoom" type="range" min="1" max="8" step="0.5" value="4"> <span id="zv"></span> m</div>
+  </div>
+  <div>
+    <div class="card">
+      <button class="big" onclick="act('bg')">1. Hintergrund aufnehmen</button>
+      <button class="big" id="auto" onclick="act('auto',{on:!S.cfg.auto})">2. Automatik</button>
+      <button onclick="act('point')">Punkt jetzt</button>
+      <button onclick="act('undo')">letzten Punkt löschen</button>
+      <button onclick="act('stop')">Stopp</button>
+      <h2>Speisung</h2>
+      <button id="r2" onclick="act('relay',{bit:2})">LD06</button>
+      <button id="r4" onclick="act('relay',{bit:4})">Compact Dome</button>
+      <button id="inh" onclick="setCfg({inhibit:!S.cfg.inhibit})">Feuersperre senden</button>
+      <h2>Status</h2>
+      <div class="stat" id="stat"></div>
+    </div>
+    <div class="card">
+      <h2>Ergebnis</h2>
+      <pre id="res">noch keine Punkte</pre>
+    </div>
+    <div class="card">
+      <h2>Einstellungen</h2>
+      <div id="cfg"></div>
+      <button onclick="saveCfg()">übernehmen</button>
+    </div>
+  </div>
+  <div class="card" style="grid-column:1/-1">
+    <h2>Standpunkte</h2>
+    <table id="tab"></table>
+  </div>
+</main>
+<script>
+let S = null;
+const CFG = [["sector_deg","Suchsektor ± Grad"],["search_speed","Suchgeschw. Servo"],
+  ["focus_half_deg","Feinschwenk ± Grad"],["focus_speed","Feingeschw. Servo"],["focus_s","Feinmessung s"],
+  ["bg_s","Hintergrund s"],["ld06_mm","LD06 vor Achse mm"],["radar_mm","Dome vor Achse mm"]];
+
+async function act(action, extra={}) {
+  await fetch('/cmd', {method:'POST', body: JSON.stringify(Object.assign({action}, extra))});
+  poll();
+}
+function setCfg(c) { act('cfg', {cfg:c}); }
+function saveCfg() {
+  const c = {};
+  for (const [k] of CFG) c[k] = parseFloat(document.getElementById('c_'+k).value);
+  setCfg(c);
+}
+function buildCfg() {
+  document.getElementById('cfg').innerHTML = CFG.map(([k,l]) =>
+    `<label>${l}<input type="number" id="c_${k}" value="${S.cfg[k]}"></label>`).join('');
+}
+
+const cv = document.getElementById('cv'), g = cv.getContext('2d');
+function draw() {
+  const W = cv.width, H = cv.height, range = parseFloat(zoom.value) * 1000;
+  document.getElementById('zv').textContent = zoom.value;
+  const sc = (H * 0.92) / range, ox = W / 2, oy = H * 0.96;
+  const P = (x, y) => [ox + x * sc, oy - y * sc];
+  g.clearRect(0, 0, W, H);
+  g.strokeStyle = '#222'; g.lineWidth = 1; g.font = '14px sans-serif'; g.fillStyle = '#555';
+  for (let r = 500; r <= range; r += 500) {
+    g.beginPath(); g.arc(ox, oy, r * sc, Math.PI, 2 * Math.PI); g.stroke();
+    if (r % 1000 == 0) g.fillText((r / 1000) + ' m', ox + 4, oy - r * sc - 2);
+  }
+  // Suchsektor und Servo-Richtung
+  const ray = (deg, col, w) => { const a = deg * Math.PI / 180; const [x, y] = P(range * Math.sin(a), range * Math.cos(a));
+    g.strokeStyle = col; g.lineWidth = w; g.beginPath(); g.moveTo(ox, oy); g.lineTo(x, y); g.stroke(); };
+  ray(-S.cfg.sector_deg, '#333', 1); ray(S.cfg.sector_deg, '#333', 1); ray(0, '#444', 1);
+  if (S.focus !== null) { ray(S.focus - S.cfg.focus_half_deg, '#653', 1); ray(S.focus + S.cfg.focus_half_deg, '#653', 1); }
+  if (S.pa2.deg !== null) ray(S.pa2.deg, '#a60', 2);
+  const dot = (x, y, r, col) => { const [a, b] = P(x, y); g.fillStyle = col; g.beginPath(); g.arc(a, b, r, 0, 7); g.fill(); };
+  for (const [x, y] of S.ld) dot(x, y, 2, '#2a5a8a');
+  for (const [x, y, f] of S.lp) dot(x, y, f ? 4 : 2, f ? '#f90' : '#754');
+  for (const [x, y] of S.rd) dot(x, y, 7, '#4d4');
+  if (S.ldc) dot(S.ldc[0], S.ldc[1], 8, '#4af');
+  // Standpunkte
+  for (const p of S.points) {
+    const [a, b] = P(p.px, p.py);
+    for (const [k, col] of [['ld06', '#4af'], ['radar', '#4d4']]) if (p[k]) {
+      const [c, d] = P(p[k][0], p[k][1]); g.strokeStyle = col; g.lineWidth = 1.5;
+      g.beginPath(); g.moveTo(a, b); g.lineTo(c, d); g.stroke(); dot(p[k][0], p[k][1], 4, col);
+    }
+    g.strokeStyle = '#f44'; g.lineWidth = 3; g.beginPath();
+    g.moveTo(a - 8, b - 8); g.lineTo(a + 8, b + 8); g.moveTo(a + 8, b - 8); g.lineTo(a - 8, b + 8); g.stroke();
+    g.fillStyle = '#f88'; g.fillText(p.n, a + 10, b - 8);
+  }
+  // Turm + Sensoren
+  dot(0, 0, 6, '#fff'); dot(0, S.cfg.ld06_mm, 4, '#4af'); dot(0, S.cfg.radar_mm, 4, '#4d4');
+}
+
+function fmtRes(r) {
+  const out = [];
+  for (const [k, name] of [['ld06', 'LD06'], ['radar', 'Compact Dome']]) {
+    const x = r[k]; if (!x) continue;
+    out.push(`${name}: Drehung ${x.rot_deg.toFixed(2)}°  ${x.mirror < 0 ? '(gespiegelt) ' : ''}` +
+      `Streuung ${x.rms_deg.toFixed(2)}°  n=${x.n}\n  Distanz-Abweichung ${x.range_bias_mm} mm` +
+      (x.free ? `\n  frei gefittet: ${x.free.rot_deg}°, Versatz x ${x.free.tx_mm} / y ${x.free.ty_mm} mm, Rest ${x.free.rms_mm} mm` : ''));
+  }
+  return out.join('\n\n') || 'noch keine Punkte';
+}
+
+function render() {
+  const s = S, on = (id, v) => document.getElementById(id).classList.toggle('on', !!v);
+  document.getElementById('msg').textContent = `[${s.mode}] ${s.msg}`;
+  on('auto', s.cfg.auto); on('r2', s.relays & 2); on('r4', s.relays & 4); on('inh', s.cfg.inhibit);
+  const c = (b, t) => `<b class="${b ? 'ok' : 'bad'}">${t}</b>`;
+  document.getElementById('stat').innerHTML =
+    `<div><span>PowerActor2</span>${c(s.pa2.online, s.pa2.online ? 'online' : 'offline')}` +
+    ` Servo ${s.pa2.deg ?? '-'}° ${s.pa2.temp ?? ''}°C</div>` +
+    `<div><span>LP40B</span>${c(s.pa2.rate > 20, s.pa2.rate + '/s')} ${s.pa2.lidarMm ?? '-'} mm, Hintergrund ${s.lp_bg}</div>` +
+    `<div><span>LD06</span>${c(s.ld06.online, s.ld06.rate + ' Pkt/s')} ${s.ld06.ip ?? ''}, Hintergrund ${s.ld06.bg}°</div>` +
+    `<div><span>Compact Dome</span>${c(s.radar.online, s.radar.rate + '/s')} ${s.radar.ip ?? ''}</div>` +
+    `<div><span>Feuersperren</span>${s.inhibits}</div>` +
+    `<div><span>Person LP40B</span>${s.cand ? s.cand[0].toFixed(1) + '° ' + Math.round(s.cand[1]) + ' mm' : '-'}</div>` +
+    `<div><span>Rohdaten</span>${s.run}</div>`;
+  document.getElementById('res').textContent = fmtRes(s.result);
+  const rows = s.table.map(p => {
+    const v = (k) => p[k] ? `${p[k].x} / ${p[k].y} (±${p[k].std}, ${p[k].n})` : '-';
+    const rl = s.result.ld06 ? s.result.ld06.res_deg : null;
+    return `<tr><td>${p.n}</td><td>${p.deg}</td><td>${p.lp_mm}</td><td>${p.lag ?? '-'}</td>` +
+      `<td>${p.passes.join('/')}</td><td>${v('ld06')}</td><td>${v('radar')}</td>` +
+      `<td><button onclick="act('del',{n:${p.n}})">x</button></td></tr>`;
+  }).join('');
+  document.getElementById('tab').innerHTML = '<tr><th>#</th><th>Servo °</th><th>LP40B mm</th><th>Verzug °</th>' +
+    '<th>Schwenks →/←</th><th>LD06 x / y mm</th><th>Dome x / y mm</th><th></th></tr>' + rows;
+  draw();
+}
+
+async function poll() {
+  try {
+    const first = !S;
+    S = await (await fetch('/state')).json();
+    if (first) buildCfg();
+    render();
+  } catch (e) { document.getElementById('msg').textContent = 'Tool nicht erreichbar'; }
+}
+zoom.oninput = () => S && draw();
+setInterval(poll, 400); poll();
+</script>
+</body>
+</html>
