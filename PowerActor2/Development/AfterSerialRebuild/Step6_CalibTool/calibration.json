@@ -1,0 +1,5 @@
+{
+ "_info": "Gueltige Winkel-Kalibrierung des PA2-Traegers (PA-System: Ursprung Drehachse, y = 0-Grad-Linie/Servo 2048 nach vorn, x = rechts). PA = R(rot_deg) * (mirror*x_lokal, y_lokal) + (0, offset_mm). LD06-lokal: angle = mData.winkel (Grad, wie im Stream), x = d*cos, y = d*sin. Compact Dome lokal: catObserved x/y.",
+ "ld06": {"rot_deg": 177.52, "mirror": 1, "offset_mm": 135, "source": "Indoor 2026-10-26 runs/20261026_224258, n=4, Streuung 0,18 Grad", "status": "vorlaeufig, outdoor wiederholen"},
+ "compact_dome": {"rot_deg": 0.0, "mirror": 1, "offset_mm": 185, "source": "Annahme (Indoor-Messung -4 Grad, Streuung 5 Grad, zu unsicher)", "status": "Platzhalter bis Outdoor-Messung"}
+}
