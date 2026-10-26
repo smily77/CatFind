@@ -1009,6 +1009,20 @@ und reproduzierbare Pose des ganzen mobilen Aufbaus, auch nach dem Umstellen.
   (`catDetected`); die Feuersperre `fireInhibit` (17) ist im PowerActor2 noch
   einzubauen.
 
+### Winkel-Kalibrierung des Trägers (Stand 2026-10-26)
+Gemessen mit dem Kalibrier-Tool (`PowerActor2/Development/AfterSerialRebuild/Step6_CalibTool`):
+Eine Person stellt sich an verschiedene Stellen, der Servo schwenkt den LP40B über sie
+(Referenzrichtung), LD06 und Compact Dome messen gleichzeitig. Gültige Werte stehen in
+`Step6_CalibTool/calibration.json`.
+
+| Sensor       | Drehung Sensor → PA | gespiegelt | Versatz | Herkunft |
+|--------------|---------------------|------------|---------|----------|
+| LD06         | 177,5°              | nein       | 135 mm  | Indoor-Messung, 4 Punkte, Streuung 0,2° (vorläufig) |
+| Compact Dome | 0° (Annahme)        | nein       | 185 mm  | Indoor-Messung −4° ± 5° zu unsicher → Platzhalter |
+
+Die Messung wird **outdoor wiederholt**. Danach ist sie nochmals fällig, wenn der Laser
+auf der Drehachse neu justiert ist.
+
 ### Nicht Teil dieses Abschnitts
 Die konkrete Integration der einzelnen Komponenten (Reihenfolge, Protokoll,
 Pose-Algorithmus des LD06, Kalibrierung der Winkelabweichungen) wird in
