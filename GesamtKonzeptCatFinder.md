@@ -883,6 +883,13 @@ Nachtbilder ist gleichmäßige IR-Ausleuchtung wichtiger als maximale Mittenhell
    zusammen mit den Daten der anderen Sensoren als Labels/Ground-Truth, um das
    kausale CatIdent-Modell zu tunen — und als Grundlage fürs IR-Nachttraining.
 
+**Stand 2026-10-26:** Phase 5 ist erreicht. Teile von Phase 6 und 7 sind dabei
+bereits entstanden: Die Kamera-Ortung läuft als `visionObserved` (5B, wartet auf
+`cam_feed=1`), und die Bilder am Track (5A) liefern die Ground-Truth für die
+Track-Bewertung und den Abgleich mit CatIdent. Die Arbeit an der Kamera geht
+weiter, parallel dazu wird der PowerActor2-Aufbau ins Gesamtsystem integriert
+(siehe nächste Aufgabe).
+
 ### Nicht Teil dieser Aufgabe / Abgrenzung
 - Wetterfestes Gehäuse, Strom, Montage (Nutzer).
 - IR-CUT-/IR-Scheinwerfer: schaltet die Kamera selbst (2026-10-18).
@@ -891,3 +898,117 @@ Nachtbilder ist gleichmäßige IR-Ausleuchtung wichtiger als maximale Mittenhell
   (bleibt bei CatIdent).
 
 
+
+## Aufgabe: Integration von PowerActor2, LD06 und Compact Dome (mobiler Aufbau)
+
+### Grobkonzept
+PowerActor2, LD06 und Compact Dome waren ursprünglich ein **eigenständiges
+System**: LD06 und Compact Dome erkannten das Ziel, der LP40B-Lidar am Turm des
+PowerActor2 sollte es vor dem Schuss verifizieren. Dieser Aufbau wird jetzt
+vollständig in das **kartengestützte Gesamtsystem** (Rasenkarte, Welt-
+Koordinatensystem, Sensorfusion über CatIdent) eingebunden. Die Komponenten
+erhalten dabei teilweise neue Aufgaben.
+
+### Mechanischer Aufbau
+PowerActor2, LD06 und Compact Dome sind fest auf einem **gemeinsamen Träger**
+montiert. Alle drei liegen auf einer Linie, die der **0°-Ausrichtung des Servos
+und des Radars** entspricht. Der LD06 ist um 90° gedreht montiert, liegt aber
+ebenfalls auf dieser Linie.
+
+Abstände zur Drehachse des PowerActor2:
+
+| Komponente   | Abstand zur Drehachse |
+|--------------|-----------------------|
+| LP40B        | 1,5 cm                |
+| LD06         | 13,5 cm               |
+| Compact Dome | 18,5 cm               |
+
+Da alle Komponenten fest miteinander verbunden sind, bleiben ihre relativen
+Positionen und Ausrichtungen konstant. Mechanische Toleranzen können jedoch zu
+geringfügigen **Winkelabweichungen zwischen den Sensorachsen** führen.
+
+### Erkenntnisse aus den bisherigen Tests (Standalone-Konzept)
+1. **Mechanische Abweichungen:** Die Achsen von LD06 und Compact Dome weichen
+   wegen mechanischer Toleranzen geringfügig voneinander ab.
+2. **Störungen durch Bewuchs:** Pflanzen und Bewuchs an den Rasenrändern
+   verursachen zahlreiche Fehldetektionen.
+3. **Empfindlichkeit gegenüber Sonnenlicht:** Der LD06 reagiert empfindlich auf
+   direkt einfallendes Sonnenlicht, abhängig von Tageszeit und Sonnenstand.
+4. **Zielverifikation nicht nachgewiesen:** Die Verifikation mit dem LP40B
+   konnte bisher nicht nachgewiesen werden, weil keine geeignete Testsituation
+   zustande kam.
+
+### Was das Gesamtkonzept verbessert
+- **Weniger Fehldetektionen:** Störungen durch Bewuchs am Rasenrand werden über
+  die Rasenkarte erkannt und ausgefiltert (vgl. RasenKarten-Gating der Radare).
+- **Sensorfusion:** Mehrere Sensoren tragen unabhängig zur Zielerkennung bei,
+  ihre Informationen werden kombiniert.
+- **Bessere Zielqualifikation:** Ziele werden anhand zusätzlicher Informationen
+  (Spurbewertung, Kamera) besser von Störungen unterschieden.
+- **Gemeinsames Koordinatensystem:** Positionen und Ausrichtungen aller Sensoren
+  beziehen sich auf das Welt-Koordinatensystem der Rasenkarte.
+
+### Neue Rollen der Komponenten
+**Compact Dome — zusätzliches Radar zur Zielerkennung.** Der Compact Dome wird
+als weiteres Radar eingebunden und liefert Zielinformationen wie die übrigen
+Radare. Seine Detektionen werden ins Welt-Koordinatensystem übertragen und mit
+den anderen Sensoren kombiniert.
+
+**LD06 — Positions- und Orientierungsbestimmung.** Die Tests mit dem LiDAR C1
+haben gezeigt, dass Lidare Katzen nicht oder nur eingeschränkt zuverlässig
+erkennen. Der LD06 wird deshalb, analog zum LiDAR C1, **primär zur Bestimmung
+seiner eigenen Position und Ausrichtung** relativ zur Rasenkarte eingesetzt:
+Bekannte Strukturen und Konturen werden mit der gespeicherten Karte
+abgeglichen. Die bekannte Methode, auf dem Rasen umherzulaufen
+(Co-Observation-Kalibrierung), bleibt verfügbar, soll im Normalfall aber nicht
+nötig sein.
+
+**PowerActor2 — mobiler Aktor.** Im Gegensatz zu den fest installierten
+Komponenten ist der PowerActor2 **mobil**: Er kann zeitweise entfernt und
+später an einer anderen Stelle wieder aufgestellt werden. Deshalb muss das
+System seine Position und Orientierung nach dem Aufstellen **selbstständig**
+bestimmen können.
+
+### Gemeinsame Pose des Trägers
+Weil die drei Komponenten fest auf demselben Träger sitzen, genügt **eine
+gemeinsame Referenzpose**:
+- **X-Position** relativ zur Rasenkarte,
+- **Y-Position** relativ zur Rasenkarte,
+- **Orientierung** des Trägers relativ zum Koordinatensystem der Karte.
+
+Referenzpunkt ist die **Drehachse des PowerActor2**, Referenzrichtung die
+0°-Linie von Servo und Radar. Die Posen von LD06 und Compact Dome werden aus
+dieser Trägerpose über ihre bekannten **mechanischen Versätze** (Tabelle oben)
+und ihre **Winkelabweichungen** berechnet. Damit reicht es, die Pose des
+Trägers zu bestimmen, um alle drei Komponenten korrekt im Gesamtsystem zu
+lokalisieren.
+
+### Unterstützung durch den LP40B
+Die Pose wird **primär mit dem LD06 und der Rasenkarte** bestimmt. Der
+LP40B-Lidar des PowerActor2 kann zusätzlich beitragen, z.B. um die vom LD06
+ermittelte Pose zu überprüfen oder zu verfeinern. Ziel ist eine zuverlässige
+und reproduzierbare Pose des ganzen mobilen Aufbaus, auch nach dem Umstellen.
+
+### Bezug zum bestehenden System (Stand 2026-10-26)
+- **Gerätetabelle `xComDef6_3.h`:** Die drei Geräte bilden bereits die Gruppe
+  `groupPA2` — Compact Dome #3 (HLK-Radar), PowerActor2 #4 (.181, Eintrag heißt
+  noch „PowerActor1“; Umbenennung erst beim Bus-Deploy), LD06 #7 (Lidar).
+- **Compact Dome** läuft mit der gemeinsamen Radar-Firmware `Radar6_3_0`
+  (Build-Variante CompactDome, GPIO19, sender 3); RasenKarten-Gating und
+  Welt-Pose gibt es dort bereits.
+- **PowerActor2-Neuaufbau** läuft schrittweise in
+  `PowerActor2/Development/AfterSerialRebuild/` (Step1–5: Servo, Relais,
+  LP40B, Laser, IR-Positionskamera SEN0158); danach Einbau in `PA2i6_3_0`.
+  Die Relais schalten u.a. die **Speisung von LD06 (GPIO26) und Compact Dome
+  (GPIO23)**. Der LP40B misst im Betrieb einzeln (Laser nicht dauernd an).
+  Die IR-Positionskamera SEN0158 soll ggf. ebenfalls bei der Pose-Findung
+  helfen.
+- **Auslösen:** Die PowerActors reagieren heute auf jedes `catObserved` ohne
+  Absender-Prüfung. Im Gesamtsystem bestätigt **CatIdent** die Katze
+  (`catDetected`); die Feuersperre `fireInhibit` (17) ist im PowerActor2 noch
+  einzubauen.
+
+### Nicht Teil dieses Abschnitts
+Die konkrete Integration der einzelnen Komponenten (Reihenfolge, Protokoll,
+Pose-Algorithmus des LD06, Kalibrierung der Winkelabweichungen) wird in
+Folgeschritten festgelegt.
