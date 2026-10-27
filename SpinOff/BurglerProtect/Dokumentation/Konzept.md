@@ -29,7 +29,15 @@ Ausserdem ist offen, ob der Dome-C1 die Veranda überhaupt sieht. Er steht bei (
 
 Die Anforderung sieht `catObserved` als Quelle vor. Das wäre gefährlich: **PowerActor1_1 feuert auf jedes `catObserved` ohne Absenderfilter.** Ein Besucher auf der Veranda würde damit zum Ziel des Wasserstrahls. Ausserdem würden CatIdentifier und VPS-Analysierer Veranda-Spuren als Katzenkandidaten bewerten.
 
-Darum gibt es dafür einen **eigenen msgCode `visitorObserved`**. Das ist dieselbe Lehre wie bei `visionObserved` (Code 16) für die Kamera. Das Radar meldet Ziele ausserhalb der Filterkarte, aber im Quadranten X > 0, Y < 0, zusätzlich als `visitorObserved` (gleicher `posPayload`). Damit ändert sich für alle bisherigen Geräte nichts.
+Darum gibt es dafür einen **eigenen msgCode `visitorObserved`**. Das ist dieselbe Lehre wie bei `visionObserved` (Code 16) für die Kamera. Der Sensor meldet Ziele ausserhalb der Filterkarte, aber im Quadranten X > 0, Y < 0, zusätzlich als `visitorObserved` (gleicher `posPayload`). Damit ändert sich für alle bisherigen Geräte nichts.
+
+**Beschluss 2026-10-27: Im Sensor nur der Quadrant, das Polygon nur im Steuergerät.** Der Sensor läuft wie bisher weiter und bekommt nur eine zusätzliche Bedingung (`else if (wx > 0 && wy < 0) broadcastMsg(visitorObserved, pos);`), also wenige Bytes Code. Das ist wichtig für den Lidar-C1: Seine Firmware ist 1,23 MB gross, die App-Partition fasst 1,31 MB (≈ 94 % voll). Eine zweite Karte samt Kartentransfer hätte dort keinen Platz.
+
+Das ist zwar anders als beim Katzenteil, wo jeder Sensor selbst nach Karte filtert, hat aber auch Vorteile: Das Auslösepolygon liegt nur an **einer** Stelle, und `mapVisitor` muss nur an das Steuergerät verteilt werden, nicht an jeden Sensor. Weil auf der Veranda selten jemand ist, bleibt der zusätzliche Busverkehr klein. Der Quadrant kann aber auch Hauswand-Reflexe oder Strasse enthalten. Das zeigt sich in Schritt 2. Falls es zu viel wird, kann man den Quadranten im Sensor mit festen Grenzen enger fassen, statt dort ein Polygon einzubauen.
+
+Später möglich (eleganter, braucht aber Speicher): zwei Zonen im Sensor, eine Karte für `catObserved` und eine für `visitorObserved`. Für die Radare (genug Platz) ginge das, für den Lidar-C1 nicht.
+
+**Welcher Sensor?** In Frage kommen der Dome-C1 (Radar, 8,21 / 2,91 m, Öffnung ±60°, Reichweite ≈ 6–7 m) und der Lidar-C1 (3,18 / 8,88 m, 360°, Reichweite 12 m, Veranda ≥ 9 m entfernt). Beim Lidar-C1 gilt eine Eigenheit: Er meldet pro Umdrehung nur **einen** Punkt, nämlich den Schwerpunkt aller Punkte, die vor dem Hintergrund liegen. Sind gleichzeitig eine Katze auf dem Rasen und eine Person auf der Veranda zu sehen, liegt der gemeldete Punkt irgendwo dazwischen. Die Quadrant-Prüfung muss deshalb auf dem gemeinsamen Schwerpunkt arbeiten, oder die Firmware müsste die Punkte nach Quadrant getrennt sammeln (wenige Bytes mehr). Beide Sensoren können `visitorObserved` senden, und das Steuergerät nimmt beide.
 
 ### 2.3 Neues Busgerät = neuer Eintrag in `device[]`
 
@@ -133,8 +141,8 @@ Datenschutz: Die Tabelle enthält Bewegungen von Personen auf dem eigenen Grunds
 
 ## 8. Vorgehen
 
-0. **Sichtprüfung Dome-C1 (Voraussetzung):** Filterkarte im Dome-C1 kurz abschalten oder eine Testfirmware mit `visitorObserved` flashen, dann über die Veranda gehen. Ergebnis: Wird die Person erfasst, wie weit, wie stabil? Fällt das negativ aus, braucht es einen eigenen Sensor an der Veranda (z. B. ein zweites LD2450 Richtung Hauseingang, als weitere Radar-Variante).
-1. **`visitorObserved`** in `xComDef6_3.h` und `Radar6_3_0.ino` (CatFinder-Erweiterung, nicht in diesem Ordner). VPS speichert sie in `visitor_events`, Tab «Besucher» zuerst nur mit Karte und Liste.
+0. **Sichtprüfung Dome-C1 und/oder Lidar-C1 (Voraussetzung):** Testfirmware mit `visitorObserved` (nur Quadrant, siehe 2.2) flashen, dann über die Veranda gehen. Ergebnis: Wird die Person erfasst, wie weit, wie stabil? Fällt das negativ aus, braucht es einen eigenen Sensor an der Veranda (z. B. ein zweites LD2450 Richtung Hauseingang, als weitere Radar-Variante).
+1. **`visitorObserved`** in `xComDef6_3.h` und `Radar6_3_0.ino` bzw. `C1Lidar6_3_0.ino` (CatFinder-Erweiterung, nicht in diesem Ordner). VPS speichert sie in `visitor_events`, Tab «Besucher» zuerst nur mit Karte und Liste.
 2. **Ein paar Tage beobachten:** echte Durchgänge, Störungen (Hauswand-Reflexe, Strasse), dann Polygon zeichnen und Parameter festlegen.
 3. **Steuergerät** bauen (Taster, Hue-Anbindung, Plausibilisierung, Flash-Speicher), Gerät Nr. 22 in `device[]`.
 4. **Konfigurationsweg:** `mapVisitor`, Parameter, Scharf-Kommando, HB-Anzeige im VPS.
@@ -147,12 +155,12 @@ Datenschutz: Die Tabelle enthält Bewegungen von Personen auf dem eigenen Grunds
 | Konzept, Anleitungen, Schema | `SpinOff/BurglerProtect/Dokumentation/` |
 | Firmware Steuergerät | `SpinOff/BurglerProtect/Firmware/` (geplant) |
 | `visitorObserved`, `mapVisitor`, Gerät Nr. 22 | `Controller/Manager6_3_0/xComDef6_3.h` (gemeinsamer Header) |
-| Radar meldet Veranda-Ziele | `Radar_HKL/Radar6_3_0/` |
+| Sensor meldet Veranda-Ziele (nur Quadrant) | `Radar_HKL/Radar6_3_0/`, `CF_LidarC1/C1Lidar6_3_0/` |
 | Tab «Besucher», Tabelle `visitor_events` | `VPS/dashboard/` |
 
 ## 10. Offene Fragen an den User
 
-1. Darf der Dome-C1 für den Test kurz ohne Filterkarte laufen? Oder lieber gleich eine Testfirmware mit `visitorObserved`?
+1. Welcher Sensor soll die Veranda liefern: Dome-C1, Lidar-C1 oder beide?
 2. Wo kommt der Taster hin (Hauseingang, Wohnzimmer)? Gibt es dort Strom?
 3. Hue: Wie heisst der Raum, ist die Bridge-IP fest?
 4. Bedingung «nur bei Dunkelheit» einbauen (Vorschlag 5.3)?
