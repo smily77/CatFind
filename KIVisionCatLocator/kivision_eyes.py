@@ -26,6 +26,11 @@ die Augen der Katzen kamen nie an. Jetzt:
     einem einzelnen Fleck in der Naehe weiter.
   * Ortsfeste Lichter (Lampen, Maeher-LED, Reflektoren) lernt eine langsam
     vergessende Waermekarte - wo dauernd etwas leuchtet, zaehlt nichts.
+  * Farbige Lichter zaehlen nie (2026-10-27): die gruene Lade-LED des Maehers
+    im Dock (Welt 8,0/2,1 m) blinkt und kam so an der Waermekarte vorbei -
+    ueber 200 Fehlmeldungen an einem Abend. Augen werfen das IR-Licht
+    farblos zurueck (je Kanal ueber Grund gemessen: groesster/kleinster
+    Kanal 1,00..1,07), die LED ist klar gruen (1,4..2,0).
   * Ein Auge gilt nach MIN_PAIRS Paar-Treffern derselben Spur; Einzelflecken
     halten eine Spur nur am Leben, bestaetigen sie aber nicht.
 """
@@ -64,6 +69,8 @@ PAIR_AREA = 4.0           # Flaechen hoechstens so verschieden
 PAIR_PEAK = 2.5           # Helligkeit (ueber Grund) hoechstens so verschieden
 PAIR_GAP = 0.65           # Luecke dazwischen dunkler als Grund + 65 % des schwaecheren Flecks
 MAX_PAIRS = 12            # mehr Paare in einem Bild: Rauschen -> Bild verwerfen
+TINT_REL = 0.2            # farbig: Kanalspreizung (ueber Grund) > TINT_REL * staerkster Kanal
+TINT_ABS = 10             #         + TINT_ABS - Augen 3..12, Maeher-LED 53..88
 HEAT_TAU = 300.0          # s, so schnell vergisst die Waermekarte
 HEAT_STATIC = 6.0         # ab so viel "Dauerleuchten" an einer Stelle: ortsfestes Licht
 HEAT_CELL = 16            # px je Zelle der Waermekarte
@@ -113,8 +120,8 @@ class Eyes:
         self.box = None          # x0, y0, x1, y1 des Rasens
         self.night = False
         self.dark = None         # Helligkeit oben/Mitte (kivision_web._dark_ratio)
-        self.stats = {"frames": 0, "spots": 0, "pairs": 0, "static": 0, "noisy": 0,
-                      "eyes": 0, "ms": 0.0}
+        self.stats = {"frames": 0, "spots": 0, "pairs": 0, "static": 0, "tinted": 0,
+                      "noisy": 0, "eyes": 0, "ms": 0.0}
         # Rechteckkern: OpenCV rechnet ihn zerlegt und viel schneller als eine
         # Ellipse (2592er-Bild: ~290 -> ~60 ms gemessen auf dem Pi 4)
         self.kernel = (cv2.getStructuringElement(cv2.MORPH_RECT, (KERNEL, KERNEL))
@@ -241,6 +248,18 @@ class Eyes:
                         "peak": max(a["peak"], b["peak"]), "dx": dx, "parts": (i, j)})
         return out, used
 
+    @staticmethod
+    def tinted(rgb, px):
+        """Farbiges Licht statt farblos leuchtendem Auge? rgb = Farbausschnitt,
+        px = Fleckmitte darin. Fleck = hellere Haelfte der 5x5 um die Mitte,
+        Grund = Median der 31x31 drumherum, je Kanal."""
+        x, y = int(round(px[0])), int(round(px[1]))
+        patch = rgb[max(0, y - 2):y + 3, max(0, x - 2):x + 3].reshape(-1, 3).astype(np.float32)
+        ring = rgb[max(0, y - 15):y + 16, max(0, x - 15):x + 16].reshape(-1, 3)
+        s = patch.sum(1)
+        d = patch[s >= np.median(s)].mean(0) - np.median(ring, 0)
+        return float(d.max() - d.min()) > TINT_REL * float(d.max()) + TINT_ABS
+
     def update(self, frame, now=None):
         """Neue Augen-Spuren, die gerade bestaetigt wurden."""
         if cv2 is None:
@@ -249,7 +268,8 @@ class Eyes:
         t = time.perf_counter()
         # ohne Zone (keine Karte/Abbildung) das ganze Bild, wie die Bewegung
         x0, y0, x1, y1 = self.box or (0, 0, frame.shape[1], frame.shape[0])
-        g = np.ascontiguousarray(frame[y0:y1, x0:x1, 1])
+        rgb = frame[y0:y1, x0:x1]
+        g = np.ascontiguousarray(rgb[:, :, 1])
         spots, gb = self.spots(g)
         self._decay(now, frame.shape)
         self.stats["frames"] += 1
@@ -263,6 +283,12 @@ class Eyes:
             self.stats["noisy"] += 1
             self.stats["ms"] = round((time.perf_counter() - t) * 1000.0, 1)
             return []
+        # farbige Lichter raus (vor dem Umrechnen, px noch im Ausschnitt);
+        # ihre Flecken bleiben in used, fuehren also auch keine Spur weiter
+        n0 = len(pairs)
+        pairs = [p for p in pairs
+                 if not any(self.tinted(rgb, spots[k]["px"]) for k in p["parts"])]
+        self.stats["tinted"] += n0 - len(pairs)
         H, W = frame.shape[:2]
 
         def to_frame(p):
@@ -282,7 +308,10 @@ class Eyes:
                 continue
             live.append(p)
         self.stats["pairs"] += len(live)
-        singles = [to_frame(dict(s, dx=0)) for k, s in enumerate(spots) if k not in used]
+        # Einzelflecken nur pruefen, wenn es eine Spur zum Weiterfuehren gibt
+        singles = ([to_frame(dict(s, dx=0)) for k, s in enumerate(spots)
+                    if k not in used and not self.tinted(rgb, s["px"])]
+                   if self.tracks else [])
         fresh = self._track(live, singles, now)
         self.stats["ms"] = round((time.perf_counter() - t) * 1000.0, 1)
         return fresh
