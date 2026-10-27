@@ -241,7 +241,11 @@ void processTargets() {
       if (calib.active) coCalibFeedLocal(calib, i, target[i].x, target[i].y);
       lastTargetX = target[i].x; lastTargetY = target[i].y; lastTargetMs = millis();
       if (obsData.worldValid && filterMapActive &&
-          !insideNoShot(obsData.worldX, obsData.worldY)) continue;   // ausserhalb der Filterkarte
+          !insideNoShot(obsData.worldX, obsData.worldY)) {           // ausserhalb der Filterkarte
+        if (obsData.worldX > 0 && obsData.worldY < 0)                // Veranda: Spin-off BurglerProtect
+          broadcastMsg(visitorObserved, obsData);                    // (Polygon prueft der Empfaenger)
+        continue;
+      }
       broadcastMsg(catObserved, obsData);
       irNoteCat();                                     // IR-AUTO: eigenes Ziel zaehlt auch
       lightNoteCat();                                  // Licht-AUTO: nur eigene Ziele

@@ -16,7 +16,7 @@
 // (die Push-Zeit allein wuerde alle Events eines Flushs auf denselben
 // Zeitstempel legen -- unbrauchbar fuer Geschwindigkeits-/Track-Analyse).
 struct GwEvent { uint8_t sender, sensor; int32_t wx, wy; uint8_t wv; int32_t x, y; uint8_t group;
-                 uint32_t ms; int32_t speed; };
+                 uint32_t ms; int32_t speed; bool visitor; };   // visitor = visitorObserved (Tab Besucher)
 static GwEvent gwEvents[GW_MAX_EVENTS]; static int gwEventN = 0;
 static uint16_t gwDropped = 0;   // vom Burst-Schutz verworfene Events seit dem letzten Flush
 static String  gwDebug[GW_MAX_DEBUG];   static int gwDebugN = 0;
@@ -96,13 +96,13 @@ static String jsonEsc(const String& s) {
   return o;
 }
 
-void gwAddEvent(uint8_t sender, const posPayload& p) {
+void gwAddEvent(uint8_t sender, const posPayload& p, bool visitor) {
   if (gwEventN >= GW_MAX_EVENTS) { if (gwDropped < 0xFFFF) gwDropped++; return; }
   GwEvent& e = gwEvents[gwEventN++];
   e.sender = sender; e.sensor = p.sensor;
   e.wx = p.worldX; e.wy = p.worldY; e.wv = p.worldValid;
   e.x = p.x; e.y = p.y; e.group = device[sender].group;
-  e.ms = millis(); e.speed = p.targetSpeed;
+  e.ms = millis(); e.speed = p.targetSpeed; e.visitor = visitor;
 }
 void gwAddDebug(const String& s) { if (gwDebugN < GW_MAX_DEBUG) gwDebug[gwDebugN++] = s; }
 void gwAddHb(uint8_t sender, uint8_t ip, uint16_t dz) {
@@ -306,7 +306,8 @@ void gwFlush() {
     body += "{\"sender\":" + String(e.sender) + ",\"sensor\":" + String(e.sensor)
           + ",\"wx\":" + String(e.wx) + ",\"wy\":" + String(e.wy) + ",\"wv\":" + String(e.wv)
           + ",\"x\":" + String(e.x) + ",\"y\":" + String(e.y) + ",\"group\":" + String(e.group)
-          + ",\"ms\":" + String(e.ms) + ",\"speed\":" + String(e.speed) + "}";
+          + ",\"ms\":" + String(e.ms) + ",\"speed\":" + String(e.speed)
+          + (e.visitor ? ",\"vis\":1}" : "}");
   }
   body += "],\"debug\":[";
   for (int i = 0; i < gwDebugN; i++) { if (i) body += ','; body += "\"" + jsonEsc(gwDebug[i]) + "\""; }

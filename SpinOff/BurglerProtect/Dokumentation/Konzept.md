@@ -1,6 +1,6 @@
 # Spin-off BurglerProtect – Besucherabhängiges Wohnzimmerlicht
 
-Stand: 2026-10-27 – Konzept, noch nichts umgesetzt.
+Stand: 2026-10-27 – Schritt 1 umgesetzt (Dome-C1 meldet `visitorObserved`, VPS-Tab «Besucher»), Steuergerät folgt in Schritt 2.
 Ursprüngliche Anforderung: [Anforderung_Original.md](Anforderung_Original.md)
 
 ## 1. Idee in einem Satz
@@ -79,7 +79,7 @@ Der Dome-C1 meldet bei einem Ziel im Sichtfeld etwa **10 Ereignisse pro Sekunde*
    - und dabei mindestens `MIN_SPAN_S` = **1,0 s** lang besteht (nicht nur ein Schub in einem Augenblick).
 
    Reaktionszeit typisch 1,2–2 s. Das ist kurz genug, weil das Licht spätestens dann brennt, wenn die Person an der Tür ist.
-5. **Sperre nach Auslösung:** Während das Licht brennt und noch `COOLDOWN_S` = 300 s danach löst nichts erneut aus. Zusätzlich muss das Polygon vor einer neuen Auslösung mindestens 30 s leer gewesen sein. So schalten dieselben Erkennungen nicht gleich ein zweites Mal.
+5. **Retriggerbar (Beschluss 2026-10-27):** Solange das Licht brennt, verlängert **jede** Meldung im Polygon die Einschaltdauer auf «Meldung + `ON_S`» (Start 600 s). Solange der Besucher da ist, bleibt das Licht also an, und eine Pause oder Sperre gibt es nicht. Erst wenn das Licht aus ist, braucht es für das nächste Einschalten wieder die volle Regel 4. Hat ein Bewohner das Licht von Hand ausgeschaltet, während der Besucher noch da ist, schaltet das Steuergerät es erst wieder ein, wenn das Polygon dazwischen mindestens 30 s leer war (sonst würde es gegen den Bewohner kämpfen).
 
 Die Werte sind Startwerte. Sobald `visitorObserved` läuft, werden sie an echten Durchgängen im Tab «Besucher» abgestimmt (Abschnitt 8, Schritt 2).
 
@@ -103,7 +103,7 @@ Das Radar unterscheidet nicht zwischen Person, Katze oder Fuchs. Eine Katze, die
 | Wohnzimmer brennt schon (`any_on`) | nichts tun |
 | Auslösung, Licht aus | einschalten mit fester Helligkeit `BRI` (z. B. 70 %) und Farbtemperatur `CT` (warm), merken «das Licht gehört mir» |
 | Während der Einschaltdauer (alle 5 s abfragen) | Wird das Licht ausgeschaltet oder ändern sich Helligkeit/Farbe → «gehört nicht mehr mir» |
-| Ende der Einschaltdauer (`ON_MIN` = 10 min) | nur ausschalten, wenn es mir noch gehört, also noch an ist **und** noch genau `BRI`/`CT` hat |
+| Ende der Einschaltdauer (`ON_S` = 600 s nach der letzten Meldung im Polygon) | nur ausschalten, wenn es mir noch gehört, also noch an ist **und** noch genau `BRI`/`CT` hat |
 | Lampe nicht erreichbar (Wandschalter aus, `reachable=false`) | nicht nachschalten, Fehler im HB melden |
 | Bridge nicht erreichbar | Taster blinkt, Fehler im HB |
 
@@ -131,7 +131,7 @@ Bei Tageslicht bringt eingeschaltetes Wohnzimmerlicht nichts. Vorschlag: zusätz
 | Liste | Zeit, Position, Spur-Nr., «hat ausgelöst» / «gesperrt» / «Licht war an» | Tab Liste |
 | Löschen | löscht **nur** die Besucherdaten (eigene Tabelle `visitor_events`), nichts sonst | Karte zurücksetzen |
 | Zustand | Scharf/Aus (aus HB) + Knopf, Hue erreichbar ja/nein, letzte Auslösung | Steuerungs-Tab |
-| Parameter | `MIN_EVENTS`, `WINDOW_S`, `MIN_SPAN_S`, `LINK_MM`, `COOLDOWN_S`, `ON_MIN`, `BRI`, `CT`, Dunkelheit ja/nein, Hue-Raum | Modell-Parameter |
+| Parameter | `MIN_EVENTS`, `WINDOW_S`, `MIN_SPAN_S`, `LINK_MM`, `LINK_S`, `ON_S`, `BRI`, `CT`, Dunkelheit ja/nein, Hue-Raum | Modell-Parameter |
 
 **Wie die Konfiguration aufs Gerät kommt:** Das Polygon läuft über den bestehenden Kartenweg als neuer Kartentyp `mapVisitor` (VPS → Manager → Gerät, `mapInfo`/`mapChunk`, Versionsabgleich). Das Gerät legt es im LittleFS ab, genau wie die Radare die No-Shot-Karte. Die Parameter gehen als Einstellungen über den Manager und werden ebenfalls im Flash gespeichert. Das Gerät holt nie Betriebsdaten vom VPS, nur Konfiguration, und es läuft mit der zuletzt gespeicherten weiter.
 
@@ -156,10 +156,22 @@ Datenschutz: Die Tabelle enthält Bewegungen von Personen auf dem eigenen Grunds
 | Dome-C1 meldet Veranda-Ziele (nur Quadrant) | `Radar_HKL/Radar6_3_0/` |
 | Tab «Besucher», Tabelle `visitor_events` | `VPS/dashboard/` |
 
-## 10. Offene Fragen an den User
+## 10. Entscheide und offene Punkte
 
-1. Darf ich für den Sichttest (Schritt 0) eine Testfirmware mit `visitorObserved` auf den Dome-C1 flashen?
-2. Wo kommt der Taster hin (Hauseingang, Wohnzimmer)? Gibt es dort Strom?
-3. Hue: Wie heisst der Raum, ist die Bridge-IP fest?
-4. Bedingung «nur bei Dunkelheit» einbauen (Vorschlag 5.3)?
-5. Soll der scharfe Zustand einen Stromausfall überdauern (Vorschlag: ja)?
+Entscheide 2026-10-27:
+- Quelle ist der **Dome-C1**. Er sendet zusätzlich `visitorObserved` bei X > 0, Y < 0, das Polygon prüft nur der Empfänger. Das ist die endgültige Firmware, keine Testversion: Ist etwas nicht in Ordnung, kommt die alte Variante zurück.
+- Auslöseregel wie in 4.2, aber **retriggerbar** (Punkt 5).
+- «Nur bei Dunkelheit» ja, aber erst im nächsten Schritt, nachdem die Veranda-Meldungen geprüft sind.
+- Der Taster hat Strom. Die Hue Bridge hat eine feste IP, Raum und Zugangsdaten folgen mit dem Steuergerät.
+
+Umgesetzt in Schritt 1:
+- `visitorObserved` = msgCode 18 in `xComDef6_3.h`.
+- `Radar6_3_0.ino`: Ziele ausserhalb der Filterkarte im Quadranten X > 0, Y < 0 werden als `visitorObserved` gemeldet. Flash 98 %, noch 19,7 kB frei.
+- Manager reicht `visitorObserved` mit `"vis":1` an den VPS weiter.
+- VPS: Tabelle `visitor_events`, getrennt von `events`, nach 30 Tagen automatisch gelöscht. Regel in `VPS/dashboard/visitor.py`, Tab «Besucher» (`static/visitor.js`): Karte, Spurenliste, Polygon-Editor, Parameter, Löschknopf, Auswertung «schaltet ein / hält an».
+
+Offen:
+1. Sichtprüfung: Werden Personen auf der Veranda erfasst, wie stabil, welche Störungen gibt es im Quadranten?
+2. Polygon zeichnen und Parameter an echten Durchgängen abstimmen.
+3. Schritt 2: Steuergerät (Taster, Hue, Dunkelheit, Scharf/Aus), Gerät Nr. 22.
+4. Soll der scharfe Zustand einen Stromausfall überdauern (Vorschlag: ja)?

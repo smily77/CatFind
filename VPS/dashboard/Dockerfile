@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY dashboard.py .
 COPY catmodel.py .
+COPY visitor.py .
 COPY static ./static
 
 ENV PORT=80

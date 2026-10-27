@@ -139,7 +139,7 @@ void loop() {
     }
     else if (mcMsg.header.msgCode == catObserved) {
       posPayload pos;
-      if (getPayload(mcMsg, pos)) gwAddEvent(mcMsg.header.sender, pos);   // Gateway
+      if (getPayload(mcMsg, pos)) gwAddEvent(mcMsg.header.sender, pos, false);   // Gateway
       if (settingOn(stgCatLed)) {                                        // catObserved-Empfang-Anzeige schaltbar
         allPixel(0x0000FF);
         targetAlarm = true;
@@ -149,7 +149,11 @@ void loop() {
     }
     else if (mcMsg.header.msgCode == visionObserved) {
       posPayload pos;                                                    // Kamera: nur zum VPS, kein Blinken
-      if (getPayload(mcMsg, pos)) gwAddEvent(mcMsg.header.sender, pos);
+      if (getPayload(mcMsg, pos)) gwAddEvent(mcMsg.header.sender, pos, false);
+    }
+    else if (mcMsg.header.msgCode == visitorObserved) {
+      posPayload pos;                                                    // Veranda: nur zum VPS (Tab Besucher),
+      if (getPayload(mcMsg, pos)) gwAddEvent(mcMsg.header.sender, pos, true);   // getrennt von den Events
     }
     else if (mcMsg.header.msgCode == catDetected) {
       // Cat Identifier hat eine Katze bestaetigt: ROT blinken (schaltbar) + VPS-Debug.

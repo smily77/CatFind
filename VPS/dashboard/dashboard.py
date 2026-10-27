@@ -74,6 +74,7 @@ from datetime import datetime
 from collections import deque, OrderedDict
 from flask import Flask, request, jsonify, send_from_directory, Response
 import catmodel
+import visitor
 
 MAX_EVENTS   = int(os.environ.get("MAX_EVENTS", "20000"))
 HB_WINDOW_S  = int(os.environ.get("HB_WINDOW_S", "180"))    # "aktiv" = HB in den letzten 3 min
@@ -489,6 +490,12 @@ def init_db():
     _db.execute("""CREATE TABLE IF NOT EXISTS env(
         t REAL, sender INT, temp REAL, press REAL)""")
     _db.execute("CREATE INDEX IF NOT EXISTS idx_env_t ON env(sender,t)")
+    # Spin-off BurglerProtect: visitorObserved (Veranda, Welt X>0/Y<0, ausserhalb der
+    # Filterkarte) - getrennt von events, damit Analyse/Tracks/Karten unberuehrt
+    # bleiben; unabhaengig von der Aufnahme, nach VISITOR_KEEP_S automatisch weg.
+    _db.execute("""CREATE TABLE IF NOT EXISTS visitor_events(
+        t REAL, sender INT, sensor INT, wx INT, wy INT, x INT, y INT, speed INT)""")
+    _db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_t ON visitor_events(t)")
     _db.commit()
     for sid, t, temp, press in _db.execute(
             "SELECT sender,MAX(t),temp,press FROM env GROUP BY sender").fetchall():
@@ -701,9 +708,16 @@ def ingest():
                     old["head"] != pose["head"] or old["mir"] != pose["mir"]):
                 pose_rows.append((sid, pose["x"], pose["y"], pose["head"],
                                   pose["mir"], now))
+        vis_rows = []
         for e in data.get("events", []):
             sid = int(e.get("sender", -1))
             _devices.setdefault(sid, {"t": now, "ip": 0})["t"] = now
+            if e.get("vis"):                 # visitorObserved -> nur Tab Besucher
+                vis_rows.append((ev_time(e), sid, int(e.get("sensor", 0)),
+                                 int(e.get("wx", 0)), int(e.get("wy", 0)),
+                                 int(e.get("x", 0)), int(e.get("y", 0)),
+                                 int(e.get("speed", 0))))
+                continue
             ev = {
                 "t": ev_time(e),
                 "sender": sid, "sensor": int(e.get("sensor", 0)),
@@ -721,6 +735,8 @@ def ingest():
             del _events[0:cut]
             global _events_base
             _events_base += cut
+    if vis_rows:
+        _visitor_store(vis_rows, now)
     dropped = int(data.get("dropped", 0) or 0)
     # HB-Zaehlung je Minute+Sender (Sensor-Spuren der Analyse-Zeitleiste, /hbstats).
     # Beim Minutenwechsel 0-Zeilen fuer ALLE Spur-Sensoren anlegen: so bleibt "Zeile
@@ -870,6 +886,90 @@ def reset():
         _events_base = 0
         _reset_seq += 1
     return jsonify(ok=True, reset_seq=_reset_seq)
+
+
+# --- Spin-off BurglerProtect: Tab "Besucher" -----------------------------------------
+# visitorObserved-Meldungen + Ausloesepolygon + Regel-Parameter. Die Regel selbst
+# steht in visitor.py (spaeter dieselbe im Steuergeraet); hier nur Speichern,
+# Ausliefern und die Auswertung fuer die Anzeige ("haette ausgeloest").
+VISITOR_KEEP_S = 30 * 86400      # Datenschutz: Personen auf dem eigenen Grundstueck
+VISITOR_MAX_ROWS = 60000         # je Abfrage (Dome-C1 meldet ~10/s pro Ziel)
+_visitor_purge_t = [0.0]
+
+
+def _visitor_store(rows, now):
+    with _db_lock:
+        _db.executemany("INSERT INTO visitor_events(t,sender,sensor,wx,wy,x,y,speed) "
+                        "VALUES(?,?,?,?,?,?,?,?)", rows)
+        if now - _visitor_purge_t[0] > 3600:
+            _visitor_purge_t[0] = now
+            _db.execute("DELETE FROM visitor_events WHERE t<?", (now - VISITOR_KEEP_S,))
+        _db.commit()
+
+
+def _visitor_cfg():
+    with _db_lock:
+        raw = _meta_get("visitor_cfg")
+    try:
+        cfg = json.loads(raw) if raw else {}
+    except ValueError:
+        cfg = {}
+    return {"poly": visitor.clean_poly(cfg.get("poly")),
+            "params": visitor.clean_params(cfg.get("params")),
+            "updated": cfg.get("updated")}
+
+
+@app.get("/visitor_cfg")
+def visitor_cfg_get():
+    return jsonify(dict(_visitor_cfg(), defaults=visitor.DEFAULTS, limits=visitor.LIMITS))
+
+
+@app.post("/visitor_cfg")
+def visitor_cfg_set():
+    data = request.get_json(force=True, silent=True) or {}
+    cfg = _visitor_cfg()
+    if "poly" in data:
+        cfg["poly"] = visitor.clean_poly(data.get("poly"))
+    if "params" in data:
+        cfg["params"] = visitor.clean_params(dict(cfg["params"], **(data.get("params") or {})))
+    cfg["updated"] = time.time()
+    with _db_lock:
+        _meta_set("visitor_cfg", json.dumps(cfg))
+        _db.commit()
+    return jsonify(dict(cfg, ok=True))
+
+
+@app.get("/visitors")
+def visitors_get():
+    now = time.time()
+    t1 = request.args.get("t1", type=float) or now
+    t0 = request.args.get("t0", type=float) or (t1 - 86400)
+    with _reading() as db:
+        rows = db.execute("SELECT t,sender,sensor,wx,wy,speed FROM visitor_events "
+                          "WHERE t>=? AND t<=? ORDER BY t LIMIT ?",
+                          (t0, t1, VISITOR_MAX_ROWS + 1)).fetchall()
+        total = db.execute("SELECT COUNT(*), MIN(t), MAX(t) FROM visitor_events").fetchone()
+    cut = len(rows) > VISITOR_MAX_ROWS
+    rows = rows[:VISITOR_MAX_ROWS]
+    cfg = _visitor_cfg()
+    ev = visitor.evaluate([(r[0], r[3], r[4]) for r in rows], cfg["poly"], cfg["params"])
+    out = [[round(r[0], 2), r[1], r[2], r[3], r[4], r[5], tr, inside, role]
+           for r, (tr, inside, role) in zip(rows, ev["events"])]
+    with _lock:
+        pose = _poses.get(21)
+    return jsonify(t0=t0, t1=t1, cut=cut, events=out, tracks=ev["tracks"],
+                   lights=ev["lights"], cfg=cfg,
+                   total={"n": total[0], "t0": total[1], "t1": total[2]},
+                   pose=pose, keep_days=VISITOR_KEEP_S // 86400)
+
+
+@app.post("/visitor_reset")
+def visitor_reset():
+    # NUR die Besucher-Meldungen - Polygon/Parameter und alle anderen Daten bleiben
+    with _db_lock:
+        n = _db.execute("DELETE FROM visitor_events").rowcount
+        _db.commit()
+    return jsonify(ok=True, deleted=n)
 
 
 @app.get("/map")
