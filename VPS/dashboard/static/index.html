@@ -94,6 +94,19 @@
   .covItem.sel { border-color:#ffd23b; background:#2a2612; }
   .covItem.off { opacity:.5; cursor:default; }
   #covMsg { color:#9ab; line-height:1.35; margin:8px 0; min-height:1em; }
+  #vis { height:100%; display:flex; min-height:0; }
+  #visLeft { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #visMapWrap { flex:1 1 62%; position:relative; min-height:200px; }
+  #visMap { position:absolute; inset:0; width:100%; height:100%; cursor:grab; touch-action:none; }
+  #visMap.editing { cursor:crosshair; }
+  #visList { flex:1 1 38%; overflow:auto; border-top:1px solid #333; }
+  #visList tr[data-id] { cursor:pointer; }
+  #visList tr.sel td { background:#2a2612; }
+  #visList i { width:9px; height:9px; border-radius:2px; display:inline-block; }
+  #visSide { width:330px; min-width:330px; border-left:1px solid #333; overflow:auto; padding:10px; font-size:12px; background:#121218; }
+  #visSide h3 { margin:10px 0 6px; font-size:13px; }
+  #visSide select, #visSide input { width:100%; background:#0d0d12; color:#ddd; border:1px solid #333; border-radius:5px; padding:4px; margin:2px 0 6px; }
+  #visMsg { color:#9ab; line-height:1.35; margin:8px 0; min-height:1em; }
   /* ---- Analyse-Tab ---- */
   #ana { height:100%; display:flex; flex-direction:column; }
   #anaBar { display:flex; align-items:center; gap:6px; padding:6px 8px; flex-wrap:wrap; background:#16161b; border-bottom:1px solid #2a2a30; }
@@ -167,6 +180,7 @@
   <button class="tab" data-v="manual">Manuelle Pose</button>
   <button class="tab" data-v="cov">Coverage</button>
   <button class="tab" data-v="pics">Bilder</button>
+  <button class="tab" data-v="vis">Besucher</button>
   <button class="tab" data-v="ctrl">Steuerung</button>
   <button id="reset">Karten zurücksetzen</button>
 </header>
@@ -227,6 +241,37 @@
         <button class="act" style="background:#7a2230" id="manClear">Bestehende Pose löschen</button>
         <button class="tab" id="manReload">Daten neu laden</button>
         <div class="manHelp" id="manInfo"></div>
+      </div>
+    </div>
+    <div id="vis" style="display:none">
+      <div id="visLeft">
+        <div id="visMapWrap"><canvas id="visMap" title="Ziehen = verschieben · Rad = zoomen · Doppelklick = einpassen"></canvas></div>
+        <div id="visList"></div>
+      </div>
+      <div id="visSide">
+        <h3 style="margin-top:0">Besucher (Veranda)</h3>
+        <div class="manHelp">Spin-off BurglerProtect: Der Dome-C1 meldet Ziele auf der Veranda (X&gt;0, Y&lt;0, ausserhalb seiner Rasen-/No-Shot-Karte) als <b>visitorObserved</b>. Hier siehst du sie und legst fest, wo eine Erkennung später das Wohnzimmerlicht einschaltet. „Schaltet ein / hält an" ist die Auswertung mit den Werten unten (das Steuergerät kommt in Schritt 2).</div>
+        <label>Zeitraum</label>
+        <select id="visHours"><option value="1">letzte Stunde</option><option value="6">letzte 6 h</option><option value="24" selected>letzte 24 h</option><option value="72">letzte 3 Tage</option><option value="168">letzte 7 Tage</option><option value="720">letzte 30 Tage</option></select>
+        <button class="tab" id="visReload">neu laden</button>
+        <div class="hint" id="visInfo" style="padding:6px 0"></div>
+        <h3>Auslösepolygon</h3>
+        <button class="act" id="visEditBtn">✏️ Polygon zeichnen / ändern</button>
+        <span id="visEditTools" style="display:none">
+          <button class="act" id="visEditSave" style="background:#1f8a3b">✅ Polygon speichern</button>
+          <button class="act" id="visEditDiscard" style="background:#444">Verwerfen (Esc)</button>
+        </span>
+        <button class="act" id="visPolyDel" style="background:#444">Polygon löschen</button>
+        <h3>Regel (retriggerbar)</h3>
+        <div class="manHelp">Licht EIN, wenn eine Spur genügend Meldungen im Polygon hat. Solange es brennt, verlängert jede weitere Meldung im Polygon die Einschaltdauer.</div>
+        <div id="visParams"></div>
+        <button class="act" id="visParamSave">Parameter übernehmen</button>
+        <button class="tab" id="visParamDef">Standardwerte</button>
+        <h3>Scharf / Aus</h3>
+        <div class="hint">kommt mit dem Steuergerät (Schritt 2)</div>
+        <h3>Daten</h3>
+        <button class="act" id="visReset" style="background:#7a2230">Besucher-Meldungen löschen</button>
+        <div id="visMsg"></div>
       </div>
     </div>
     <div id="cov" style="display:none">
@@ -360,13 +405,14 @@ const CMD_REBOOT=30;   // Fernwartung: Geraet neu starten (jedes Geraet, ueber M
 function setView(v,b){
   view=v;
   document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active", x===b));
-  const isList=v==="list", isCtrl=v==="ctrl", isAna=v==="ana", isPics=v==="pics", isManual=v==="manual", isCov=v==="cov",
-        isMap=!isList&&!isCtrl&&!isAna&&!isPics&&!isManual&&!isCov;
+  const isList=v==="list", isCtrl=v==="ctrl", isAna=v==="ana", isPics=v==="pics", isManual=v==="manual", isCov=v==="cov", isVis=v==="vis",
+        isMap=!isList&&!isCtrl&&!isAna&&!isPics&&!isManual&&!isCov&&!isVis;
   document.getElementById("list").style.display   = isList?"block":"none";
   document.getElementById("ctrl").style.display   = isCtrl?"block":"none";
   document.getElementById("ana").style.display    = isAna?"flex":"none";
   document.getElementById("manual").style.display = isManual?"flex":"none";
   document.getElementById("cov").style.display    = isCov?"flex":"none";
+  document.getElementById("vis").style.display    = isVis?"flex":"none";
   document.getElementById("pics").style.display   = isPics?"block":"none";
   document.getElementById("cv").style.display     = isMap?"block":"none";
   document.getElementById("legend").style.display = isMap?"block":"none";
@@ -376,6 +422,7 @@ function setView(v,b){
   if(isAna) anaShow();
   if(isManual) manShow();
   if(isCov) covShow();
+  if(isVis) visShow();
   if(isPics) loadPics();
 }
 
@@ -778,5 +825,6 @@ async function tick(){
 </script>
 <script src="static/analysis.js"></script>
 <script src="static/coverage.js"></script>
+<script src="static/visitor.js"></script>
 </body>
 </html>

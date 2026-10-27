@@ -155,6 +155,11 @@ stationDefinitions device[deviceCount] = {
                              // sendet KIVision sie, solange sie sicher eine Person sieht. Ablaufende
                              // Sperre: der Aktor feuert bis holdMs nach der letzten Meldung nicht.
                              // readyToFire (Button) bleibt davon unberuehrt.
+#define visitorObserved 18   // Spin-off BurglerProtect: Ziel auf der Veranda (Welt X>0, Y<0) AUSSERHALB
+                             // der Filterkarte, posPayload wie catObserved. Heute sendet das Radar
+                             // (Dome-C1). Bewusst KEIN catObserved (PowerActors feuern ohne Absender-
+                             // Filter). Ausgewertet vom Manager (-> VPS-Tab Besucher), spaeter vom
+                             // Steuergeraet Besucherlicht (Ausloesepolygon dort, nicht im Sensor).
 
 // Karten-Typen (fuer mapRequest/mapInfo/mapChunk)
 #define mapNoShot   1   // Schusszonen-/No-Shot-Karte (innerhalb = Feuern erlaubt)

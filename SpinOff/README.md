@@ -6,4 +6,4 @@ Jedes Spin-off hat einen eigenen Ordner mit `Dokumentation/` und, sobald vorhand
 
 | Spin-off | Zweck | Stand |
 |---|---|---|
-| [BurglerProtect](BurglerProtect/Dokumentation/Konzept.md) | Besucher auf der Veranda schaltet das Wohnzimmerlicht über Philips Hue ein (Anwesenheitssimulation gegen Dämmerungseinbrüche) | Konzept 2026-10-27 |
+| [BurglerProtect](BurglerProtect/Dokumentation/Konzept.md) | Besucher auf der Veranda schaltet das Wohnzimmerlicht über Philips Hue ein (Anwesenheitssimulation gegen Dämmerungseinbrüche) | Schritt 1 (Meldungen + VPS-Tab) 2026-10-27 |
