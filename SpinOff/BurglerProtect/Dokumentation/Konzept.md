@@ -174,4 +174,4 @@ Offen:
 1. Sichtprüfung: Werden Personen auf der Veranda erfasst, wie stabil, welche Störungen gibt es im Quadranten?
 2. Polygon zeichnen und Parameter an echten Durchgängen abstimmen.
 3. Schritt 2: Steuergerät (Taster, Hue, Dunkelheit, Scharf/Aus), Gerät Nr. 22.
-4. Soll der scharfe Zustand einen Stromausfall überdauern (Vorschlag: ja)?
+4. ~~Stromausfall~~ entschieden 2026-10-28: Der scharfe Zustand überdauert einen Stromausfall (im Flash gespeichert).
