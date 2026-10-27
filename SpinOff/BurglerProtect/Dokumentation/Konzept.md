@@ -72,7 +72,7 @@ Der Dome-C1 meldet bei einem Ziel im Sichtfeld etwa **10 Ereignisse pro Sekunde*
 
 ### 4.2 Regel (Vorschlag, alles im VPS einstellbar)
 
-1. **Vorfilter im Radar:** nur Ziele mit X > 0, Y < 0, ausserhalb der Filterkarte.
+1. **Vorfilter im Sensor (Radar und/oder Lidar):** nur Ziele mit X > 0, Y < 0, ausserhalb der Filterkarte.
 2. **Polygon im Steuergerät:** nur Ereignisse innerhalb des Auslösepolygons zählen (Punkt-im-Polygon, wie bei der No-Shot-Karte).
 3. **Spur:** aufeinanderfolgende Ereignisse gehören zum selben Objekt, wenn sie höchstens `LINK_MM` = 1000 mm und `LINK_S` = 1,0 s auseinanderliegen. Einzelne Ausreisser beginnen eine eigene, kurzlebige Spur und verfälschen die echte nicht.
 4. **Auslösung**, sobald eine Spur
