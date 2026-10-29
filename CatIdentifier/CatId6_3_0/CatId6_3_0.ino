@@ -213,3 +213,10 @@ void announceCat(const catDetectedPayload& cd) {
     detLedOffMs = millis() + DET_FLASH_MS;
   }
 }
+
+// Nachfuehrung eines bestaetigten Tracks (catTracked, ~5/s): die Aktoren folgen damit
+// genau diesem Track. Einfach gesendet - die naechste kommt 0,2 s spaeter.
+void announceTrack(const catDetectedPayload& cd) {
+  if (!deviceActive() || ctInQuietWindow()) return;   // gleiche Sperren wie catDetected
+  broadcastMsg(catTracked, cd);
+}

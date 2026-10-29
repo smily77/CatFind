@@ -11,6 +11,7 @@
 // key=value-Zeilen vom VPS (/aparams.csv) und werden im LittleFS gecacht.
 
 void announceCat(const catDetectedPayload& cd);   // im Hauptsketch
+void announceTrack(const catDetectedPayload& cd); // im Hauptsketch (catTracked)
 
 // Modellzeit in Sekunden, 64-bit-Basis (esp_timer): millis()/1000.0 wuerde nach
 // 49,7 Tagen wrappen - dann waeren alle Track-/Sturm-Zeiten kaputt.
@@ -553,7 +554,22 @@ void ctFeed(uint8_t sender, int32_t wx, int32_t wy) {
   if (tr.rn < CT_RING) tr.rn++;
 
   if (!tr.moveFound && ctCheckMove(tr)) tr.moveFound = true;
-  ctEvaluate(tr, ctCheckStationary(tr));
+  bool wasReported = tr.reported;
+  bool stationary = ctCheckStationary(tr);
+  ctEvaluate(tr, stationary);
+  // Bestaetigter Track: Position fuer die Aktoren nachfuehren (catTracked), hoechstens
+  // alle CT_TRACKED_S. Der Punkt der Bestaetigung selbst ging schon als catDetected raus.
+  if (wasReported && t - tr.tTracked >= CT_TRACKED_S) {
+    tr.tTracked = t;
+    catDetectedPayload cd;
+    cd.worldX = tr.xLast; cd.worldY = tr.yLast;
+    cd.score = (uint8_t)CTP.confirm_score;
+    cd.flags = (stationary ? catDetFlagStationary : 0) | (tr.fusion ? catDetFlagFusion : 0);
+    cd.trackMs = (uint32_t)((tr.tLast - tr.t0) * 1000.0);
+    float ndx = tr.xLast - tr.x0, ndy = tr.yLast - tr.y0;
+    cd.netMm = (int32_t)sqrtf(ndx * ndx + ndy * ndy);
+    announceTrack(cd);
+  }
 }
 
 // periodisch: abgelaufene Tracks freigeben (Speicherhygiene; die Bestaetigung

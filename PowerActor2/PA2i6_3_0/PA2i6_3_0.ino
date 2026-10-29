@@ -2,13 +2,15 @@
 //  PA2i6_3_0 -- PowerActor2 (Geraet 4, .181) im kartengestuetzten Gesamtsystem
 // ---------------------------------------------------------------------
 //  Hardware wie Development/AfterSerialRebuild/Step5_RelaysIR.
-//  - Ausloeser: catDetected des Cat Identifiers (bestaetigte Katze). Danach
-//    folgt der Aktor ENGAGE_MS lang den catObserved in TRACK_MM um das Ziel.
+//  - Ausloeser: catDetected des Cat Identifiers (bestaetigte Katze). Danach folgt
+//    der Aktor genau diesem Track ueber die catTracked des Identifiers und wartet,
+//    bis die Katze in Reichweite / in einem erlaubten Bereich ist.
 //  - Zielen in Welt-Koordinaten ueber die eigene Pose (myPose, Drehachse,
 //    heading = Richtung von Servo 2048): Welt -> PA-lokal -> Servo + Distanz.
 //  - Schuss nur, wenn scharf (readyToFire), keine Feuersperre, Pose gueltig,
 //    Ziel in der No-Shot-Karte, 500 mm .. 6,5 m entfernt und die Veranda-Regel
-//    erfuellt ist (aimProc.ino). Laser und Ventil gleich; stgWater AUS = nur Laser.
+//    erfuellt ist (zielProc.ino). Laser und Ventil gleich (Trockentest = Hahn zu).
+//  - Test stgLaserFollow: der Laser allein folgt schon jedem catObserved.
 //  - LP40B misst waehrend des Schusses mit (nur Protokoll, keine Bedingung).
 //  - Relais LD06/Compact Dome ueber Einstellungen (NVS), Spot bleibt aus.
 //  - Pose: manuell per VPS (handleCommonMsg), spaeter die Traegerpose.
@@ -65,7 +67,7 @@ void setup() {
   sendPoseReport();
   sendHBmsg();
   HBtimer = millis();
-  sendUdpTextln(statusText("bereit"));
+  sendUdpTextln(statusText("bereit") + ", Neustart-Grund " + resetReasonText());
 }
 
 void loop() {
@@ -92,8 +94,9 @@ void handleCommand(const xMsg& m) {
   }
   cmdPayload c;
   if (m.header.msgCode != commandMsg || !getPayload(m, c)) return;
-  if (c.cmd == cmdArmFire) {         // Button/Display: umschalten (wie PA1_1)
-    hbState.readyToFire = !hbState.readyToFire;
+  if (c.cmd == cmdArmFire) {         // info 1 = scharf, 2 = sichern (absolut, VPS);
+                                     // 0 = umschalten (Button/Display wie PA1_1)
+    hbState.readyToFire = c.info == 1 ? true : c.info == 2 ? false : !hbState.readyToFire;
     if (!hbState.readyToFire) engageStop("entsichert");
     sendUdpTextln(hbState.readyToFire ? "PowerActor2: SCHARF" : "PowerActor2: gesichert");
     sendHBmsg(); sendHBmsg();
@@ -119,7 +122,12 @@ void handleBusMsg(const xMsg& m) {
       if (getPayload(m, cd)) onCatDetected(cd);
       break;
     }
-    case catObserved: {
+    case catTracked: {               // Nachfuehrung des bestaetigten Tracks (Cat Identifier)
+      catDetectedPayload cd;
+      if (getPayload(m, cd)) onCatTracked(cd);
+      break;
+    }
+    case catObserved: {              // nur fuer den Laser-Folgemodus (stgLaserFollow)
       posPayload p;
       if (getPayload(m, p) && p.worldValid) onCatObserved(p.worldX, p.worldY);
       break;
