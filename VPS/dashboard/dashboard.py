@@ -299,6 +299,7 @@ FALLBACK_DEVICES = {
     16:("PowerActor1_1","PowerActor",2,0,0,0), 17:("LidarC1","Lidar",0,-180,180,12000),
     18:("Cat_Identifier","Detector",0,0,0,0), 19:("Cat_Cam","Kamera",0,-31,31,8000),
     20:("KIVision","VisionLocator",0,-50,50,15000), 21:("Dome-C1","HLK",0,-60,60,7000),
+    22:("Besucherlicht","LightControl",0,0,0,0),
 }
 
 # ------------------------------------------------- Gerätetabelle aus xComDef6_3.h
@@ -319,7 +320,7 @@ _dev_ts = 0.0
 
 
 def parse_xcomdef(text):
-    m = re.search(r"stationDefinitions\s+device\s*\[\s*\d*\s*\]\s*=\s*\{(.*?)\}\s*;",
+    m = re.search(r"stationDefinitions\s+device\s*\[\s*\w*\s*\]\s*=\s*\{(.*?)\}\s*;",
                   text, re.S)
     if not m:
         return {}
