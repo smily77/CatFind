@@ -101,7 +101,7 @@ stationDefinitions device[deviceCount] = {
   {HLK,0,0,testGroup,  "Dome",         -60, 60, 7000},                  //Dome
   {HLK,0,0,groupPA1_1, "Mini_Dome",    -60, 60, 7000},                  //MiniDome  -> Gruppe PA1_1
   {HLK,0,0,groupPA2,   "Compact_Dome", -60, 60, 7000},                  //CompactDome - auf PA M5PicoDome -> Gruppe PA2
-  {PowerActor,181,0x02,groupPA2, "PowerActor1", 0,0,0},                 //PA1 (PA2i) -> Gruppe PA2
+  {PowerActor,181,0x02,groupPA2, "PowerActor2", 0,0,0},                 //PowerActor2 (PA2i) -> Gruppe PA2
   {Screen,0,0,groupNone, "Disp_7", 0,0,0},                              //Display 7 Inch
   {Controller,0,0,groupNone, "CYD", 0,0,0},                             //CYD Controller
   {Lidar,0,0,groupPA2, "LD6",         -180, 180, 12000},                //LD06 -> Gruppe PA2
@@ -334,7 +334,8 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
 #define stgCatLed       1   // catObserved-Anzeige an/aus (Manager: catObserved EMPFANGEN) [persistiert]
 #define stgAutoCopyPose 2   // Auto: Welt-Pose eines Gruppenmitglieds uebernehmen        [persistiert]
 #define stgAutoCalib    3   // Radar: automatische Co-Observation-Kalibrierung          [persistiert]
-#define stgLidarMotor   4   // Lidar: Motor an/aus (Default an, NICHT persistiert)
+#define stgLidarMotor   4   // Lidar: Motor an/aus (Default an, NICHT persistiert).
+                            // PowerActor2: Speisung des LD06 (Relais GPIO26)          [persistiert]
 #define stgCatDetLed    5   // catDetected-Anzeige an/aus (Manager: rotes Blinken beim EMPFANG) [persistiert]
 #define stgCamAi        6   // CatCam: KI-Erkennung (Katze -> catObserved+Foto) an/aus       [persistiert]
 #define stgRadarFullRasen 7 // HLK-Radar: meldet volle RasenKarte statt NoShot-gefiltert
@@ -365,7 +366,10 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
                             // schaltet um, VPS/Display setzen per cmdSetSetting ABSOLUT (kein Toggle,
                             // verlorene/doppelte UDP-Pakete aendern nichts). Ueberdauert Stromausfall.
                             //                                                            [persistiert]
-#define STG_COUNT      14
+#define stgRadarPower  14   // PowerActor2: Speisung des Compact Dome (Relais GPIO23)   [persistiert]
+#define stgWater       15   // PowerActor2: Ventil beim Schuss oeffnen. AUS = Trockentest, nur der
+                            // Laser zeigt, wohin er schiessen wuerde.                  [persistiert]
+#define STG_COUNT      16   // settingsPayload hat 16 Bit - damit VOLL (Erweiterung = uint32)
 
 // Ausloesbare Aktionen (Bit-Position in settingsPayload.actions).
 #define actCopyPose     0   // Welt-Pose jetzt aus der Gruppe kopieren  -> cmdCopyPose

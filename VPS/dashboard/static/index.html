@@ -408,7 +408,7 @@ function fmtTime(t){ return new Date(t*1000).toLocaleTimeString(); }
 function minMaxArr(a){ let lo=Infinity, hi=-Infinity; for(const v of a){ if(v<lo)lo=v; if(v>hi)hi=v; } return [lo,hi]; }
 
 // Einstellungen/Aktionen (Bit-Index = stg*/act* aus xComDef6_3.h)
-const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor","CatDetected-Anzeige","Kamera-KI","Radar: volle RasenKarte melden","Aktiv (Sensor an)","IR-Scheinwerfer","IR nur bei Katze (Auto)","Front-Licht","Licht nur bei Katze (Auto)","Scharf (Besucherlicht)"];
+const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor / LD06-Speisung (PA2)","CatDetected-Anzeige","Kamera-KI","Radar: volle RasenKarte melden","Aktiv (Sensor an)","IR-Scheinwerfer","IR nur bei Katze (Auto)","Front-Licht","Licht nur bei Katze (Auto)","Scharf (Besucherlicht)","Radar-Speisung (PA2)","Wasser (Ventil, PA2)"];
 // Je zwei Bits bilden EINEN Schalter AUS/EIN/AUTO (AUS: Light 0 | EIN: Light 1, Auto 0 | AUTO: beide 1)
 const TRI=[
   {l:9,  a:10, name:"IR-Scheinwerfer", tip:"AUS = immer aus · EIN = nachts an (LDR) · AUTO = nachts an, nur wenn ein Sensor catObserved meldet (60 s)"},
