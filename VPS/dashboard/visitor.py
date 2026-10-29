@@ -42,15 +42,13 @@ DEFAULTS = {
     "link_mm": 1000,      # Spur: groesster Sprung zwischen zwei Meldungen
     "link_s": 1.0,        # Spur: groesste Pause zwischen zwei Meldungen
     "on_s": 600,          # Licht brennt so lange nach der letzten Meldung im Polygon
-    "bri_pct": 70,        # Helligkeit beim Einschalten (%)
-    "ct_k": 2700,         # Farbtemperatur beim Einschalten (Kelvin, warm)
     "start_off_min": 0,   # aktive Zeit beginnt so viele Minuten nach Sonnenuntergang
     "end_min": 1440,      # ... und endet um (Minuten ab Mitternacht, 1440 = 24:00)
 }
 LIMITS = {
     "min_events": (1, 64), "window_s": (0.5, 60.0), "min_span_s": (0.0, 30.0),
     "link_mm": (100, 5000), "link_s": (0.2, 10.0), "on_s": (10, 7200),
-    "bri_pct": (1, 100), "ct_k": (2000, 6500), "start_off_min": (-120, 240),
+    "start_off_min": (-120, 240),
     "end_min": (720, 1800),
 }
 

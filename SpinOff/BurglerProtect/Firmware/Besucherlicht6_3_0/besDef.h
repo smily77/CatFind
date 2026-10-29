@@ -9,7 +9,6 @@ struct VisCfg {
   int   link_mm = 1000;
   float link_s = 1.0f;
   int   on_s = 600;
-  int   bri_pct = 70, ct_k = 2700;
   int   start_off_min = 0, end_min = 1440;
   String light[MAX_GROUPS]; int nLight = 0;
   String home[MAX_GROUPS];  int nHome = 0;

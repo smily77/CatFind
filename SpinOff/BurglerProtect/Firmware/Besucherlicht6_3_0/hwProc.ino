@@ -22,6 +22,19 @@ void displayInit() {
   displayBoot("Start ...");
 }
 
+// WLAN-Suche: blau blinkend (~1 Hz), damit man sieht, dass das Geraet noch nicht bereit ist
+void displayWifiBlink() {
+  bool on = (millis() / 500) % 2;
+  M5.Display.setBrightness(80);
+  M5.Display.fillScreen(on ? TFT_BLUE : TFT_BLACK);
+  if (on) {
+    M5.Display.setTextColor(TFT_WHITE);
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setFont(&fonts::Font2);
+    M5.Display.drawString("WLAN ...", M5.Display.width() / 2, M5.Display.height() / 2);
+  }
+}
+
 void displayBoot(const char* what) {
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextColor(TFT_WHITE);
@@ -70,7 +83,7 @@ void displayTick() {
   line(String("Cfg ") + cfgSource + (WiFi.status() == WL_CONNECTED ? "" : " !WLAN"),
        cfgSource == "VPS" ? 0xAD55 : TFT_ORANGE);
   canvas.pushSprite(0, 0);
-  M5.Display.setBrightness(armed ? 80 : 25);
+  M5.Display.setBrightness(armed ? 255 : 25);   // scharf: volle Helligkeit, faellt auf
 }
 
 void writelnComment(String comment) {

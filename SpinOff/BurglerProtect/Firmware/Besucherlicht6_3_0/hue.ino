@@ -82,13 +82,11 @@ static bool huePut(const String& id, const String& body) {
   return code == 200 && resp.indexOf("success") >= 0;
 }
 
-int hueBri() { return constrain((cfg.bri_pct * 254 + 50) / 100, 1, 254); }
-int hueCt()  { return constrain((int)lround(1000000.0 / cfg.ct_k), 153, 500); }
-
-// Alle Licht-Gruppen ein (on=true) oder aus. false = mindestens eine schlug fehl.
+// Alle Licht-Gruppen ein (on=true) oder aus. Nur ein/aus: die Lampen kommen mit
+// ihrer zuletzt eingestellten Helligkeit/Farbe (User 2026-10-29: ein Alarm darf
+// nichts verstellen). false = mindestens eine Gruppe schlug fehl.
 bool hueSwitchLight(bool on) {
-  String body = on ? "{\"on\":true,\"bri\":" + String(hueBri()) + ",\"ct\":" + String(hueCt()) + "}"
-                   : String("{\"on\":false}");
+  String body = on ? String("{\"on\":true}") : String("{\"on\":false}");
   bool ok = cfg.nLight > 0;
   for (int i = 0; i < cfg.nLight; i++) {
     int g = hueFind(cfg.light[i]);
