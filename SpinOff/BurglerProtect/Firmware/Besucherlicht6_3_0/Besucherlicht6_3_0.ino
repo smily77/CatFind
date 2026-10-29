@@ -40,6 +40,8 @@ unsigned long offAtMs = 0;            // Licht aus (millis), solange lightMine
 time_t lastVisitT = 0;                // letzte Meldung im Polygon (Anzeige)
 time_t lastTrigT = 0;                 // letzte Einschaltung (Anzeige)
 String lastNote = "";                 // letzte Entscheidung (Anzeige + VPS-Debug)
+bool  homeLit = false;                // eine Zuhause-Gruppe brennt (letzte Hue-Abfrage)
+String homeLitName = "";
 
 static void besWifi() {
   WiFi.mode(WIFI_STA);
@@ -114,7 +116,10 @@ void loop() {
   }
   lightTick();                        // Hue-Abfrage, Ausschalten (visitorRule.ino)
   static unsigned long lastHueCheck = 0;
-  if (!lightMine && millis() - lastHueCheck >= HUE_IDLE_CHECK_MS) {   // Anzeige "Hue ok" aktuell halten
+  // Anzeige aktuell halten: scharf alle 10 s (gruen/rot je nach Zuhause-Lichtern),
+  // sonst alle 5 min. Solange das Licht mir gehoert, fragt lightTick() ohnehin.
+  unsigned long hueEvery = settingOn(stgArmed) ? HUE_ARMED_CHECK_MS : HUE_IDLE_CHECK_MS;
+  if (!lightMine && millis() - lastHueCheck >= hueEvery) {
     lastHueCheck = millis();
     hueCheck();
   }
@@ -130,6 +135,7 @@ void setArmed(bool on, const char* via) {
   note(String(on ? "SCHARF" : "aus") + " (" + via + ")");
   // Ausgeschaltet = jemand ist da: ein brennendes Licht bleibt an und gehoert ihm.
   if (!on && lightMine) releaseLight("Anlage ausgeschaltet");
+  if (on) hueRead();                  // Anzeige gruen/rot sofort, nicht erst in 10 s
   displayForce();
 }
 
