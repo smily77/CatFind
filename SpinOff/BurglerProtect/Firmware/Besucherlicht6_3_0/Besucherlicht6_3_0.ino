@@ -67,6 +67,10 @@ void setup() {
   auto mc = M5.config();
   M5.begin(mc);
   Serial.begin(115200);
+  // USB-CDC des S3: steckt das Geraet am PC und liest dort niemand mit, blockiert
+  // sonst jede Ausgabe bei vollem Puffer - OTA (Fortschritt je Paket) blieb so
+  // nach ~60 kB stehen. Ohne Wartezeit werden ungelesene Ausgaben verworfen.
+  Serial.setTxTimeoutMs(0);
   displayInit();
   besWifi();
   initMcUdp();
