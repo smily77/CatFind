@@ -23,14 +23,23 @@ static int utcOffsetMin(const struct tm& lt) {
 
 // Beginn/Ende der aktiven Zeit heute (Minuten ab lokaler Mitternacht)
 void activeWindow(int& startMin, int& endMin) {
-  getLocalTime(&timeinfo, 0);
+  localNow(timeinfo);
   startMin = sunsetMin(timeinfo.tm_yday, utcOffsetMin(timeinfo)) + cfg.start_off_min;
   endMin = cfg.end_min;
 }
 
 // Ohne Uhrzeit (NTP nie erreicht) gilt immer als aktiv: lieber einmal zu viel Licht.
+// Nicht getLocalTime(&tm, 0): das liefert false, wenn zwischen seinen zwei millis()-
+// Aufrufen die Millisekunde wechselt -> galt dann faelschlich als aktiv (2026-10-29
+// 16:55/16:57 vor der Daemmerung "Besuch ... Buro brennt" statt "ausserhalb").
+static bool localNow(struct tm& lt) {
+  time_t t = time(nullptr);
+  localtime_r(&t, &lt);
+  return lt.tm_year > (2016 - 1900);
+}
+
 bool inActiveTime() {
-  if (!timeValid || !getLocalTime(&timeinfo, 0)) return true;
+  if (!timeValid || !localNow(timeinfo)) return true;
   int m = timeinfo.tm_hour * 60 + timeinfo.tm_min;
   int s, e;
   activeWindow(s, e);

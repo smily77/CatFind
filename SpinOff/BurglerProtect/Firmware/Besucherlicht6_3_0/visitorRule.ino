@@ -16,6 +16,7 @@ unsigned long homeUntilMs = 0;        // "jemand zuhause" gilt bis dann (Hue nic
 unsigned long lastPollMs = 0;
 unsigned long onAtMs = 0;             // Einschaltzeitpunkt (Referenzwerte danach lesen)
 bool          refRead = false;
+bool          homeArrived = false;     // waehrend mein Licht brennt, ging eine Zuhause-Gruppe an
 int           refBri[MAX_GROUPS], refCt[MAX_GROUPS];
 unsigned long offFailSinceMs = 0;     // Ausschalten schlug fehl seit ...
 
@@ -66,6 +67,14 @@ static bool trackFires(VisTrack& t, unsigned long now) {
   return cnt >= cfg.min_events && (now - first) >= (unsigned long)(cfg.min_span_s * 1000);
 }
 
+// Uhrzeit in ms von jetzt, fuer Meldungen ("17:23")
+static String clockIn(unsigned long ms) {
+  time_t t = time(nullptr) + ms / 1000;
+  struct tm lt;
+  localtime_r(&t, &lt);
+  return hhmm(lt.tm_hour * 60 + lt.tm_min);
+}
+
 void releaseLight(const String& why) {
   lightMine = false;
   offAtMs = 0;
@@ -91,7 +100,7 @@ static void tryTrigger(VisTrack& t, int32_t x, int32_t y, unsigned long now) {
   }
   bool ok = hueSwitchLight(true);
   lightMine = true;                   // auch bei Teilerfolg: was brennt, gehoert mir
-  onAtMs = now; refRead = false; offFailSinceMs = 0;
+  onAtMs = now; refRead = false; offFailSinceMs = 0; homeArrived = false;
   offAtMs = now + (unsigned long)cfg.on_s * 1000UL;
   lastTrigT = time(nullptr);
   note(String(ok ? "LICHT EIN" : "LICHT EIN (teilweise fehlgeschlagen)") + " - Besuch bei " +
@@ -109,7 +118,10 @@ void visitorFeed(int32_t x, int32_t y) {
   if (waitQuiet && quietBefore) waitQuiet = false;
   bool fires = trackFires(t, now);
   if (!settingOn(stgArmed)) return;   // Aufzeichnung macht der VPS ohnehin, hier nur Licht
-  if (lightMine) { offAtMs = now + (unsigned long)cfg.on_s * 1000UL; return; }   // halten
+  if (lightMine) {                    // halten - ausser es ist inzwischen jemand heimgekommen
+    if (!homeArrived) offAtMs = now + (unsigned long)cfg.on_s * 1000UL;
+    return;
+  }
   if (waitQuiet || !fires) return;
   tryTrigger(t, x, y, now);
 }
@@ -139,12 +151,12 @@ void lightTick() {
     if (h.bri != refBri[i] || h.ct != refCt[i]) { releaseLight(h.name + " gedimmt/umgestellt"); waitQuiet = true; return; }
   }
   refRead = true;
-  // Brennt eine andere Zuhause-Gruppe, ist jemand heimgekommen: Licht stehen lassen.
-  for (int i = 0; i < cfg.nHome; i++) {
-    bool isLight = false;
-    for (int j = 0; j < cfg.nLight; j++) if (hueNorm(cfg.home[i]) == hueNorm(cfg.light[j])) isLight = true;
-    int g = hueFind(cfg.home[i]);
-    if (!isLight && g >= 0 && hueG[g].anyOn) { releaseLight(hueG[g].name + " brennt -> jemand zuhause"); return; }
+  // Brennt eine andere Zuhause-Gruppe, ist jemand heimgekommen: nicht mehr verlaengern,
+  // aber trotzdem zur geplanten Zeit ausschalten (User 2026-10-29: das Abschreck-Licht
+  // geht immer nach on_s aus, auch wenn inzwischen jemand zuhause ist).
+  if (homeLit && !homeArrived) {
+    homeArrived = true;
+    note(homeLitName + " brennt -> jemand zuhause, Licht geht trotzdem um " + clockIn(offAtMs - now) + " aus");
   }
   if (!due) return;
   if (hueSwitchLight(false)) {
