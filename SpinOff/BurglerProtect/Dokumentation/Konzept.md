@@ -182,7 +182,7 @@ Firmware: `SpinOff/BurglerProtect/Firmware/Besucherlicht6_3_0/`. Hardware: **M5S
 
 Entscheide des Users 2026-10-29:
 - **Zuhause-Gruppen:** Arbeitszimmer, Buro, stubbe, Wohnzimmer Decke, Veranda. Brennt eine davon, ist jemand zuhause, das Licht wird nicht eingeschaltet.
-- **Abschreck-Licht:** jede dieser Gruppen und jede Kombination wählbar (Tab «Besucher», Standard «Wohnzimmer Decke»).
+- **Abschreck-Licht:** jede dieser Gruppen und jede Kombination wählbar (Tab «Besucher», Standard «Wohnzimmer Decke»). Helligkeit und Farbe werden nicht verändert.
 - **Aktive Zeit:** ab Sonnenuntergang (aus Datum berechnet, Herisau 47,386 N / 9,279 E, NOAA-Näherung) bis einstellbares Ende, Standard 24:00. Beginn mit Versatz in Minuten einstellbar.
 - **Aufzeichnung bleibt unverändert:** Der VPS speichert alle Besucher-Meldungen, auch wenn die Anlage nicht scharf ist.
 - Hue-Zugang (`hueIp`, `hueApiKey`) steht in `Credentials.h`, kein Pairing auf dem Gerät nötig.
@@ -194,9 +194,9 @@ Abweichungen vom Konzept (einfacher, gleiche Wirkung):
 
 Ablauf im Gerät (`visitorRule.ino`):
 1. Jede `visitorObserved` geht in die Spurbildung, nur Meldungen im Polygon zählen (wie `visitor.py`).
-2. Auslösung nur wenn scharf **und** aktive Zeit. Dann `GET /groups` der Bridge: brennt eine Zuhause-Gruppe → nichts tun (30 s nicht neu fragen). Sonst Licht-Gruppen ein mit Helligkeit/Farbtemperatur aus dem Tab.
+2. Auslösung nur wenn scharf **und** aktive Zeit. Dann `GET /groups` der Bridge: brennt eine Zuhause-Gruppe → nichts tun (30 s nicht neu fragen). Sonst Licht-Gruppen ein, **nur ein/aus**: die Lampen kommen mit ihrer zuletzt eingestellten Helligkeit und Farbe (User 2026-10-29: ein Alarm darf nichts verstellen).
 3. Solange das Licht «mir gehört», alle 5 s nachsehen: ist eine Licht-Gruppe nicht mehr ganz an oder wurden Helligkeit/Farbe geändert → freigeben, erst wieder einschalten, wenn das Polygon 30 s leer war. Brennt eine andere Zuhause-Gruppe → freigeben (jemand ist heimgekommen).
 4. Jede Meldung im Polygon verlängert auf «jetzt + `on_s`». Danach aus, wenn es noch genau so brennt.
 5. Ausschalten der Anlage gibt ein brennendes Licht frei (es bleibt an).
 
-Anzeige: rot «SCHARF» / schwarz «AUS», darunter aktive Zeit, Licht mit Restzeit, Hue-Zustand, letzter Besuch, Herkunft der Konfiguration.
+Anzeige: rot «SCHARF» (volle Helligkeit, fällt auf) / schwarz «AUS» (gedimmt), beim Start blau blinkend, solange das WLAN gesucht wird, darunter aktive Zeit, Licht mit Restzeit, Hue-Zustand, letzter Besuch, Herkunft der Konfiguration.

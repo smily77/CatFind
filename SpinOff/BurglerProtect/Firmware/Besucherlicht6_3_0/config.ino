@@ -25,8 +25,6 @@ static bool cfgApplyText(const String& body) {
     else if (key == "link_mm")       c.link_mm = val.toInt();
     else if (key == "link_s")        c.link_s = val.toFloat();
     else if (key == "on_s")          c.on_s = val.toInt();
-    else if (key == "bri_pct")       c.bri_pct = constrain(val.toInt(), 1, 100);
-    else if (key == "ct_k")          c.ct_k = constrain(val.toInt(), 2000, 6500);
     else if (key == "start_off_min") c.start_off_min = val.toInt();
     else if (key == "end_min")       c.end_min = val.toInt();
     else if (key == "light" && c.nLight < MAX_GROUPS) c.light[c.nLight++] = val;

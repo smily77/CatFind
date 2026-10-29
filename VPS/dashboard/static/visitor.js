@@ -33,8 +33,6 @@ const VIS_PARAMS = [
   ["on_s",       "Licht brennt nach der letzten Meldung im Polygon (s)"],
   ["start_off_min", "Aktive Zeit: Beginn, Minuten nach Sonnenuntergang"],
   ["end_min",    "Aktive Zeit: Ende (Uhrzeit, z. B. 24:00 oder 01:30)", "time"],
-  ["bri_pct",    "Helligkeit beim Einschalten (%)"],
-  ["ct_k",       "Farbtemperatur beim Einschalten (Kelvin)"],
 ];
 function visMinToHHMM(m){ return `${String(Math.floor(m/60)).padStart(2,"0")}:${String(m%60).padStart(2,"0")}`; }
 function visClock(t){ const d = new Date(t*1000); return visMinToHHMM(d.getHours()*60 + d.getMinutes()); }

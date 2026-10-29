@@ -49,7 +49,7 @@ static void besWifi() {
   WiFi.begin(ssid, password);
   unsigned long t0 = millis();
   while (WiFi.status() != WL_CONNECTED) {
-    displayBoot("WLAN ...");
+    displayWifiBlink();
     delay(250);
     if (millis() - t0 > 20000) {                 // Neuanlauf statt Endlosschleife
       WiFi.disconnect(true);
