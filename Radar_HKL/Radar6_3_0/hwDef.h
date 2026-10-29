@@ -64,7 +64,7 @@
 
   #define periodeForHB 5000
   #define statusLightDuration 10
-  #define deadZone 1000
+  #define deadZone 500
 
 #elif defined DomeC1Device
   // Aufbau wie CompactDome (ESP32, HLK-2450 an GPIO19, ein Pixel an GPIO27),
