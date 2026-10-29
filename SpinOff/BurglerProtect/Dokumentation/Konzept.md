@@ -1,6 +1,6 @@
 # Spin-off BurglerProtect – Besucherabhängiges Wohnzimmerlicht
 
-Stand: 2026-10-27 – Schritt 1 umgesetzt (Dome-C1 meldet `visitorObserved`, VPS-Tab «Besucher»), Steuergerät folgt in Schritt 2.
+Stand: 2026-10-29 – Schritt 1 (Dome-C1 meldet `visitorObserved`, VPS-Tab «Besucher») und Schritt 2 (Steuergerät **Besucherlicht**, Gerät Nr. 22) umgesetzt, siehe Abschnitt 11.
 Ursprüngliche Anforderung: [Anforderung_Original.md](Anforderung_Original.md)
 
 ## 1. Idee in einem Satz
@@ -175,3 +175,28 @@ Offen:
 2. Polygon zeichnen und Parameter an echten Durchgängen abstimmen.
 3. Schritt 2: Steuergerät (Taster, Hue, Dunkelheit, Scharf/Aus), Gerät Nr. 22.
 4. ~~Stromausfall~~ entschieden 2026-10-28: Der scharfe Zustand überdauert einen Stromausfall (im Flash gespeichert).
+
+## 11. Schritt 2: Steuergerät Besucherlicht (umgesetzt 2026-10-29)
+
+Firmware: `SpinOff/BurglerProtect/Firmware/Besucherlicht6_3_0/`. Hardware: **M5Stack AtomS3** (ESP32-S3, 8 MB Flash, Display 128×128, Knopf unter dem Display), feste IP **.188**, Gerät Nr. 22 `Besucherlicht` (Typ `LightControl`), `deviceCount` 23.
+
+Entscheide des Users 2026-10-29:
+- **Zuhause-Gruppen:** Arbeitszimmer, Buro, stubbe, Wohnzimmer Decke, Veranda. Brennt eine davon, ist jemand zuhause, das Licht wird nicht eingeschaltet.
+- **Abschreck-Licht:** jede dieser Gruppen und jede Kombination wählbar (Tab «Besucher», Standard «Wohnzimmer Decke»).
+- **Aktive Zeit:** ab Sonnenuntergang (aus Datum berechnet, Herisau 47,386 N / 9,279 E, NOAA-Näherung) bis einstellbares Ende, Standard 24:00. Beginn mit Versatz in Minuten einstellbar.
+- **Aufzeichnung bleibt unverändert:** Der VPS speichert alle Besucher-Meldungen, auch wenn die Anlage nicht scharf ist.
+- Hue-Zugang (`hueIp`, `hueApiKey`) steht in `Credentials.h`, kein Pairing auf dem Gerät nötig.
+
+Abweichungen vom Konzept (einfacher, gleiche Wirkung):
+- **Konfiguration per HTTP statt `mapVisitor`:** Das Gerät holt Polygon, Regel und Gruppen wie der Cat Identifier direkt vom VPS (`GET /visitor_device.cfg`, Textformat mit Schlusszeile `end`), beim Start, alle 15 min und mit der Aktion «Parameter laden». Gecacht im LittleFS (`/visitor.cfg`); ohne VPS läuft es mit dem letzten Stand. Kein neuer Kartentyp im Manager nötig.
+- **Scharf/Aus als Einstellung `stgArmed` (13)** statt eigenem Kommando: der VPS setzt sie mit `cmdSetSetting` absolut, der Zustand kommt per `settingsReport` zurück und ist im NVS gespeichert. Der Knopf am Gerät schaltet um.
+- **Rückmeldungen** als Debug-Text («Besucherlicht: …») im VPS, im Tab «Besucher» gefiltert angezeigt.
+
+Ablauf im Gerät (`visitorRule.ino`):
+1. Jede `visitorObserved` geht in die Spurbildung, nur Meldungen im Polygon zählen (wie `visitor.py`).
+2. Auslösung nur wenn scharf **und** aktive Zeit. Dann `GET /groups` der Bridge: brennt eine Zuhause-Gruppe → nichts tun (30 s nicht neu fragen). Sonst Licht-Gruppen ein mit Helligkeit/Farbtemperatur aus dem Tab.
+3. Solange das Licht «mir gehört», alle 5 s nachsehen: ist eine Licht-Gruppe nicht mehr ganz an oder wurden Helligkeit/Farbe geändert → freigeben, erst wieder einschalten, wenn das Polygon 30 s leer war. Brennt eine andere Zuhause-Gruppe → freigeben (jemand ist heimgekommen).
+4. Jede Meldung im Polygon verlängert auf «jetzt + `on_s`». Danach aus, wenn es noch genau so brennt.
+5. Ausschalten der Anlage gibt ein brennendes Licht frei (es bleibt an).
+
+Anzeige: rot «SCHARF» / schwarz «AUS», darunter aktive Zeit, Licht mit Restzeit, Hue-Zustand, letzter Besuch, Herkunft der Konfiguration.

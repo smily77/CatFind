@@ -105,6 +105,11 @@
   #visList i { width:9px; height:9px; border-radius:2px; display:inline-block; }
   #visSide { width:330px; min-width:330px; border-left:1px solid #333; overflow:auto; padding:10px; font-size:12px; background:#121218; }
   #visSide h3 { margin:10px 0 6px; font-size:13px; }
+  #visSide .visChk { display:flex; align-items:center; gap:6px; margin:2px 0; }
+  #visSide .visChk input { width:auto; margin:0; }
+  #visArm { padding:8px; border-radius:6px; margin:4px 0 6px; font-size:13px; background:#1c1c24; }
+  #visArm.on { background:#5a1010; }
+  #visDev { max-height:140px; overflow:auto; color:#9ab; font-size:11px; }
   #visSide select, #visSide input { width:100%; background:#0d0d12; color:#ddd; border:1px solid #333; border-radius:5px; padding:4px; margin:2px 0 6px; }
   #visMsg { color:#9ab; line-height:1.35; margin:8px 0; min-height:1em; }
   /* ---- Analyse-Tab ---- */
@@ -250,7 +255,13 @@
       </div>
       <div id="visSide">
         <h3 style="margin-top:0">Besucher (Veranda)</h3>
-        <div class="manHelp">Spin-off BurglerProtect: Der Dome-C1 meldet Ziele auf der Veranda (X&gt;0, Y&lt;0, ausserhalb seiner Rasen-/No-Shot-Karte) als <b>visitorObserved</b>. Hier siehst du sie und legst fest, wo eine Erkennung später das Wohnzimmerlicht einschaltet. „Schaltet ein / hält an" ist die Auswertung mit den Werten unten (das Steuergerät kommt in Schritt 2).</div>
+        <div class="manHelp">Spin-off BurglerProtect: Der Dome-C1 meldet Ziele auf der Veranda (X&gt;0, Y&lt;0, ausserhalb seiner Rasen-/No-Shot-Karte) als <b>visitorObserved</b>. Sie werden hier immer aufgezeichnet, auch wenn die Anlage nicht scharf ist. Das Steuergerät <b>Besucherlicht</b> (#22) rechnet dieselbe Regel und schaltet, wenn es scharf ist, die gewählten Hue-Gruppen ein. „Schaltet ein / hält an" ist die Auswertung mit den Werten unten (ohne den Zuhause-Check).</div>
+        <h3>Scharf / Aus</h3>
+        <div id="visArm">Steuergerät: –</div>
+        <button class="act" id="visArmOn" style="background:#8a1f1f">Scharf schalten</button>
+        <button class="act" id="visArmOff" style="background:#444">Ausschalten</button>
+        <button class="tab" id="visDevReload" title="Steuergerät holt Polygon, Regel und Gruppen sofort neu (sonst alle 15 min)">Gerät lädt Konfiguration</button>
+        <div id="visDev"></div>
         <label>Zeitraum</label>
         <select id="visHours"><option value="1">letzte Stunde</option><option value="6">letzte 6 h</option><option value="24" selected>letzte 24 h</option><option value="72">letzte 3 Tage</option><option value="168">letzte 7 Tage</option><option value="720">letzte 30 Tage</option></select>
         <button class="tab" id="visReload">neu laden</button>
@@ -267,8 +278,13 @@
         <div id="visParams"></div>
         <button class="act" id="visParamSave">Parameter übernehmen</button>
         <button class="tab" id="visParamDef">Standardwerte</button>
-        <h3>Scharf / Aus</h3>
-        <div class="hint">kommt mit dem Steuergerät (Schritt 2)</div>
+        <h3>Hue-Gruppen</h3>
+        <div class="manHelp">Brennt eine der Zuhause-Gruppen, ist jemand da: kein Licht. Als Abschreck-Licht schaltet das Gerät die angekreuzten Gruppen ein (Name wie in der Hue-App, gross/klein und Umlaute egal).</div>
+        <label>Zuhause-Gruppen (durch Komma getrennt)</label>
+        <input id="visHome" type="text">
+        <label>Abschreck-Licht</label>
+        <div id="visLight"></div>
+        <button class="act" id="visGroupSave">Gruppen übernehmen</button>
         <h3>Daten</h3>
         <button class="act" id="visReset" style="background:#7a2230">Besucher-Meldungen löschen</button>
         <div id="visMsg"></div>
@@ -392,7 +408,7 @@ function fmtTime(t){ return new Date(t*1000).toLocaleTimeString(); }
 function minMaxArr(a){ let lo=Infinity, hi=-Infinity; for(const v of a){ if(v<lo)lo=v; if(v>hi)hi=v; } return [lo,hi]; }
 
 // Einstellungen/Aktionen (Bit-Index = stg*/act* aus xComDef6_3.h)
-const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor","CatDetected-Anzeige","Kamera-KI","Radar: volle RasenKarte melden","Aktiv (Sensor an)","IR-Scheinwerfer","IR nur bei Katze (Auto)","Front-Licht","Licht nur bei Katze (Auto)"];
+const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung","Lidar-Motor","CatDetected-Anzeige","Kamera-KI","Radar: volle RasenKarte melden","Aktiv (Sensor an)","IR-Scheinwerfer","IR nur bei Katze (Auto)","Front-Licht","Licht nur bei Katze (Auto)","Scharf (Besucherlicht)"];
 // Je zwei Bits bilden EINEN Schalter AUS/EIN/AUTO (AUS: Light 0 | EIN: Light 1, Auto 0 | AUTO: beide 1)
 const TRI=[
   {l:9,  a:10, name:"IR-Scheinwerfer", tip:"AUS = immer aus · EIN = nachts an (LDR) · AUTO = nachts an, nur wenn ein Sensor catObserved meldet (60 s)"},

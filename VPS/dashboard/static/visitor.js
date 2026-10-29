@@ -5,7 +5,9 @@
 // ausgelöst / hält das Licht an" rechnet der VPS mit derselben Regel wie später
 // das Steuergerät (visitor.py). Gehört zu index.html (nutzt colorFor/escapeHtml/
 // minMaxArr/mapPoints) und analysis.js (anaJson, fmtDT, distToSeg).
-// Serverseite: /visitors /visitor_cfg /visitor_reset.
+// Scharf/Aus und Meldungen des Steuergeraets Besucherlicht (#22) kommen ueber
+// /state (settingsReport stgArmed, Debug-Zeilen "Besucherlicht: ...").
+// Serverseite: /visitors /visitor_cfg /visitor_reset, Geraet: /visitor_device.cfg.
 "use strict";
 
 const VIS = {
@@ -18,7 +20,9 @@ const VIS = {
   drag: null,
   selT0: null,         // Beginn der in der Liste angeklickten Spur (Spur-Nr. wechselt beim Nachladen)
   timer: null,
+  armTimer: null,
 };
+const VIS_DEV = 22, VIS_STG_ARMED = 13, VIS_CMD_RELOAD = 22;
 const VIS_PT_PX = 10;
 const VIS_PARAMS = [
   ["min_events", "Mindestanzahl Meldungen einer Spur im Polygon"],
@@ -27,7 +31,19 @@ const VIS_PARAMS = [
   ["link_mm",    "Spur: grösster Sprung (mm)"],
   ["link_s",     "Spur: grösste Pause (s)"],
   ["on_s",       "Licht brennt nach der letzten Meldung im Polygon (s)"],
+  ["start_off_min", "Aktive Zeit: Beginn, Minuten nach Sonnenuntergang"],
+  ["end_min",    "Aktive Zeit: Ende (Uhrzeit, z. B. 24:00 oder 01:30)", "time"],
+  ["bri_pct",    "Helligkeit beim Einschalten (%)"],
+  ["ct_k",       "Farbtemperatur beim Einschalten (Kelvin)"],
 ];
+function visMinToHHMM(m){ return `${String(Math.floor(m/60)).padStart(2,"0")}:${String(m%60).padStart(2,"0")}`; }
+function visClock(t){ const d = new Date(t*1000); return visMinToHHMM(d.getHours()*60 + d.getMinutes()); }
+function visHHMMToMin(s){
+  const m = /^(\d{1,2}):?(\d{2})$/.exec(String(s).trim()); if(!m) return NaN;
+  let v = (+m[1])*60 + (+m[2]);
+  if(v < 720) v += 1440;                                  // vor 12:00 = nach Mitternacht
+  return v;
+}
 
 function visEl(id){ return document.getElementById(id); }
 function visMsg(s, err){ const el = visEl("visMsg"); el.textContent = s; el.style.color = err ? "#e66" : "#9ab"; }
@@ -44,7 +60,7 @@ async function visLoad(){
     VIS.cfg = await anaJson("/visitor_cfg");
     const t1 = Date.now()/1000;
     VIS.data = await anaJson(`/visitors?t0=${t1 - VIS.hours*3600}&t1=${t1}`);
-    visRenderParams(); visRenderInfo(); visRenderList(); visDraw();
+    visRenderParams(); visRenderGroups(); visRenderInfo(); visRenderList(); visDraw();
   }catch(e){ visMsg("Laden fehlgeschlagen: " + e.message, true); }
 }
 
@@ -57,14 +73,18 @@ function visRenderInfo(){
     `<b>${d.lights.length}</b> × Licht` + (d.cut ? ` <span style="color:#e96">(gekürzt)</span>` : "") +
     `<br><small>gespeichert: ${tot.n||0} Meldungen` + (tot.t0 ? ` seit ${fmtDT(tot.t0)}` : "") +
     ` · werden nach ${d.keep_days} Tagen gelöscht</small>` +
+    (VIS.cfg?.window ? `<br>Aktive Zeit ${VIS.cfg.active ? "<b style='color:#ffd23b'>jetzt</b>" : "nächste"}: ` +
+      `${fmtDT(VIS.cfg.window[0])} – ${visClock(VIS.cfg.window[1])}` : "") +
     (d.cfg.poly.length ? "" : `<br><small style="color:#e96">Noch kein Polygon: die Auswertung zählt den ganzen Quadranten.</small>`);
 }
 
 function visRenderParams(){
   const c = VIS.cfg; if(!c || visEl("visParams").dataset.done) return;
   visEl("visParams").dataset.done = "1";
-  visEl("visParams").innerHTML = VIS_PARAMS.map(([k, l])=>{
+  visEl("visParams").innerHTML = VIS_PARAMS.map(([k, l, kind])=>{
     const [lo, hi] = c.limits[k];
+    if(kind === "time")
+      return `<label>${escapeHtml(l)}</label><input type="text" id="visP_${k}" value="${visMinToHHMM(c.params[k])}" title="Standard ${visMinToHHMM(c.defaults[k])}">`;
     return `<label>${escapeHtml(l)}</label><input type="number" id="visP_${k}" min="${lo}" max="${hi}" step="any" value="${c.params[k]}" title="Standard ${c.defaults[k]}">`;
   }).join("");
 }
@@ -77,7 +97,7 @@ function visRenderList(){
   const rows = d.tracks.slice().sort((a,b)=>b.t0-a.t0).map(tr=>{
     const l = lightOf(tr.id);
     const res = tr.trig ? `💡 schaltet ein (${visDur(l.off - l.on)} an)` : tr.hold ? "💡 hält an" :
-                tr.n_in ? "zu kurz" : "ausserhalb";
+                tr.day ? "🌞 ausserhalb der aktiven Zeit" : tr.n_in ? "zu kurz" : "ausserhalb";
     return `<tr data-id="${tr.id}" class="${tr.id===sel?'sel':''}">
       <td><i style="background:${visTrackColor(tr.id)}"></i> ${fmtDT(tr.t0)}</td>
       <td>${visDur(tr.t1-tr.t0)}</td><td>${tr.n}</td><td>${tr.n_in}</td>
@@ -258,7 +278,10 @@ function visInit(){
   };
   visEl("visParamSave").onclick = async()=>{
     const params = {};
-    VIS_PARAMS.forEach(([k])=>{ params[k] = +visEl("visP_"+k).value; });
+    for(const [k, , kind] of VIS_PARAMS){
+      params[k] = kind === "time" ? visHHMMToMin(visEl("visP_"+k).value) : +visEl("visP_"+k).value;
+      if(Number.isNaN(params[k])){ visMsg("Ungültiger Wert: " + k, true); return; }
+    }
     await visSaveCfg({params});
     visEl("visParams").dataset.done = ""; visRenderParams();
     visMsg("Parameter übernommen, Auswertung neu gerechnet.");
@@ -266,6 +289,19 @@ function visInit(){
   visEl("visParamDef").onclick = async()=>{
     await visSaveCfg({params: VIS.cfg.defaults});
     visEl("visParams").dataset.done = ""; visRenderParams(); visMsg("Standardwerte gesetzt.");
+  };
+  visEl("visArmOn").onclick = ()=>visArm(1);
+  visEl("visArmOff").onclick = ()=>visArm(0);
+  visEl("visDevReload").onclick = async()=>{
+    await postCmd(VIS_DEV, VIS_CMD_RELOAD, 0); visMsg("Steuergerät lädt die Konfiguration neu …");
+  };
+  visEl("visGroupSave").onclick = async()=>{
+    const home = visEl("visHome").value.split(",").map(x=>x.trim()).filter(Boolean);
+    const light = [...document.querySelectorAll("#visLight input:checked")].map(x=>x.value);
+    if(!light.length){ visMsg("Mindestens eine Gruppe als Abschreck-Licht wählen.", true); return; }
+    await visSaveCfg({home_groups: home, light_groups: light});
+    visEl("visLight").dataset.done = ""; visRenderGroups();
+    visMsg("Gruppen übernommen (Gerät holt sie spätestens in 15 min, sofort mit „Gerät lädt Konfiguration“).");
   };
   visEl("visReset").onclick = async()=>{
     if(!confirm("ALLE Besucher-Meldungen löschen? (Polygon, Parameter und alle übrigen Daten bleiben.)")) return;
@@ -281,8 +317,44 @@ async function visSaveCfg(body){
   }catch(e){ visMsg("Speichern fehlgeschlagen: " + e.message, true); }
 }
 
+function visRenderGroups(){
+  const c = VIS.cfg, el = visEl("visLight"); if(!c || el.dataset.done) return;
+  el.dataset.done = "1";
+  visEl("visHome").value = c.home_groups.join(", ");
+  const names = [...c.home_groups, ...c.light_groups.filter(g=>!c.home_groups.includes(g))];
+  el.innerHTML = names.map(g=>`<label class="visChk"><input type="checkbox" value="${escapeHtml(g)}" ${c.light_groups.includes(g)?"checked":""}> ${escapeHtml(g)}</label>`).join("");
+}
+
+// Scharf/Aus: absolut setzen (cmdSetSetting), nie umschalten - ein verlorenes
+// oder doppeltes Paket aendert so nichts am Ergebnis.
+async function visArm(on){
+  await postCmd(VIS_DEV, CMD_SET_SETTING, (VIS_STG_ARMED<<1) | on);
+  visMsg(on ? "Scharf schalten gesendet …" : "Ausschalten gesendet …");
+  setTimeout(visRenderArm, 2500);
+}
+async function visRenderArm(){
+  let st;
+  try{ st = await (await fetch("state")).json(); }catch(e){ return; }
+  const s = (st.settings||{})[String(VIS_DEV)], el = visEl("visArm");
+  if(!s){ el.className = ""; el.innerHTML = "Steuergerät #22 <b>offline</b> (kein HB)"; }
+  else {
+    const on = (s.val >> VIS_STG_ARMED) & 1;
+    el.className = on ? "on" : "";
+    el.innerHTML = `Steuergerät: <b>${on ? "SCHARF" : "aus"}</b> <small style="color:#999">(HB vor ${Math.round(s.age)} s)</small>`;
+  }
+  const rows = (st.debug||[]).filter(r=>/Besucherlicht/.test(r.msg)).slice(-12).reverse();
+  visEl("visDev").innerHTML = rows.map(r=>`<div>${fmtTime(r.t)} ${escapeHtml(r.msg.replace(/^Besucherlicht:?\s*/,""))}</div>`).join("")
+    || `<div class="hint">keine Meldungen des Steuergeräts</div>`;
+}
+
 function visShow(){
   visLoad();
+  visRenderArm();
+  clearInterval(VIS.armTimer);
+  VIS.armTimer = setInterval(()=>{
+    if(view !== "vis"){ clearInterval(VIS.armTimer); return; }
+    visRenderArm();
+  }, 3000);
   clearInterval(VIS.timer);                               // live nachladen, solange der Tab offen ist
   VIS.timer = setInterval(()=>{
     if(view !== "vis"){ clearInterval(VIS.timer); return; }
