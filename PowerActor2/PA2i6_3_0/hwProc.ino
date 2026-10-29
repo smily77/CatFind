@@ -39,10 +39,12 @@ void applyPower() {
   lidarWas = lidar; radarWas = radar;
 }
 
-// Schuss: Laser und Ventil gleich; Ventil nur mit stgWater (sonst Trockentest)
+// Schuss: Laser und Ventil genau gleich (Trockentest = Wasserhahn zu)
 void fireOn() {
   digitalWrite(laserPin, HIGH);
-  if (settingOn(stgWater)) digitalWrite(valvePin, HIGH);
+#ifndef NO_VALVE_TEST                // Diagnose-Build: Ventil-Relais bleibt aus
+  digitalWrite(valvePin, HIGH);
+#endif
 }
 void fireOff() {
   digitalWrite(valvePin, LOW);
@@ -197,6 +199,20 @@ void pollIR() {
   }
 }
 
+// Grund des letzten Neustarts (Brownout = Versorgung eingebrochen, z.B. Ventil + Servo)
+String resetReasonText() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:  return "Einschalten";
+    case ESP_RST_SW:       return "Software (OTA/Kommando)";
+    case ESP_RST_PANIC:    return "ABSTURZ (Panic)";
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:      return "WATCHDOG";
+    case ESP_RST_BROWNOUT: return "BROWNOUT (Spannung eingebrochen)";
+    default:               return String("Code ") + (int)esp_reset_reason();
+  }
+}
+
 // ---- Statuszeile fuer den VPS-Debug ----------------------------------------------------
 String statusText(const char* what) {
   String s = String("PowerActor2 ") + what + ": ";
@@ -207,7 +223,10 @@ String statusText(const char* what) {
   s += String(", Servo ") + (servoOk ? "ok" : "FEHLT");
   s += String(", IR ") + (irOk ? "ok" : "fehlt");
   s += String(", No-Shot ") + (noShotOK ? "ok" : "FEHLT");
-  s += String(", Wasser ") + (settingOn(stgWater) ? "AN" : "aus (Trockentest)");
+  if (settingOn(stgLaserFollow)) s += ", Laser folgt catObserved";
+#ifdef NO_VALVE_TEST
+  s += ", DIAGNOSE: Ventil abgeklemmt";
+#endif
   s += String(", ") + (hbState.readyToFire ? "SCHARF" : "gesichert");
   return s;
 }

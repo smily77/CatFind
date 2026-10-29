@@ -29,10 +29,12 @@ struct CtStormSlot { uint32_t key; uint16_t cnt; int32_t x0, x1, y0, y1; };
 
 // Ein aktiver Track (Ring der juengsten Punkte fuer Bewegungsfenster/Fusion/Sitzen)
 #define CT_MAX_TRACKS 10
+#define CT_TRACKED_S  0.2              // catTracked hoechstens so oft je Track (s)
 #define CT_RING 48
 struct CtTrack {
   bool     used, reported, moveFound, fusion, dead;
   double   t0, tLast;
+  double   tTracked;                   // letzte catTracked-Nachfuehrung (bestaetigte Tracks)
   int32_t  x0, y0, xLast, yLast;
   uint32_t n;
   float    path;

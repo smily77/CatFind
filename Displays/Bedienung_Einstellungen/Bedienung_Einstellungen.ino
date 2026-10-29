@@ -47,7 +47,7 @@ const char* stgLabel[STG_COUNT] = {
   "IR-Scheinwerfer", "IR nur bei Katze",  // Dome-C1: AUS = Scheinw. aus | AN+AUS = EIN | AN+AN = AUTO
   "Front-Licht", "Licht nur bei Katze",   // Dome: gleiches Schema, nur eigene catObserved
   "Scharf",                               // Besucherlicht: Licht bei Besuchern auf der Veranda
-  "Radar-Speisung", "Wasser (Ventil)"     // PowerActor2 (Bit 4 Lidar-Motor = LD06-Speisung)
+  "Radar-Speisung", "Laser folgt (Test)"  // PowerActor2 (Bit 4 Lidar-Motor = LD06-Speisung)
 };
 const char* actLabel[ACT_COUNT] = { "Pose kopieren", "Kalibrieren", "Pose loeschen", "Param. laden", "Foto jetzt" };
 const uint8_t actCmd[ACT_COUNT] = { cmdCopyPose,     cmdCalibrate, cmdClearPose, cmdReloadParams, cmdTakePhoto };

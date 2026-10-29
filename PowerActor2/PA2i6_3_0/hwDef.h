@@ -26,7 +26,7 @@
 #define LIDAR_STALE_MS 300        // juengere Messung gilt als aktuell
 
 // --- Ausgaenge (alle aktiv HIGH) ---
-#define laserPin   25             // Ziellaser: beim Schuss gleich wie das Ventil
+#define laserPin   25             // Ziellaser: beim Schuss gleich wie das Ventil (Wasserhahn zu = Trockentest)
 #define valvePin   27             // Wasserventil
 #define lidarPwrPin 26            // Speisung LD06
 #define radarPwrPin 23            // Speisung Compact Dome
@@ -44,9 +44,10 @@
 #define FIRE_MS        500        // Wasserstoss / Laser
 #define WATER_RANGE_MM 6500       // Reichweite des Wasserstrahls
 #define NEAR_MM        500        // naeher nicht schiessen
-#define ENGAGE_MS      5000       // nach catDetected so lange dem Ziel folgen
-#define TRACK_MM       1000       // catObserved so nah am Ziel = dasselbe Ziel
-#define REFIRE_MS      3000       // nach einem Schuss so lange kein neuer
+#define TRACK_LOST_MS  2500       // so lange ohne catTracked = Track verloren
+#define ENGAGE_MAX_MS  60000      // laenger verfolgt er einen Track nicht
+#define REFIRE_MS      3000       // nach einem Schuss so lange kein neuer (gleicher Track)
+#define LASER_HOLD_MS  400        // Laser-Folgemodus: Laser aus, wenn so lange kein catObserved
 #define CATDET_DUP_MS  1500       // CatIdent sendet doppelt
 
 // Veranda: Linie y = 0 von x = 3,0 bis 8,0 m (Welt-mm), dahinter (y < 0) die Veranda.
@@ -67,9 +68,10 @@
 #define MAP_ANNOUNCE_SLOT_MS 300
 
 // --- Einstellungen ------------------------------------------------------------------------
-// stgLidarMotor = Speisung LD06, stgRadarPower = Speisung Compact Dome (beide Default AN),
-// stgWater = Ventil beim Schuss (Default AUS = Trockentest, nur Laser). Alle persistiert.
-#define STG_SUPPORTED ((1u<<stgLidarMotor)|(1u<<stgRadarPower)|(1u<<stgWater))
+// stgLidarMotor = Speisung LD06, stgRadarPower = Speisung Compact Dome (beide Default AN,
+// persistiert). stgLaserFollow = Test: Laser folgt jedem catObserved (Default AUS, nicht
+// persistiert).
+#define STG_SUPPORTED ((1u<<stgLidarMotor)|(1u<<stgRadarPower)|(1u<<stgLaserFollow))
 #define STG_DEFAULT   ((1u<<stgLidarMotor)|(1u<<stgRadarPower))
-#define STG_PERSIST   STG_SUPPORTED
+#define STG_PERSIST   ((1u<<stgLidarMotor)|(1u<<stgRadarPower))
 #define STG_ACTIONS   0u

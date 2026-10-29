@@ -163,6 +163,11 @@ stationDefinitions device[deviceCount] = {
                              // (Dome-C1). Bewusst KEIN catObserved (PowerActors feuern ohne Absender-
                              // Filter). Ausgewertet vom Manager (-> VPS-Tab Besucher) und vom
                              // Steuergeraet Besucherlicht (Ausloesepolygon dort, nicht im Sensor).
+#define catTracked      19   // Cat Identifier: Positions-Nachfuehrung eines BESTAETIGTEN Tracks
+                             // (catDetectedPayload, ~5/s solange der Track lebt). Damit folgen die
+                             // Aktoren genau dem Track, den der Identifier erkannt hat, statt die
+                             // Zuordnung selbst nachzubauen. Kein catDetected: Manager/VPS zaehlen
+                             // es nicht als neue Katze.
 
 // Karten-Typen (fuer mapRequest/mapInfo/mapChunk)
 #define mapNoShot   1   // Schusszonen-/No-Shot-Karte (innerhalb = Feuern erlaubt)
@@ -367,8 +372,9 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
                             // verlorene/doppelte UDP-Pakete aendern nichts). Ueberdauert Stromausfall.
                             //                                                            [persistiert]
 #define stgRadarPower  14   // PowerActor2: Speisung des Compact Dome (Relais GPIO23)   [persistiert]
-#define stgWater       15   // PowerActor2: Ventil beim Schuss oeffnen. AUS = Trockentest, nur der
-                            // Laser zeigt, wohin er schiessen wuerde.                  [persistiert]
+#define stgLaserFollow 15   // PowerActor2: Test - der Laser (ohne Wasser) folgt schon jedem
+                            // catObserved in der No-Shot-Karte. AUS = Laser und Ventil nur beim
+                            // Schuss, beide gleich. Default AUS, NICHT persistiert.
 #define STG_COUNT      16   // settingsPayload hat 16 Bit - damit VOLL (Erweiterung = uint32)
 
 // Ausloesbare Aktionen (Bit-Position in settingsPayload.actions).
@@ -391,7 +397,7 @@ struct __attribute__((packed)) settingsPayload {
 #define cmdLaser                   2
 #define cmdAdjustAngle             3
 #define cmdTaste                   4
-#define cmdArmFire                 5
+#define cmdArmFire                 5   // info 0 = umschalten (Button/Display), PowerActor2 zusaetzlich: 1 = scharf, 2 = sichern (absolut)
 #define cmdSetLeftLimit            6
 #define cmdSetRightLimit           7
 #define cmdSetFarLimit             8
