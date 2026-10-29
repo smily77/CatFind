@@ -46,14 +46,32 @@ Schalt-Ausgängen.
 | 22 | ext1 | OUT | frei | ungenutzt |
 | 21 | ext2 | OUT | "Servo" | reserviert, ungenutzt |
 
-## Datenfluss
+## Datenfluss (seit 2026-10-29, wie LidarC1)
 
 ```
-LD06 ──UART──► ESP32: Sentence 0x54 0x2C, 47 Bytes, 12 Messpunkte
-                      → Winkelfenster 250..330°, Distanz 500..6500 mm
-                      → posPayload (angle in PA-Einheiten, x/y via toPaKart)
-                      → UDP-Broadcast catObserved
+LD06 ──UART 230400──► ESP32: Paket 0x54 0x2C, 47 Bytes, 12 Punkte, CRC-8 (Poly 0x4D) geprueft
+   Winkel = 360 - LD06-Rohwinkel (gegen den Uhrzeigersinn), < 40 cm (Drehturm) und
+   Signal < 150 verworfen
+   Boot: 20 s Hintergrund lernen (Ring blau) -> 360-Bin-Scan an VPS :8080/localize (gelb)
+         -> No-Shot-Karte vom Manager (violett) -> Pose per poseReport melden
+   danach Ruhe (Motor aus, nur HB); ohne gueltige Pose Ring rot, alle 5 min neuer Versuch
+   Zielerkennung (stgActive AN): Hintergrund neu lernen, je Umdrehung Schwerpunkt der
+   Punkte >= 30 cm vor dem Hintergrund -> catObserved (lokal + Welt), nur in der No-Shot-Karte
+   Aktion "Kalibrieren" (cmdCalibrate): Hintergrund + Pose neu
+   Rohdaten-Stream fuer Step6_CalibTool: "LD06SCAN" an UDP 4320 -> Punkte an 4321
 ```
+
+## Pixelring
+
+- Pixel 0 zeigt vom Drehturm weg (LD06-Winkel ~270 Grad, Turm bei ~90 Grad), die Nummern
+  laufen von oben gesehen gegen den Uhrzeigersinn (`RING_PIX0_DEG`/`RING_DIR` in hwDef.h,
+  mit `RING_TEST` nachpruefbar).
+- Phasen: blau = Hintergrund lernen, gelb = Pose per VPS, violett = No-Shot-Karte,
+  rot = nicht lokalisiert, dunkel = bereit. HB: jeder 4. Pixel kurz gruen.
+- Ziel: Pixel in Zielrichtung, rot = gemeldet (in der No-Shot-Karte), orange = gesehen, aber
+  ausserhalb (nicht gemeldet).
+- Eine Wand naeher als ~70 cm verdeckt Ziele: sie muessen 30 cm vor dem Hintergrund und
+  mindestens 40 cm vom LD06 entfernt sein.
 
 ## Hinweise
 
@@ -61,11 +79,5 @@ LD06 ──UART──► ESP32: Sentence 0x54 0x2C, 47 Bytes, 12 Messpunkte
   geschaltete Versorgung über `lidarPwr`; sein TX-Pegel ist 3,3 V und darf
   direkt an GPIO32.
 - Es gibt bewusst keine TX-Leitung zum Lidar — der LD06 wird nicht
-  konfiguriert, nur gelesen (`Serial2.begin(230400, SERIAL_8N1, dataInPin)`).
-- Die PWM-Defines (pwmFreq 30 kHz, Kanal 0, 8 Bit) sind vorbereitet, aber im
-  Code wird kein `ledcSetup/ledcAttach` aufgerufen — bei Bedarf für die
-  Drehzahlregelung nachrüsten, sonst PWM-Leitung offen lassen.
-- WS2811-Ring: 5 V, Datensignal siehe Hinweis im Manager-Schema
-  (Pegelwandler empfohlen).
-- Für laser/extRelais gilt: GPIO liefert max. ~12 mA — Module mit eigener
-  Treiberstufe verwenden oder Transistor vorsehen.
+  konfiguriert, nur gelesen.
+- Laser (GPIO4) und ext. Relais (GPIO18) werden nur sicher AUS gehalten.
