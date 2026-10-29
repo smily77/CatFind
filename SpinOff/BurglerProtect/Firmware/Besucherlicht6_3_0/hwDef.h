@@ -29,7 +29,8 @@
 #define HUE_TIMEOUT_MS     3000
 #define HUE_MAX_GROUPS     64                 // Gruppen der Bridge (heute 28: Raeume, Zonen, LightGroups)
 #define HUE_POLL_MS        5000               // solange das Licht "mir gehoert"
-#define HUE_IDLE_CHECK_MS  300000UL           // sonst alle 5 min Bridge pruefen (Anzeige)
+#define HUE_IDLE_CHECK_MS  300000UL           // aus: alle 5 min Bridge pruefen (Anzeige)
+#define HUE_ARMED_CHECK_MS 10000              // scharf: alle 10 s (gruen = bereit, rot = jemand zuhause)
 #define HUE_REF_DELAY_MS   3000               // nach dem Einschalten: Referenzwerte lesen
 #define HUE_HOME_HOLD_MS   30000              // "jemand zuhause" so lange nicht neu fragen
 #define HUE_OFF_RETRY_MS   1800000UL          // Ausschalten so lange wiederholen, dann aufgeben

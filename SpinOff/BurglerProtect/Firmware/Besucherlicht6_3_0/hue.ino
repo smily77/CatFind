@@ -66,7 +66,23 @@ bool hueRead() {
   }
   if (!hueN) { hueOk = false; hueErr = "keine Gruppen (Key?)"; return false; }
   hueOk = true; hueErr = "";
+  hueUpdateHome();
   return true;
+}
+
+// Brennt eine Zuhause-Gruppe? (Anzeige: scharf+gruen = bereit, scharf+rot = jemand
+// zuhause.) Das eigene Abschreck-Licht zaehlt nicht, solange es mir gehoert.
+void hueUpdateHome() {
+  homeLitName = "";
+  for (int i = 0; i < cfg.nHome; i++) {
+    int g = hueFind(cfg.home[i]);
+    if (g < 0 || !hueG[g].anyOn) continue;
+    bool mine = false;
+    if (lightMine)
+      for (int j = 0; j < cfg.nLight; j++) if (hueNorm(cfg.home[i]) == hueNorm(cfg.light[j])) mine = true;
+    if (!mine) { homeLitName = hueG[g].name; break; }
+  }
+  homeLit = homeLitName.length() > 0;
 }
 
 // Eine Gruppe schalten. body = JSON fuer /action

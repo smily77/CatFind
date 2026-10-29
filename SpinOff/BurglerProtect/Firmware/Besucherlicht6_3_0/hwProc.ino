@@ -1,5 +1,6 @@
 // Basis-Prozeduren: HB und Anzeige auf dem AtomS3-Display (128x128).
-//   SCHARF = roter Grund, AUS = dunkel. Darunter: aktive Zeit heute, Licht-Zustand
+//   SCHARF = gruener Grund, wenn alle Zuhause-Lichter aus sind (bereit), roter Grund,
+//   wenn eines brennt oder Hue unbekannt ist (wuerde nicht einschalten). AUS = dunkel. Darunter: aktive Zeit heute, Licht-Zustand
 //   mit Restzeit, Hue-Zustand, letzte Meldung. Knopf (ganzes Display) = umschalten.
 
 M5Canvas canvas(&M5.Display);
@@ -58,7 +59,8 @@ void displayTick() {
   dispNextMs = millis() + 1000;
   bool armed = settingOn(stgArmed);
   int W = canvas.width();
-  canvas.fillSprite(armed ? 0x8000 : TFT_BLACK);          // dunkelrot / schwarz
+  bool ready = armed && hueOk && !homeLit;                 // scharf und wuerde einschalten
+  canvas.fillSprite(!armed ? TFT_BLACK : ready ? 0x03E0 : 0x8000);   // schwarz / gruen / dunkelrot
   canvas.setTextDatum(top_center);
   canvas.setTextColor(TFT_WHITE);
   canvas.setFont(&fonts::FreeSansBold12pt7b);
@@ -74,9 +76,10 @@ void displayTick() {
   if (lightMine) {
     long rest = (long)(offAtMs - millis()) / 1000;
     if (rest < 0) rest = 0;
-    line("Licht AN " + String(rest / 60) + ":" + (rest % 60 < 10 ? "0" : "") + String(rest % 60), TFT_GREEN);
+    line("Licht AN " + String(rest / 60) + ":" + (rest % 60 < 10 ? "0" : "") + String(rest % 60), ready ? TFT_WHITE : TFT_GREEN);
   } else line("Licht: " + timeStr(lastTrigT), 0xAD55);
-  if (!hueOk) line("Hue FEHLER", TFT_RED);
+  if (!hueOk) line("Hue FEHLER", armed ? TFT_WHITE : TFT_RED);
+  else if (homeLit) line(homeLitName + " an", armed ? TFT_WHITE : 0xAD55);
   else if (hueErr.length()) line("Hue: Gruppe?", TFT_ORANGE);
   else line("Hue ok", 0xAD55);
   line("Besuch " + timeStr(lastVisitT), 0xAD55);

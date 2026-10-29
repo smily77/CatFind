@@ -199,4 +199,4 @@ Ablauf im Gerät (`visitorRule.ino`):
 4. Jede Meldung im Polygon verlängert auf «jetzt + `on_s`». Danach aus, wenn es noch genau so brennt.
 5. Ausschalten der Anlage gibt ein brennendes Licht frei (es bleibt an).
 
-Anzeige: rot «SCHARF» (volle Helligkeit, fällt auf) / schwarz «AUS» (gedimmt), beim Start blau blinkend, solange das WLAN gesucht wird, darunter aktive Zeit, Licht mit Restzeit, Hue-Zustand, letzter Besuch, Herkunft der Konfiguration.
+Anzeige (volle Helligkeit wenn scharf): **grün** «SCHARF» = bereit (alle Zuhause-Gruppen aus, Bridge erreichbar), **rot** «SCHARF» = scharf, würde aber nicht einschalten (eine Zuhause-Gruppe brennt, ihr Name steht darunter, oder Hue nicht erreichbar); im scharfen Zustand fragt das Gerät die Bridge dafür alle 10 s. Schwarz «AUS» (gedimmt), beim Start blau blinkend, solange das WLAN gesucht wird, darunter aktive Zeit, Licht mit Restzeit, Hue-Zustand, letzter Besuch, Herkunft der Konfiguration.
