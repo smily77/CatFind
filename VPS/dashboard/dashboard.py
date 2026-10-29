@@ -128,6 +128,7 @@ DEVICE_ROUTES = {
     ("POST", "/person"),                # KIVision  kivision_web.py _person_vps_run
     ("GET",  "/aparams.csv"),           # CatIdent  catTrack.ino:119
     ("GET",  "/coverage_export.csv"),   # CatIdent  catTrack.ino:245
+    ("GET",  "/visitor_device.cfg"),    # Besucherlicht config.ino cfgFetch
 }
 
 
@@ -916,12 +917,24 @@ def _visitor_cfg():
         cfg = {}
     return {"poly": visitor.clean_poly(cfg.get("poly")),
             "params": visitor.clean_params(cfg.get("params")),
+            "light_groups": visitor.clean_groups(cfg.get("light_groups"), visitor.LIGHT_GROUPS),
+            "home_groups": visitor.clean_groups(cfg.get("home_groups"), visitor.HOME_GROUPS),
             "updated": cfg.get("updated")}
 
 
 @app.get("/visitor_cfg")
 def visitor_cfg_get():
-    return jsonify(dict(_visitor_cfg(), defaults=visitor.DEFAULTS, limits=visitor.LIMITS))
+    cfg = _visitor_cfg()
+    now = time.time()
+    return jsonify(dict(cfg, defaults=visitor.DEFAULTS, limits=visitor.LIMITS,
+                        window=visitor.next_window(now, cfg["params"]),
+                        active=visitor.is_active(now, cfg["params"])))
+
+
+@app.get("/visitor_device.cfg")
+def visitor_device_cfg():
+    # Steuergeraet Besucherlicht (Geraet 22) holt Polygon/Regel/Gruppen hier ab
+    return Response(visitor.device_cfg_text(_visitor_cfg()), mimetype="text/plain")
 
 
 @app.post("/visitor_cfg")
@@ -932,6 +945,9 @@ def visitor_cfg_set():
         cfg["poly"] = visitor.clean_poly(data.get("poly"))
     if "params" in data:
         cfg["params"] = visitor.clean_params(dict(cfg["params"], **(data.get("params") or {})))
+    for k, dflt in (("light_groups", visitor.LIGHT_GROUPS), ("home_groups", visitor.HOME_GROUPS)):
+        if k in data:
+            cfg[k] = visitor.clean_groups(data.get(k) or [], dflt)
     cfg["updated"] = time.time()
     with _db_lock:
         _meta_set("visitor_cfg", json.dumps(cfg))

@@ -79,6 +79,7 @@ struct stationDefinitions {
 #define CatCam 19     // XIAO Vision AI Camera: Foto bei catDetected + eigene KI-Katzenerkennung
 #define KIVision 20   // KIVisionCatLocator: Raspberry Pi 4 + Coral, Weitwinkel-KI + Boden-Homographie (Python-xCom)
 #define DomeC1 21     // Dome-C1: HLK-Radar wie CompactDome + BMP180 (Temperatur/Luftdruck) + IR-Scheinwerfer-Sperre (GPIO18)
+#define Besucherlicht 22  // Spin-off BurglerProtect: M5 AtomS3, schaltet bei Besuchern auf der Veranda Hue-Licht (Scharf per Knopf/VPS)
 //Types
 #define MananagementDevice 1
 #define HLK 2
@@ -91,8 +92,9 @@ struct stationDefinitions {
 #define Detector 9   // Erkennungsgeraet: konsumiert catObserved, produziert catDetected
 #define Kamera 10    // Vision-KI-Kamera: Fotos an den VPS, catObserved bei KI-Katzenerkennung
 #define VisionLocator 11  // Pi-Kamera mit Welt-Lokalisierung (Homographie): catObserved mit worldValid=1
+#define LightControl 12   // Lichtsteuerung (Besucherlicht): konsumiert visitorObserved, schaltet Hue im LAN
 // Anzahl Eintraege in device[] - ueberall statt hartem "18"/"19" verwenden
-#define deviceCount 22
+#define deviceCount 23
 //  {MananagementDevice,180,0x01},
 stationDefinitions device[deviceCount] = {
   {MananagementDevice,180,0x01,groupNone, "Manager_Dev", 0,0,0},        //Manager
@@ -116,7 +118,8 @@ stationDefinitions device[deviceCount] = {
   {Detector,184,0x05,groupNone, "Cat_Identifier", 0,0,0},               //CatIdent: Echtzeit-Katzenerkennung auf dem Bus (feste IP .184), Modellparameter vom VPS
   {Kamera,185,0x06,groupNone, "Cat_Cam",    -31, 31, 8000},             //CatCam: XIAO Vision AI Camera (OV5647 62 Grad; feste IP .185), Fotos -> VPS
   {VisionLocator,186,0x07,groupNone, "KIVision", -50, 50, 15000},        //KIVisionCatLocator: Pi 4 + Coral (feste IP .186), Python-xCom (KIVisionCatLocator/xcom.py); Bereich nominell bis zur Homographie
-  {HLK,0,0,groupNone,  "Dome-C1",      -60, 60, 7000}                   //DomeC1: HLK-Radar (Radar6_3_0, DomeC1Device, DHCP) + BMP180 + IR-Scheinwerfer
+  {HLK,0,0,groupNone,  "Dome-C1",      -60, 60, 7000},                  //DomeC1: HLK-Radar (Radar6_3_0, DomeC1Device, DHCP) + BMP180 + IR-Scheinwerfer
+  {LightControl,188,0x08,groupNone, "Besucherlicht", 0,0,0}            //Besucherlicht: M5 AtomS3 (feste IP .188), SpinOff/BurglerProtect/Firmware
 };
 
 // call -> device[ident].type
@@ -158,7 +161,7 @@ stationDefinitions device[deviceCount] = {
 #define visitorObserved 18   // Spin-off BurglerProtect: Ziel auf der Veranda (Welt X>0, Y<0) AUSSERHALB
                              // der Filterkarte, posPayload wie catObserved. Heute sendet das Radar
                              // (Dome-C1). Bewusst KEIN catObserved (PowerActors feuern ohne Absender-
-                             // Filter). Ausgewertet vom Manager (-> VPS-Tab Besucher), spaeter vom
+                             // Filter). Ausgewertet vom Manager (-> VPS-Tab Besucher) und vom
                              // Steuergeraet Besucherlicht (Ausloesepolygon dort, nicht im Sensor).
 
 // Karten-Typen (fuer mapRequest/mapInfo/mapChunk)
@@ -358,7 +361,11 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
 #define stgLightAuto   12   // Dome: Licht nur nach EIGENER catObserved (~60 s). Wirkt nur mit
                             // stgLight AN. Schalter wie IR: AUS = Light aus | EIN = Light an+Auto
                             // aus | AUTO = Light an+Auto an.                              [persistiert]
-#define STG_COUNT      13
+#define stgArmed       13   // Besucherlicht: Anlage scharf (Licht bei Besuchern). Der Knopf am Geraet
+                            // schaltet um, VPS/Display setzen per cmdSetSetting ABSOLUT (kein Toggle,
+                            // verlorene/doppelte UDP-Pakete aendern nichts). Ueberdauert Stromausfall.
+                            //                                                            [persistiert]
+#define STG_COUNT      14
 
 // Ausloesbare Aktionen (Bit-Position in settingsPayload.actions).
 #define actCopyPose     0   // Welt-Pose jetzt aus der Gruppe kopieren  -> cmdCopyPose
