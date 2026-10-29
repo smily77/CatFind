@@ -4,8 +4,9 @@
 // hueApiKey stehen in Credentials.h. Gruppen werden ueber den NAMEN gefunden
 // (gross/klein und Umlaute egal: "Büro" = "Buro"), die IDs liest jede Abfrage neu.
 
-HueGroup hueG[24];
+HueGroup hueG[HUE_MAX_GROUPS];
 int hueN = 0;
+bool hueTrunc = false;               // Bridge hat mehr Gruppen als Platz
 
 static String hueNorm(String s) {
   s.toLowerCase();
@@ -50,8 +51,9 @@ bool hueRead() {
   http.end();
   if (err || !doc.is<JsonObject>()) { hueOk = false; hueErr = "JSON"; return false; }
   hueN = 0;
+  hueTrunc = false;
   for (JsonPair kv : doc.as<JsonObject>()) {
-    if (hueN >= (int)(sizeof hueG / sizeof hueG[0])) break;
+    if (hueN >= HUE_MAX_GROUPS) { hueTrunc = true; break; }
     JsonObject g = kv.value().as<JsonObject>();
     if (g["name"].isNull()) continue;   // z.B. Fehlermeldung "unauthorized user" (Array, kein Objekt)
     HueGroup& h = hueG[hueN++];
@@ -109,6 +111,7 @@ void hueCheck() {
     String all;
     for (int i = 0; i < hueN; i++) all += (i ? ", " : "") + hueG[i].name;
     hueErr = "Gruppe fehlt:" + missing;
-    sendUdpTextln("Besucherlicht: Hue-Gruppe nicht gefunden:" + missing + " (Bridge hat: " + all + ")");
+    sendUdpTextln("Besucherlicht: Hue-Gruppe nicht gefunden:" + missing + " (Bridge hat: " + all + ")" +
+                  (hueTrunc ? " - Liste voll, HUE_MAX_GROUPS erhoehen" : ""));
   }
 }

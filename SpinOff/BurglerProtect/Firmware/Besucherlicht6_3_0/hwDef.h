@@ -27,6 +27,7 @@
 #define CFG_TIMEOUT_MS     6000
 
 #define HUE_TIMEOUT_MS     3000
+#define HUE_MAX_GROUPS     64                 // Gruppen der Bridge (heute 28: Raeume, Zonen, LightGroups)
 #define HUE_POLL_MS        5000               // solange das Licht "mir gehoert"
 #define HUE_IDLE_CHECK_MS  300000UL           // sonst alle 5 min Bridge pruefen (Anzeige)
 #define HUE_REF_DELAY_MS   3000               // nach dem Einschalten: Referenzwerte lesen
