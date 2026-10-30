@@ -142,6 +142,11 @@ void setUpTime() {
       else setPixel(minPix,0x000000);
   #endif
 }
+// Blinkfarbe waehrend der WLAN-Suche (ein Geraet kann sie vor dem Include umdefinieren,
+// z.B. der Button, bei dem Rot "scharf" bedeutet)
+#ifndef WIFI_BLINK_COLOR
+#define WIFI_BLINK_COLOR 0xFF0000
+#endif
 boolean setUpWifi(int lastOctet) {
   writelnComment("start WiFi");
   WiFi.mode(WIFI_STA);
@@ -155,8 +160,8 @@ boolean setUpWifi(int lastOctet) {
    WiFi.begin(ssid, password);
   do {
     #ifdef containLed
-      if (maxPix > pixelNum) allPixel(0xFF0000);
-        else setPixel(minPix,0xFF0000);
+      if (maxPix > pixelNum) allPixel(WIFI_BLINK_COLOR);
+        else setPixel(minPix,WIFI_BLINK_COLOR);
     #endif
     writeComment(".");
     delay(250);
