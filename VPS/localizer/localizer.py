@@ -10,6 +10,8 @@ wahrscheinlichste Pose (X, Y, Heading, Drehsinn) + Konfidenz zurueckgibt.
 
 Endpunkte:
   POST /localize   Body: {"scan":[360 ints mm]}  -> Pose-JSON
+  POST /localize_carrier  Body: {"lp":[[x,y]..], "ld":[[x,y]..]} (mm, Traeger-System)
+                   -> Traegerpose + accept/reason (PowerActor2, siehe dort)
   GET  /health     -> {"ok":true, "map_points":N, "map_src":...}
   POST /reload     -> Karte neu vom Repo laden
 
@@ -191,6 +193,147 @@ def localize(mapx, mapy, ranges_mm):
     }
 
 
+# --- Traegerpose (/localize_carrier) ----------------------------------------
+# Der PowerActor2 (mobiler Traeger) schickt einen Rundum-Schwenk seines Drehturm-
+# Lidars (LP40B) und den Scan des mitgefuehrten LD06, beide schon im Traeger-System
+# (Ursprung Drehachse, x rechts, y = 0-Grad-Linie nach vorn, mm). Die Pose kommt
+# GLOBAL aus dem LP40B: er misst bis ~16 m und sieht den Rasenrand wie der Pan-Tilt-
+# Kopf, mit dem die Rasenkarte vermessen wurde. Der LD06 allein ist gegen den reinen
+# Rasenumriss mehrdeutig (er sieht v.a. Haus/Veranda, <= ~5 m) - er prueft dafuer,
+# ob der Turm-Schwenk stimmt: beide sind fest im Traeger kalibriert und muessen im
+# Nahbereich dieselben Konturen sehen (Servo verrutscht / Turm falsch genullt /
+# jemand im Strahl -> Abweichung). Test 2026-10-30: richtig 0,79, 5 Grad verdreht
+# 0,65, 10 Grad 0,40.
+CAR_MAX_UNIQ     = float(os.environ.get("CAR_MAX_UNIQ", "0.80"))    # zweitbeste ANDERE Loesung / beste
+CAR_MIN_INLIER   = float(os.environ.get("CAR_MIN_INLIER", "0.45"))  # LP40B-Punkte nahe der Karte
+CAR_MIN_MUTUAL   = float(os.environ.get("CAR_MIN_MUTUAL", "0.60"))  # LD06-Punkte nahe LP40B-Punkten
+CAR_DISTINCT_M   = 1.0     # so weit (oder CAR_DISTINCT_DEG) weg gilt eine Loesung als ANDERE
+CAR_DISTINCT_DEG = 20.0
+CAR_THIN_M       = 0.15    # LP40B-Punkte ausduennen (gleichmaessige Gewichtung)
+
+
+def _thin(P, d):
+    out = []
+    for p in P:
+        if not out or math.hypot(p[0] - out[-1][0], p[1] - out[-1][1]) >= d:
+            out.append(p)
+    return np.asarray(out, dtype=float).reshape(-1, 2)
+
+
+def _mutual(lp, ld):
+    """Anteil der LD06-Punkte (0,5..5 m) mit einem LP40B-Punkt naeher als 15 cm."""
+    r = np.hypot(ld[:, 0], ld[:, 1])
+    q = ld[(r > 0.5) & (r < 5.0)]
+    if q.shape[0] < 20 or lp.shape[0] == 0:
+        return None
+    d = np.sqrt(((q[:, None, :] - lp[None, :, :]) ** 2).sum(-1)).min(1)
+    return float((d < 0.15).mean())
+
+
+def localize_carrier(mapx, mapy, lp_mm, ld_mm, mirror=1):
+    """Traegerpose global aus dem LP40B-Schwenk, LD06 als Gegenprobe des Schwenks.
+    Rueckgabe dict mit accept/reason + Pose (Konvention wie /localize)."""
+    lp = _thin([(x / 1000.0, y / 1000.0) for x, y in lp_mm], CAR_THIN_M)
+    ld = np.asarray([(x / 1000.0, y / 1000.0) for x, y in ld_mm], dtype=float).reshape(-1, 2)
+    if lp.shape[0] < 30:
+        return {"accept": False, "reason": "zu wenige LP40B-Punkte (%d)" % lp.shape[0]}
+    lx, ly = lp[:, 0], mirror * lp[:, 1]
+    res = RES_COARSE
+    Rmax = float(np.hypot(lx, ly).max()) + RANGE_PAD
+    mg = 1.0
+    txmin, txmax = mapx.min() - mg, mapx.max() + mg
+    tymin, tymax = mapy.min() - mg, mapy.max() + mg
+    fxmin, fymin = txmin - Rmax, tymin - Rmax
+    nx = int(math.ceil((txmax + Rmax - fxmin) / res)) + 1
+    ny = int(math.ceil((tymax + Rmax - fymin) / res)) + 1
+    GX, GY = np.meshgrid(fxmin + np.arange(nx) * res, fymin + np.arange(ny) * res)
+    d2 = np.full((ny, nx), np.inf)
+    for mx, my in zip(mapx, mapy):
+        np.minimum(d2, (GX - mx) ** 2 + (GY - my) ** 2, out=d2)
+    L = np.exp(-d2 / (2.0 * SIGMA * SIGMA))
+    txs = np.arange(txmin, txmax + res, res)
+    tys = np.arange(tymin, tymax + res, res)
+    ix0 = np.round((txs - fxmin) / res).astype(int)
+    iy0 = np.round((tys - fymin) / res).astype(int)
+
+    cand = []                                 # je Heading die 3 staerksten getrennten Maxima
+    for th in np.arange(0.0, 360.0, HEAD_COARSE_STEP):
+        ct, st = math.cos(math.radians(th)), math.sin(math.radians(th))
+        dx = np.round((ct * lx - st * ly) / res).astype(int)
+        dy = np.round((st * lx + ct * ly) / res).astype(int)
+        S = np.zeros((iy0.size, ix0.size))
+        for k in range(dx.size):
+            S += L[np.ix_(iy0 + dy[k], ix0 + dx[k])]
+        taken = []
+        for fi in np.argsort(S.ravel())[::-1][:30]:
+            yy, xx = np.unravel_index(fi, S.shape)
+            if any(abs(yy - a) < 6 and abs(xx - b) < 6 for a, b in taken):
+                continue
+            taken.append((yy, xx))
+            cand.append((float(S[yy, xx]), txs[xx], tys[yy], th))
+            if len(taken) >= 3:
+                break
+    cand.sort(reverse=True)
+    top = []
+    for c in cand:
+        if any(math.hypot(c[1] - o[1], c[2] - o[2]) < CAR_DISTINCT_M and
+               abs((c[3] - o[3] + 180) % 360 - 180) < CAR_DISTINCT_DEG for o in top):
+            continue
+        top.append(c)
+        if len(top) >= 6:
+            break
+
+    def fscore(P, tx, ty, th):
+        ct, st = math.cos(math.radians(th)), math.sin(math.radians(th))
+        wx = tx + ct * P[:, 0] - st * mirror * P[:, 1]
+        wy = ty + st * P[:, 0] + ct * mirror * P[:, 1]
+        dd = ((wx[:, None] - mapx[None]) ** 2 + (wy[:, None] - mapy[None]) ** 2).min(1)
+        return float(np.exp(-dd / (2.0 * SIGMA * SIGMA)).sum()), float((dd < INLIER_M ** 2).mean())
+
+    refined = []
+    for _, tx, ty, th in top:
+        best = (fscore(lp, tx, ty, th)[0], tx, ty, th)
+        for span, step, hspan, hstep in ((0.30, 0.05, 6.0, 1.0), (0.06, 0.01, 1.0, 0.1)):
+            _, bx, by, bh = best
+            for h in np.arange(bh - hspan, bh + hspan + 1e-9, hstep):
+                for x in np.arange(bx - span, bx + span + 1e-9, step):
+                    for y in np.arange(by - span, by + span + 1e-9, step):
+                        f = fscore(lp, x, y, h)[0]
+                        if f > best[0]:
+                            best = (f, x, y, h)
+        refined.append(best)
+    refined.sort(reverse=True)
+    sc, bx, by, bh = refined[0]
+    other = [r for r in refined[1:]
+             if math.hypot(r[1] - bx, r[2] - by) >= CAR_DISTINCT_M or
+             abs((r[3] - bh + 180) % 360 - 180) >= CAR_DISTINCT_DEG]
+    uniq = other[0][0] / sc if other else 0.0
+    inlier = fscore(lp, bx, by, bh)[1]
+    mutual = _mutual(lp, ld)
+    reasons = []
+    if uniq > CAR_MAX_UNIQ:
+        reasons.append("mehrdeutig (%.2f > %.2f)" % (uniq, CAR_MAX_UNIQ))
+    if inlier < CAR_MIN_INLIER:
+        reasons.append("LP40B passt schlecht (%.2f < %.2f)" % (inlier, CAR_MIN_INLIER))
+    if mutual is None:
+        reasons.append("LD06-Scan fehlt")
+    elif mutual < CAR_MIN_MUTUAL:
+        reasons.append("LD06 und LP40B widersprechen sich (%.2f < %.2f)" % (mutual, CAR_MIN_MUTUAL))
+    out = {"accept": not reasons, "reason": "; ".join(reasons) or "ok",
+           "x_mm": int(round(bx * 1000)), "y_mm": int(round(by * 1000)),
+           "heading_deg": round(bh % 360.0, 2), "mirror": int(mirror),
+           "uniq": round(uniq, 3), "inlier_ratio": round(inlier, 3),
+           "mutual": None if mutual is None else round(mutual, 3),
+           "lp_points": int(lp.shape[0]), "ld_points": int(ld.shape[0])}
+    if other:
+        # eigene Schluesselnamen: jsonify sortiert alphabetisch ("second" vor "x_mm"),
+        # der einfache Parser im Geraet nimmt das erste "x_mm" (2026-10-30 so passiert)
+        out["second"] = {"x2_mm": int(round(other[0][1] * 1000)),
+                         "y2_mm": int(round(other[0][2] * 1000)),
+                         "heading2_deg": round(other[0][3] % 360.0, 1)}
+    return out
+
+
 # --- Co-Observation-Kalibrierung (/calibrate) -------------------------------
 # Trajektorien-Registrierung: eine Eigen-Spur (Radar, relativ mm) gegen eine
 # Welt-Spur (welt-posierter Sensor, mm) ausrichten. Korrespondenz kommt aus der
@@ -338,6 +481,34 @@ def do_localize():
              pose["mirror"], pose["confidence"], pose["inlier_ratio"], pose["beams"], nz),
           flush=True)
     return jsonify(pose)
+
+
+@app.post("/localize_carrier")
+def do_localize_carrier():
+    load_map()
+    if _mapx.size == 0:
+        return jsonify(error="no map loaded"), 503
+    data = request.get_json(force=True, silent=True) or {}
+    lp, ld = data.get("lp"), data.get("ld") or []
+    if not isinstance(lp, list) or not isinstance(ld, list):
+        return jsonify(error="body needs {'lp':[[x,y],..], 'ld':[[x,y],..]} (mm, Traeger-System)"), 400
+    try:
+        lp = [(float(p[0]), float(p[1])) for p in lp]
+        ld = [(float(p[0]), float(p[1])) for p in ld]
+    except (TypeError, ValueError, IndexError):
+        return jsonify(error="Punkte als [x,y] in mm"), 400
+    with _map_lock:
+        mapx, mapy = _mapx.copy(), _mapy.copy()
+    t0 = time.time()
+    out = localize_carrier(mapx, mapy, lp, ld, int(data.get("mirror", 1)) or 1)
+    out["secs"] = round(time.time() - t0, 1)
+    print("localize_carrier from %s: %s x=%s y=%s head=%s uniq=%s inlier=%s mutual=%s "
+          "lp=%s ld=%s (%s s) %s"
+          % (request.remote_addr, "OK" if out["accept"] else "ABGELEHNT", out.get("x_mm"),
+             out.get("y_mm"), out.get("heading_deg"), out.get("uniq"), out.get("inlier_ratio"),
+             out.get("mutual"), out.get("lp_points"), out.get("ld_points"), out["secs"],
+             out["reason"]), flush=True)
+    return jsonify(out)
 
 
 @app.post("/calibrate")

@@ -13,7 +13,9 @@
 //  - Test stgLaserFollow: der Laser allein folgt schon jedem catObserved.
 //  - LP40B misst waehrend des Schusses mit (nur Protokoll, keine Bedingung).
 //  - Relais LD06/Compact Dome ueber Einstellungen (NVS), Spot bleibt aus.
-//  - Pose: manuell per VPS (handleCommonMsg), spaeter die Traegerpose.
+//  - Pose: der Traeger bestimmt sie beim Start selbst (poseProc.ino: LP40B-Rundum-
+//    schwenk + LD06 -> VPS /localize_carrier) und gibt dem LD06 seine Pose weiter.
+//    Neu auf Kommando "Kalibrieren"; manuell per VPS (handleCommonMsg) bleibt moeglich.
 // =====================================================================
 #include <xComDef6_3.h>
 #include "hwDef.h"
@@ -23,6 +25,7 @@
 
 #define DEBUG false
 #define ID PA2i
+#define USE_VPS_LOCALIZE             // HTTPClient + jsonNum/jsonStr fuer die Traegerpose
 
 FeetechBus    bus(Serial1);
 FeetechST3020 servo(bus, SERVO_ID);
@@ -52,9 +55,9 @@ void setup() {
   if (!LittleFS.begin(true)) Serial << "LittleFS mount FAILED" << endl;
   initSettings();
   applyPower();
-  // Gespeicherte (manuelle) Pose gilt weiter: geschossen wird ohnehin erst nach dem
-  // Scharfschalten von Hand, also wenn man weiss, wo der Traeger steht.
-  myPose.validWorldPose = loadPose(myPose);
+  // Keine gespeicherte Pose: der Traeger ist mobil und bestimmt sie nach dem Start
+  // selbst (poseTick). Bis dahin wird nicht geschossen.
+  myPose.validWorldPose = false;
   hbState.readyToFire = false;       // nach dem Boot immer gesichert
   hbState.hb.HBperiode = periodeForHB;
   initServo();
@@ -80,7 +83,8 @@ void loop() {
   pollIR();
   serviceServo();
   serviceNoShotMap();
-  engageTick();                      // Zielen + Schuss (aimProc.ino)
+  poseTick();                        // Traegerpose bestimmen (poseProc.ino)
+  engageTick();                      // Zielen + Schuss (zielProc.ino)
 }
 
 // Unicast: gemeinsame Kommandos (Einstellungen, manuelle Pose, Neustart), Scharf/Aus
@@ -94,6 +98,7 @@ void handleCommand(const xMsg& m) {
   }
   cmdPayload c;
   if (m.header.msgCode != commandMsg || !getPayload(m, c)) return;
+  if (c.cmd == cmdCalibrate) { poseStart("Kommando"); return; }
   if (c.cmd == cmdArmFire) {         // info 1 = scharf, 2 = sichern (absolut, VPS);
                                      // 0 = umschalten (Button/Display wie PA1_1)
     hbState.readyToFire = c.info == 1 ? true : c.info == 2 ? false : !hbState.readyToFire;
@@ -106,6 +111,8 @@ void handleCommand(const xMsg& m) {
 void handleBusMsg(const xMsg& m) {
   if (handleCommonMsg(m)) return;
   switch (m.header.msgCode) {
+    case HB:         poseNoteHB(m.header.sender); break;          // IP des LD06
+    case poseReport: poseNoteReport(m.header.sender, m); break;   // LD06 hat seine Pose?
     case fireInhibit: {
       fireInhibitPayload inh;
       if (!getPayload(m, inh)) return;

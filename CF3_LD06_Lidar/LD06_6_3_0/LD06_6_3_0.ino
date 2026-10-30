@@ -187,6 +187,7 @@ void handleCommand(const xMsg& m) {
   cmdPayload c;
   if (m.header.msgCode == commandMsg && getPayload(m, c) && c.cmd == cmdCalibrate) {
     sendUdpTextln("LD06: Hintergrund neu lernen + Pose neu bestimmen");
+    myPose.validWorldPose = false;     // ausdruecklich: selbst neu lokalisieren
     startCalibration();
   }
 }

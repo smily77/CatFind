@@ -11,6 +11,13 @@ static void buildBackgroundScan(uint16_t out[NUM_BINS]) {
 // Pose bestimmen. Kein Rueckgriff auf die NVS-Pose: der Traeger steht frei im Feld
 // und wird umgestellt - eine alte Pose waere falsch. Nur eine HOCH-Pose zaehlt.
 void doLocalize() {
+  // Pose schon da (auf dem PowerActor2-Traeger: vom Traeger uebergeben, sonst manuell
+  // per VPS)? Dann NICHT selbst suchen - gegen den reinen Rasenumriss ist der LD06
+  // mehrdeutig und wuerde die richtige Pose verwerfen oder ueberschreiben.
+  if (myPose.validWorldPose) {
+    sendUdpTextln("LD06: Pose vorhanden (Traeger/manuell) - keine eigene Lokalisierung");
+    return;
+  }
   static uint16_t scan[NUM_BINS];
   buildBackgroundScan(scan);
   int32_t vx = 0, vy = 0; float vh = 0, vinlier = 0; int vmir = 1; String conf = "";

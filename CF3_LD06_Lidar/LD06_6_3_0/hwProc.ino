@@ -213,6 +213,7 @@ void serviceActivation() {
       startCalibration();
     } else if (!act) sendUdpTextln("LD06: Zielerkennung aus (nur Pose)");
   }
+  if (phase == PH_NOLOC && myPose.validWorldPose) phase = PH_ACTIVE;   // Pose kam von aussen
   if (phase == PH_NOLOC && millis() - locFailMs >= LOC_RETRY_MS) {
     sendUdpTextln("LD06: noch keine Pose - neuer Versuch");
     startCalibration();

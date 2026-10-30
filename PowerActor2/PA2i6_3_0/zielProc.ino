@@ -74,7 +74,7 @@ void engageStop(const char* why) {
   if (engState != ENG_IDLE && why)
     sendUdpTextln(String("PowerActor2: Verfolgung beendet (") + why + ", " + String(shots) + " Schuss)");
   engState = ENG_IDLE;
-  lidarStop();
+  if (!poseBusy()) lidarStop();       // der Pose-Schwenk braucht den LP40B weiter
 }
 
 static String atStr(int32_t x, int32_t y) {
@@ -84,6 +84,11 @@ static String atStr(int32_t x, int32_t y) {
 // Bestaetigte Katze (catDetected) oder Nachfuehrung (catTracked): Position uebernehmen,
 // bei Bedarf die Verfolgung starten.
 static void trackUpdate(const catDetectedPayload& cd, bool detected) {
+  if (poseBusy()) {                   // Turm schwenkt fuer die Traegerpose
+    if (detected) sendUdpTextln("PowerActor2: Katze bei " + atStr(cd.worldX, cd.worldY) +
+                                ", Traegerpose-Suche laeuft");
+    return;
+  }
   if (!hbState.readyToFire || inhibited()) {
     if (detected) sendUdpTextln("PowerActor2: Katze bei " + atStr(cd.worldX, cd.worldY) +
                                 (inhibited() ? ", Feuersperre" : ", gesichert"));
