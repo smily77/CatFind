@@ -25,6 +25,8 @@ struct messDaten {
 #define minPix      0
 #define maxPix      30            // > pixelNum: setUpWifi blinkt dann den ganzen Ring
 #define BRIGHTNESS  40
+#define CARRIER_TIMEOUT_MS 30000   // so lange ohne Traeger-Meldung -> wieder eigene Anzeige
+#define CARRIER_FRAME_MS   40      // Traeger-Animation: 25 Bilder/s
 // Ring-Ausrichtung: auf welchen LD06-Winkel (Grad, gegen den Uhrzeigersinn) zeigt
 // Pixel 0, und laufen die Pixelnummern mit (+1) oder gegen (-1) den Winkel?
 // Bestimmt 2026-10-29: der Drehturm liegt bei ~90 Grad (15-17 cm), Pixel 0 zeigt vom

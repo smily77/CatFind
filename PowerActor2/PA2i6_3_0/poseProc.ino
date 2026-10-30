@@ -19,6 +19,7 @@
 enum PoseState { PS_IDLE, PS_TO_START, PS_SWEEP, PS_LD06, PS_HTTP };
 PoseState poseState = PS_IDLE;
 unsigned long poseStateAt = 0, poseNextAt = POSE_START_DELAY_MS;
+bool poseTried = false;                // schon einmal gesucht (sonst: "Traeger startet")
 
 // LP40B-Profil: je 0,5-Grad-Bin bis zu 3 Distanzen (Median gegen Ausreisser)
 #define LP_BINS 720
@@ -72,7 +73,7 @@ static void handClear(PoseHand& h) {
 
 // Kontrolle in 0,5 s ansetzen (bei Uebergabe: neu senden, falls er abweicht)
 static void handRecheck(PoseHand& h) {
-  h.handed = true; h.tries = 0; h.gotValid = false;
+  h.handed = true; h.ok = false; h.tries = 0; h.gotValid = false;
   h.checkAt = millis() + 500;
 }
 
@@ -113,6 +114,7 @@ static uint16_t median3(uint16_t* v, uint8_t n) {
 // Suche starten (Boot-Automatik oder Kommando "Kalibrieren")
 void poseStart(const char* why) {
   if (poseBusy()) return;
+  poseTried = true;
   engageStop("Traegerpose-Suche");
   fireOff();
   lidarStop();
@@ -255,18 +257,64 @@ static void poseAccept() {
 // Traegerpose an LD06/Compact Dome weitergeben (auch nach einer manuellen Pose per VPS)
 void poseHandOver() {
   for (auto& h : hand) {
-    h.tries = 0; h.handed = true;
+    h.tries = 0; h.handed = true; h.ok = false;
     sendHandPose(h);
     if (!h.ip) sendUdpTextln(String("PowerActor2: ") + h.name + " unbekannt - Pose folgt mit seinem HB");
   }
 }
 
+// Traeger-Zustand fuer den LD06-Ring (nur Startphase; danach csDone)
+static float ldAngle(float carrierDeg) {   // Traeger-Richtung (0 = vorn, rechts +) -> LD06-Winkel
+  return wrap360f(90.0f - LD06_ROT_DEG - carrierDeg);
+}
+static void carrierDisplayTick() {
+  static uint8_t last = 0;
+  static unsigned long sentAt = 0, failAt = 0;
+  static uint8_t doneSends = 0;
+  uint8_t st; int32_t val = 0;
+  if (poseBusy()) {
+    st = poseState == PS_LD06 ? csLdScan : poseState == PS_HTTP ? csVps : csSweep;
+    if (st == csSweep) val = lroundf(ldAngle((servoPos - SERVO_CENTER) * 360.0f / 4096.0f));
+  } else if (!myPose.validWorldPose) {
+    if (!settingOn(stgAutoCalib)) st = csWait;
+    else if (!poseTried) st = csStart;
+    else {
+      long left = (long)(poseNextAt - millis());
+      st = csRetry;
+      val = left <= 0 ? 0 : (int32_t)(left * 1000L / (long)POSE_RETRY_MS);
+    }
+  } else {
+    bool pending = false, failed = false;
+    for (auto& h : hand) {
+      if (!h.handed || h.ok) continue;
+      if (h.checkAt) pending = true; else failed = true;
+    }
+    st = pending ? csHandOver : csDone;
+    if (failed && !pending) {
+      if (!failAt) failAt = millis();
+      if (millis() - failAt < CS_FAIL_SHOW_MS) st = csHandFail;
+    } else failAt = 0;
+    if (st != csDone) val = lroundf(ldAngle(0));
+  }
+  if (st == csDone) {                  // ein paar Mal melden (UDP), dann still
+    if (last != csDone) doneSends = 0;
+    if (doneSends >= 3) { last = st; return; }
+  }
+  unsigned long every = st == csSweep ? CS_SWEEP_MS : CS_REPEAT_MS;
+  if (st == last && millis() - sentAt < every) return;
+  last = st; sentAt = millis();
+  if (st == csDone) doneSends++;
+  if (ldIp) sendCmd(ldIp, cmdCarrierState, (int32_t)st | (val << 8));
+}
+
 void poseTick() {
+  carrierDisplayTick();
   // Pose-Uebergabe kontrollieren (UDP ohne Resend)
   for (auto& h : hand) {
     if (!h.checkAt || (long)(millis() - h.checkAt) < 0) continue;
     h.checkAt = 0;
     bool ok = h.gotValid && abs(h.gotX - h.wantX) < 30 && abs(h.gotY - h.wantY) < 30;
+    h.ok = ok;
     if (ok) sendUdpTextln(String("PowerActor2: ") + h.name + "-Pose uebergeben");
     else if (++h.tries < HAND_TRIES) sendHandPose(h);          // evtl. noch blockiert
     else sendUdpTextln(String("PowerActor2: ") + h.name + "-Pose-Uebergabe FEHLGESCHLAGEN");
