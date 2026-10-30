@@ -291,11 +291,21 @@ static float ctDistToSeg(int32_t px, int32_t py, int32_t ax, int32_t ay, int32_t
 // aussen = -minimale Distanz zum naechsten Polygonrand. So bekommt ein Track,
 // der KNAPP AUSSERHALB der Abdeckung geboren wird (Normalfall beim Hereinlaufen),
 // denselben Eintritts-Bonus wie im VPS-Referenzmodell (_edge_dist).
+static float ctTypeWeight(uint8_t sender);
+
+// Randlogik nur aus Sensoren, die allein bestaetigen koennten (Typ-Gewicht >=
+// min_confirm_weight, heute die HLK-Radare): ein Lidar-Kreis (12 m) reicht weit
+// ueber den Garten hinaus und liess JEDE Katze "mitten drin" auftauchen
+// (2026-10-30: Recall 42 % -> 80 % an den markierten Tracks). Wie cov_senders im VPS.
+static inline bool ctCovSensor(uint8_t sender) {
+  return ctTypeWeight(sender) >= CTP.min_confirm_weight;
+}
+
 static float ctPolygonBorderDist(int32_t wx, int32_t wy) {
   float inBest = -1.0f, outBest = 1e9f;
   for (int k = 0; k < CT_MAX_COV_POLYS; k++) {
     CtCoveragePoly& p = ctCov[k];
-    if (!p.used) continue;
+    if (!p.used || !ctCovSensor(p.sender)) continue;
     float d = 1e9f;
     for (int i = 0; i < p.n; i++) {
       int j = (i + 1) % p.n;
@@ -324,7 +334,7 @@ void ctSetPose(uint8_t sender, const worldPosePayload& wp) {
 static bool ctEdgeActive() {
   if (ctCovLoaded) return true;
   for (int i = 0; i < deviceCount; i++)
-    if (device[i].covRangeMm > 0 && ctPose[i].validWorldPose) return true;
+    if (device[i].covRangeMm > 0 && ctPose[i].validWorldPose && ctCovSensor(i)) return true;
   return false;
 }
 
@@ -332,7 +342,7 @@ static float ctUnionBorderDist(int32_t wx, int32_t wy) {
   if (ctCovLoaded) return ctPolygonBorderDist(wx, wy);
   float inBest = -1.0f, outBest = 1e9f;
   for (int i = 0; i < deviceCount; i++) {
-    if (device[i].covRangeMm == 0 || !ctPose[i].validWorldPose) continue;
+    if (device[i].covRangeMm == 0 || !ctPose[i].validWorldPose || !ctCovSensor(i)) continue;
     int xl, yl;
     worldToLocal(wx, wy, ctPose[i], xl, yl);
     float r = sqrtf((float)xl * xl + (float)yl * yl);

@@ -1469,6 +1469,7 @@ def get_coverage(p):
     with _lock:
         poses = dict(_poses)
     polys, sources = _coverage_polygons_for_current(devices, poses)
+    polys = catmodel.cov_senders(polys, devices, p)
     if polys:
         cov = catmodel.build_coverage_polygons(polys, p["cov_cell_mm"],
                                                "polygon" if all(v == "learned" for v in sources.values()) else "mixed")
@@ -1622,6 +1623,7 @@ def coverage_export():
     with _lock:
         poses = dict(_poses)
     polys, sources = _coverage_polygons_for_current(devices, poses)
+    polys = catmodel.cov_senders(polys, devices, p)
     return jsonify(version=1, cell_mm=p["cov_cell_mm"],
                    polygons=[{"sender": sid, "source": sources.get(str(sid), ""),
                               "pose_hash": catmodel.pose_hash(poses.get(sid) or poses.get(str(sid))),
@@ -1639,6 +1641,7 @@ def coverage_export_csv():
     with _lock:
         poses = dict(_poses)
     polys, sources = _coverage_polygons_for_current(devices, poses)
+    polys = catmodel.cov_senders(polys, devices, p)
     lines = ["# CatFinder Coverage-Polygone v1", "# sender,source,n,x1,y1,..."]
     for sid, poly in sorted(polys.items()):
         # ESP32-Budget: max. 16 Ecken - VEREINFACHEN statt abschneiden (ein hartes
@@ -1740,12 +1743,14 @@ def _meta_set(k, v):
 
 def _model_sig():
     """Signatur von allem, was das Modellergebnis beeinflusst: Parameter +
-    „Mäher"-Ausschlussfenster. Ändert sie sich -> kompletter Neuaufbau."""
+    „Mäher"-Ausschlussfenster + Rechenweg-Version. Ändert sie sich ->
+    kompletter Neuaufbau."""
     p = catmodel.merged_params(load_params())
     with _db_lock:
         mow = _db.execute("SELECT t0,t1 FROM labels WHERE label='Mäher' "
                           "ORDER BY t0").fetchall()
-    return hashlib.md5(json.dumps([p, mow], sort_keys=True).encode()).hexdigest()
+    return hashlib.md5(json.dumps([p, mow, catmodel.MODEL_VERSION],
+                                  sort_keys=True).encode()).hexdigest()
 
 
 def _analyzer_step():
