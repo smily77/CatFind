@@ -160,6 +160,7 @@ void handleCommand(const xMsg& m) {
 
 // Multicast vom Bus: catObserved fuettert das Modell, poseReport die Sektoren.
 void handleBusMsg(const xMsg& m) {
+  ctNoteSeen(m.header.sender);         // Lebenszeichen je Sensor (Randlogik: nur online)
   if (handleCommonMsg(m)) return;
   if (m.header.msgCode == mapInfo) {   // Announce: Manager hat eine neue Karte angenommen
     if (mapAnnounceOutdated(m, mapNoShot, NOSHOT_PATH)) {

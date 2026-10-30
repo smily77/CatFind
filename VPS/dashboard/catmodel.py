@@ -49,7 +49,7 @@ import math
 
 # Rechenweg-Version: ändert sie sich, rechnet der VPS-Analysierer alle Tracks
 # neu (Teil von _model_sig, wie die Parameter).
-MODEL_VERSION = "2026-10-30 cov_senders"
+MODEL_VERSION = "2026-10-30 trusted+near"
 
 DEFAULT_PARAMS = {
     # --- Track-Assoziation
@@ -99,6 +99,9 @@ DEFAULT_PARAMS = {
     "quiet_t1_min": 990,            # 16:30 (Mäher lädt spätestens dann wieder)
     # --- Erfassungsgrenzen (empirische Abdeckung)
     "edge_dist_mm": 900,            # "nahe am Rand" der Gesamtabdeckung
+    # Geburt so nah VOR einem (online) Sensor ist kein Eintritt, sondern Nahfeld
+    # (Polygonspitze = Sensorstandort): zaehlt als "mitten drin". 0 = aus.
+    "near_sensor_mm": 1000,
     "cov_cell_mm": 300,             # Rasterzelle der Abdeckung
     "cov_min_events": 3,            # Zelle gilt ab so vielen Events als abgedeckt
     "cov_min_cells": 40,            # darunter: Abdeckung zu dünn -> Randlogik neutral
@@ -636,6 +639,63 @@ def _stationary_now(pts, k, p):
                for pt in tail)
 
 
+def _dist_seg(px, py, ax, ay, bx, by):
+    vx, vy = bx - ax, by - ay
+    den = vx * vx + vy * vy
+    t = ((px - ax) * vx + (py - ay) * vy) / den if den > 0 else 0.0
+    t = min(1.0, max(0.0, t))
+    return math.hypot(ax + t * vx - px, ay + t * vy - py)
+
+
+def _poly_border_dist(polys, x, y):
+    """Signierte Grenzdistanz wie ctPolygonBorderDist im CatIdentifier: innen =
+    maximale Tiefe (>0) über die Polygone, aussen = -minimaler Abstand."""
+    in_best, out_best = -1.0, 1e18
+    for poly in polys:
+        d = min(_dist_seg(x, y, *poly[i], *poly[(i + 1) % len(poly)])
+                for i in range(len(poly)))
+        if point_in_poly(x, y, poly):
+            in_best = max(in_best, d)
+        else:
+            out_best = min(out_best, d)
+    return in_best if in_best >= 0 else -out_best
+
+
+def birth_edge(cov, x, y, t, p):
+    """Randlogik bei der Track-Geburt aus VERTRAUENSWÜRDIGEN Sensoren (online UND
+    eingemessen = gelerntes/von Hand gesetztes Polygon zur aktuellen Pose). Wie
+    ctBirthDist im CatIdentifier. Rückgabe: signierte Distanz (>0 innen, <0
+    aussen) oder None = neutral (weder Eintritts-Bonus noch Mitte-Abzug).
+
+      - kein vertrauenswürdiger Sensor online -> neutral
+      - im Bereich eines online, aber NICHT eingemessenen Sensors (Default-Sektor,
+        z.B. mobiler Compact Dome) ausserhalb der vertrauenswürdigen -> neutral
+      - Offline-Sensoren zählen gar nicht (ihr Bereich ist nicht überwacht)
+      - "Rand" näher als near_sensor_mm am Standort eines online Sensors ist
+        Nahfeld, kein Eintritt -> zählt als "mitten drin"
+    cov["online"](sender, t) -> bool (fehlt = alle online)."""
+    polys = cov.get("polygons") or {}
+    trusted = cov.get("trusted") or set()
+    online = cov.get("online")
+    on = [s for s in polys if online is None or online(s, t)]
+    tr = [polys[s] for s in on if s in trusted]
+    if not tr:
+        return None
+    d = _poly_border_dist(tr, x, y)
+    edge = p["edge_dist_mm"]
+    if d > edge:
+        return d
+    if d < 0 and any(point_in_poly(x, y, polys[s]) for s in on if s not in trusted):
+        return None
+    if abs(d) <= edge and p["near_sensor_mm"] > 0:
+        origins = cov.get("origins") or {}
+        for s in on:
+            o = origins.get(s)
+            if o and math.hypot(x - o[0], y - o[1]) <= p["near_sensor_mm"]:
+                return edge + 1.0
+    return d
+
+
 def _signed_edge(cov, x, y):
     """Signierte Grenzdistanz wie ctUnionBorderDist auf dem ESP32: >0 = drinnen
     (Tiefe bis zum Rand), <0 = draussen (Abstand zum Rand), None = keine
@@ -685,7 +745,10 @@ def score_track(pts, storms, cov, devices, p, tid, w_t0, w_t1):
     # so wie das Gerät birthValid/birthDist bei der Track-Geburt einfriert.
     birth_signed = None
     if clean and edge_active:
-        birth_signed = _signed_edge(cov, clean[0][1], clean[0][2])
+        if cov.get("polygons"):
+            birth_signed = birth_edge(cov, clean[0][1], clean[0][2], clean[0][0], p)
+        else:                                      # empirische Abdeckung (Fallback)
+            birth_signed = _signed_edge(cov, clean[0][1], clean[0][2])
     if birth_signed is not None and abs(birth_signed) <= p["edge_dist_mm"]:
         feats["flags"].append("EINTRITT")         # nahe am Rand geboren (hereingelaufen)
 

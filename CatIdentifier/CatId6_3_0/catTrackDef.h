@@ -14,7 +14,7 @@ struct CatParams {
   int   confirm_score, score_move, score_entry, score_fusion, score_crossing,
         score_long, score_stationary, penalty_mid_birth, penalty_short;
   float crossing_net_mm; int long_track_points; float short_track_s;
-  float max_path_mm, edge_dist_mm;
+  float max_path_mm, edge_dist_mm, near_sensor_mm;
   float stationary_end_s, stationary_radius_mm;
   float storm_window_s, storm_rate_evts_s; int storm_min_events; float storm_scatter_mm;
   float fusion_distance_mm; float fusion_time_s;
@@ -58,6 +58,7 @@ struct CtCoveragePoly {
   bool     used;
   uint8_t  sender;
   uint8_t  n;
+  bool     trusted;                    // eingemessen (VPS-source "learned"), nicht Default-Sektor
   int32_t  x[CT_MAX_COV_VERTS];
   int32_t  y[CT_MAX_COV_VERTS];
 };
