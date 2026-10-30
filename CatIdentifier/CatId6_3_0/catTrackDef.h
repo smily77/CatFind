@@ -19,6 +19,8 @@ struct CatParams {
   float storm_window_s, storm_rate_evts_s; int storm_min_events; float storm_scatter_mm;
   float fusion_distance_mm; float fusion_time_s;
   int   cam_feed;                    // 1 = visionObserved (Kamera) ins Modell
+  int   eye_confirm;                 // 1 = Augen (visionObserved sensor 1) bestaetigen eine Spur
+  float eye_dist_mm, eye_time_s; int score_eyes;
   int   quiet_t0_min, quiet_t1_min;   // NoShot-Zeit (Maeher-Ruhefenster), lokale Minuten
 };
 extern CatParams CTP;               // in catTrack.ino
@@ -33,6 +35,7 @@ struct CtStormSlot { uint32_t key; uint16_t cnt; int32_t x0, x1, y0, y1; };
 #define CT_RING 48
 struct CtTrack {
   bool     used, reported, moveFound, fusion, dead;
+  bool     eyes;                       // Kamera sah leuchtende Augen an der Spur
   double   t0, tLast;
   double   tTracked;                   // letzte catTracked-Nachfuehrung (bestaetigte Tracks)
   int32_t  x0, y0, xLast, yLast;
