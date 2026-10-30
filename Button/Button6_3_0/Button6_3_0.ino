@@ -4,6 +4,8 @@
 //      cmdArmFire absolut (1 = scharf, 2 = sichern) statt Umschalten; ein Tastendruck
 //      sichert alle, wenn irgendeiner scharf ist, sonst schaltet er alle scharf.
 //      Zustand aus den Aktor-HBs; Wiederholung bis bestaetigt; eigener HB + OTA.
+//      Kompilieren: esp32:esp32:m5stack_atom:PartitionScheme=min_spiffs (Default huge_app hat
+//      KEINE OTA-Partition -> OTA "Begin Failed"); USB-Upload nur mit UploadSpeed=115200.
 //#define Atom3S
 #include <xComDef6_3.h>
 #include "hwDef.h"
