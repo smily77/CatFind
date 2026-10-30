@@ -1474,8 +1474,26 @@ def get_coverage(p):
         cov = catmodel.build_coverage_polygons(polys, p["cov_cell_mm"],
                                                "polygon" if all(v == "learned" for v in sources.values()) else "mixed")
         cov["polygon_sources"] = sources
+        # Randlogik (catmodel.birth_edge): nur eingemessene + online Sensoren
+        cov["trusted"] = {sid for sid in polys if sources.get(str(sid)) == "learned"}
+        cov["origins"] = {sid: (poses[sid]["x"], poses[sid]["y"])
+                          for sid in polys if sid in poses}
+        cov["online"] = _hb_online
         return cov
     return _empirical_coverage(p)
+
+
+def _hb_online(sender, t):
+    """War der Sensor zur Zeit t online (Heartbeat in dieser oder der Vorminute)?
+    Ohne jede HB-Spur in diesen Minuten (vor Einfuehrung der Spuren, VPS/Manager
+    aus) gilt er als online - wie im CatIdentifier ohne Wissen nichts verwerfen."""
+    m = int(t // 60)
+    with _reading() as db:
+        rows = db.execute("SELECT sender,cnt FROM hb_minute WHERE minute IN (?,?)",
+                          (m - 1, m)).fetchall()
+    if not rows:
+        return True
+    return any(sid == sender and cnt > 0 for sid, cnt in rows)
 
 
 

@@ -33,7 +33,7 @@ void ctSetDefaults() {
   CTP.score_fusion = 25; CTP.score_crossing = 12; CTP.score_long = 8;
   CTP.score_stationary = 8; CTP.penalty_mid_birth = 12; CTP.penalty_short = 10;
   CTP.crossing_net_mm = 800; CTP.long_track_points = 10; CTP.short_track_s = 0.8f;
-  CTP.max_path_mm = 40000; CTP.edge_dist_mm = 900;
+  CTP.max_path_mm = 40000; CTP.edge_dist_mm = 900; CTP.near_sensor_mm = 1000;
   CTP.stationary_end_s = 3.0f; CTP.stationary_radius_mm = 350;
   CTP.storm_window_s = 3.0f; CTP.storm_rate_evts_s = 8.0f;
   CTP.storm_min_events = 12; CTP.storm_scatter_mm = 2500;
@@ -73,6 +73,7 @@ static bool ctApplyParam(const String& k, float v) {
   else if (k == "short_track_ms")      CTP.short_track_s = v / 1000.0f;
   else if (k == "max_path_mm")         CTP.max_path_mm = v;
   else if (k == "edge_dist_mm")        CTP.edge_dist_mm = v;
+  else if (k == "near_sensor_mm")      CTP.near_sensor_mm = v;
   else if (k == "stationary_end_s")    CTP.stationary_end_s = v;
   else if (k == "stationary_radius_mm") CTP.stationary_radius_mm = v;
   else if (k == "storm_window_ms")     CTP.storm_window_s = v / 1000.0f;
@@ -210,14 +211,17 @@ static bool ctApplyCoverageCsv(const String& body) {
     if (line.length() && line[0] != '#' && used < CT_MAX_COV_POLYS) {
       int pos = 0;
       int sender = ctNextCsv(line, pos);
-      int sourceEnd = line.indexOf(',', pos);       // source-String ueberspringen
+      int sourceEnd = line.indexOf(',', pos);       // source: learned | default
       if (sourceEnd < 0) { if (nl < 0) break; start = nl + 1; continue; }
+      String source = line.substring(pos, sourceEnd);
+      source.trim();
       pos = sourceEnd + 1;
       int n = ctNextCsv(line, pos);
       if (sender >= 0 && sender < deviceCount && n >= 3) {
         if (n > CT_MAX_COV_VERTS) n = CT_MAX_COV_VERTS;
         CtCoveragePoly& p = ctCov[used];
         p.used = true; p.sender = (uint8_t)sender; p.n = (uint8_t)n;
+        p.trusted = (source == "learned");
         bool ok = true;
         for (int i = 0; i < n; i++) {
           if (pos >= (int)line.length()) { ok = false; break; }
@@ -301,11 +305,35 @@ static inline bool ctCovSensor(uint8_t sender) {
   return ctTypeWeight(sender) >= CTP.min_confirm_weight;
 }
 
-static float ctPolygonBorderDist(int32_t wx, int32_t wy) {
+// Online = irgendeine Busmeldung (HB, Events, Pose) in den letzten CT_ONLINE_MS.
+// Ein Offline-Sensor ueberwacht seinen Bereich nicht - er darf den Rand nicht
+// verschieben (Mini_Dome offline liess Geburten vor Dome-C1 "mitten drin" sein).
+#define CT_ONLINE_MS 60000UL
+static uint32_t ctSeenMs[deviceCount];
+static bool     ctSeenAny[deviceCount];
+
+void ctNoteSeen(uint8_t sender) {
+  if (sender >= deviceCount) return;
+  ctSeenMs[sender] = millis();
+  ctSeenAny[sender] = true;
+}
+
+static bool ctOnline(uint8_t sender) {
+  return sender < deviceCount && ctSeenAny[sender] && millis() - ctSeenMs[sender] < CT_ONLINE_MS;
+}
+
+// mode 0 = vertrauenswuerdige Polygone (eingemessen + online), 1 = online, aber
+// nicht eingemessen (Default-Sektor -> neutrale Zone)
+static bool ctPolySelected(const CtCoveragePoly& p, int mode) {
+  if (!p.used || !ctCovSensor(p.sender) || !ctOnline(p.sender)) return false;
+  return mode == 0 ? p.trusted : !p.trusted;
+}
+
+static float ctPolygonBorderDist(int32_t wx, int32_t wy, int mode) {
   float inBest = -1.0f, outBest = 1e9f;
   for (int k = 0; k < CT_MAX_COV_POLYS; k++) {
     CtCoveragePoly& p = ctCov[k];
-    if (!p.used || !ctCovSensor(p.sender)) continue;
+    if (!ctPolySelected(p, mode)) continue;
     float d = 1e9f;
     for (int i = 0; i < p.n; i++) {
       int j = (i + 1) % p.n;
@@ -317,11 +345,12 @@ static float ctPolygonBorderDist(int32_t wx, int32_t wy) {
   return (inBest >= 0) ? inBest : -outBest;
 }
 
+static bool ctAnySelected(int mode) {
+  for (int k = 0; k < CT_MAX_COV_POLYS; k++) if (ctPolySelected(ctCov[k], mode)) return true;
+  return false;
+}
+
 // ------------------------------------------------- Sensor-Posen & Erfassungsrand
-// Sektoren = covL/covR/covRange aus device[] + Welt-Pose (poseReport, mitgehoert).
-// ctUnionDepth: wie tief liegt ein Welt-Punkt in der GESAMT-Abdeckung (Vereinigung
-// aller Sektoren)? >=0 = drin (mm bis zum Rand, analytisch statt Raster wie auf dem
-// VPS), <0 = ausserhalb. Damit zaehlt eine Sensor-Uebergabe nicht als Rand.
 static worldPose ctPose[deviceCount];        // validWorldPose=false solange unbekannt
 
 void ctSetPose(uint8_t sender, const worldPosePayload& wp) {
@@ -331,40 +360,29 @@ void ctSetPose(uint8_t sender, const worldPosePayload& wp) {
   ctPose[sender].validWorldPose = true;
 }
 
-static bool ctEdgeActive() {
-  if (ctCovLoaded) return true;
-  for (int i = 0; i < deviceCount; i++)
-    if (device[i].covRangeMm > 0 && ctPose[i].validWorldPose && ctCovSensor(i)) return true;
-  return false;
-}
-
-static float ctUnionBorderDist(int32_t wx, int32_t wy) {
-  if (ctCovLoaded) return ctPolygonBorderDist(wx, wy);
-  float inBest = -1.0f, outBest = 1e9f;
-  for (int i = 0; i < deviceCount; i++) {
-    if (device[i].covRangeMm == 0 || !ctPose[i].validWorldPose || !ctCovSensor(i)) continue;
-    int xl, yl;
-    worldToLocal(wx, wy, ctPose[i], xl, yl);
-    float r = sqrtf((float)xl * xl + (float)yl * yl);
-    float rng = device[i].covRangeMm;
-    bool full = (device[i].covRightDeg - device[i].covLeftDeg) >= 360;
-    float phi = 0, margin = 0;
-    if (!full) {
-      phi = atan2f((float)xl, (float)yl) * 180.0f / M_PI;         // wie toPol
-      margin = min(phi - device[i].covLeftDeg, (float)device[i].covRightDeg - phi);
-    }
-    if (r <= rng && (full || margin >= 0)) {                      // innen: Tiefe bis zum Rand
-      float depth = rng - r;
-      if (!full) depth = min(depth, margin * (float)M_PI / 180.0f * r);  // Bogenabstand Seitenrand
-      if (depth > inBest) inBest = depth;
-    } else {                                                      // aussen: Abstand zur Grenze (Naeherung)
-      float dr = (r > rng) ? (r - rng) : 0.0f;
-      float da = (!full && margin < 0) ? (-margin * (float)M_PI / 180.0f * min(r, rng)) : 0.0f;
-      float dist = sqrtf(dr * dr + da * da);
-      if (dist < outBest) outBest = dist;
+// Randlogik bei der Track-Geburt - treuer Nachbau von catmodel.birth_edge (VPS).
+// Nur VERTRAUENSWUERDIGE Sensoren (online + eingemessen) bilden den Rand.
+// true + dist (signiert, >0 innen) oder false = neutral (weder Bonus noch Abzug):
+//   - kein vertrauenswuerdiger Sensor online, oder keine Coverage geladen
+//     (die Datenblatt-Sektoren sind nicht eingemessen -> kein Sektor-Fallback mehr)
+//   - ausserhalb der vertrauenswuerdigen, aber im Bereich eines online, nicht
+//     eingemessenen Sensors (z.B. mobiler Compact Dome)
+// "Rand" naeher als near_sensor_mm vor einem online Sensor = Nahfeld -> "mitten drin".
+static bool ctBirthDist(int32_t wx, int32_t wy, float& dist) {
+  if (!ctCovLoaded || !ctAnySelected(0)) return false;
+  float d = ctPolygonBorderDist(wx, wy, 0);
+  float edge = CTP.edge_dist_mm;
+  dist = d;
+  if (d > edge) return true;
+  if (d < 0 && ctAnySelected(1) && ctPolygonBorderDist(wx, wy, 1) >= 0) return false;
+  if (fabsf(d) <= edge && CTP.near_sensor_mm > 0) {
+    for (int i = 0; i < deviceCount; i++) {
+      if (!ctPose[i].validWorldPose || !ctOnline(i) || !ctCovSensor(i)) continue;
+      float dx = (float)(wx - ctPose[i].worldX), dy = (float)(wy - ctPose[i].worldY);
+      if (sqrtf(dx * dx + dy * dy) <= CTP.near_sensor_mm) { dist = edge + 1.0f; return true; }
     }
   }
-  return (inBest >= 0) ? inBest : ((outBest < 1e8f) ? -outBest : -1e9f);
+  return true;
 }
 
 // ------------------------------------------------------------- Sturm je Sensor
@@ -536,8 +554,8 @@ void ctFeed(uint8_t sender, int32_t wx, int32_t wy) {
     tr.used = true;
     tr.t0 = tr.tLast = t;
     tr.x0 = tr.xLast = wx; tr.y0 = tr.yLast = wy;
-    tr.birthValid = ctEdgeActive();
-    tr.birthDist = tr.birthValid ? ctUnionBorderDist(wx, wy) : 0.0f;
+    tr.birthDist = 0.0f;
+    tr.birthValid = ctBirthDist(wx, wy, tr.birthDist);
     best = slot;
   }
   CtTrack& tr = ctTr[best];
