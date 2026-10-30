@@ -96,8 +96,9 @@
 // --- Einstellungen ------------------------------------------------------------------------
 // stgLidarMotor = Speisung LD06, stgRadarPower = Speisung Compact Dome (beide Default AN,
 // persistiert). stgLaserFollow = Test: Laser folgt jedem catObserved (Default AUS, nicht
-// persistiert).
-#define STG_SUPPORTED ((1u<<stgLidarMotor)|(1u<<stgRadarPower)|(1u<<stgLaserFollow))
-#define STG_DEFAULT   ((1u<<stgLidarMotor)|(1u<<stgRadarPower))
-#define STG_PERSIST   ((1u<<stgLidarMotor)|(1u<<stgRadarPower))
+// persistiert). stgAutoCalib = Traegerpose automatisch suchen (beim Start + alle 5 min ohne
+// Pose; AUS z.B. drinnen, "Kalibrieren" geht trotzdem), Default AN, persistiert.
+#define STG_SUPPORTED ((1u<<stgLidarMotor)|(1u<<stgRadarPower)|(1u<<stgLaserFollow)|(1u<<stgAutoCalib))
+#define STG_DEFAULT   ((1u<<stgLidarMotor)|(1u<<stgRadarPower)|(1u<<stgAutoCalib))
+#define STG_PERSIST   ((1u<<stgLidarMotor)|(1u<<stgRadarPower)|(1u<<stgAutoCalib))
 #define STG_ACTIONS   (1u<<actCalibrate)   // "Kalibrieren" = Traegerpose neu bestimmen

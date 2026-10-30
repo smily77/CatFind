@@ -16,7 +16,6 @@
 enum PoseState { PS_IDLE, PS_TO_START, PS_SWEEP, PS_LD06, PS_HTTP };
 PoseState poseState = PS_IDLE;
 unsigned long poseStateAt = 0, poseNextAt = POSE_START_DELAY_MS;
-bool poseAuto = true;                  // automatisch (neu) suchen, solange keine Pose da ist
 
 // LP40B-Profil: je 0,5-Grad-Bin bis zu 3 Distanzen (Median gegen Ausreisser)
 #define LP_BINS 720
@@ -100,7 +99,8 @@ static void poseFail(const String& why) {
   servoGoTo(SERVO_CENTER);
   poseNextAt = millis() + POSE_RETRY_MS;
   sendUdpTextln("PowerActor2: Traegerpose NICHT gefunden - " + why +
-                " (neuer Versuch in " + String(POSE_RETRY_MS / 60000) + " min)");
+                (settingOn(stgAutoCalib) ? " (neuer Versuch in " + String(POSE_RETRY_MS / 60000) + " min)"
+                                         : String(" (Auto-Kalibrierung aus)")));
 }
 
 static void poseHttpTask(void*) {
@@ -214,7 +214,6 @@ static void poseAccept() {
   myPose.validWorldPose = true;
   savePose(myPose);
   sendPoseReport();
-  poseAuto = true;
   sendUdpTextln(statusText("Traegerpose gefunden") + " (Eindeutigkeit " + String(poseUniq, 2) +
                 ", LP40B " + String(poseInlier, 2) + ", LD06 " + String(poseMutual, 2) + ")");
   ldPoseTries = 0;
@@ -234,7 +233,10 @@ void poseTick() {
 
   switch (poseState) {
     case PS_IDLE:
-      if (poseAuto && !myPose.validWorldPose && servoOk && (long)(millis() - poseNextAt) >= 0)
+      // automatisch nur mit stgAutoCalib (z.B. drinnen abschalten: sonst dreht der Turm
+      // alle 5 min); das Kommando "Kalibrieren" startet die Suche immer
+      if (settingOn(stgAutoCalib) && !myPose.validWorldPose && servoOk &&
+          (long)(millis() - poseNextAt) >= 0)
         poseStart("Start");
       return;
 

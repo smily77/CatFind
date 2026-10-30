@@ -339,6 +339,8 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
 #define stgCatLed       1   // catObserved-Anzeige an/aus (Manager: catObserved EMPFANGEN) [persistiert]
 #define stgAutoCopyPose 2   // Auto: Welt-Pose eines Gruppenmitglieds uebernehmen        [persistiert]
 #define stgAutoCalib    3   // Radar: automatische Co-Observation-Kalibrierung          [persistiert]
+                            // PowerActor2: Traegerpose automatisch suchen (Start + alle 5 min
+                            // ohne Pose); AUS z.B. drinnen                             [persistiert]
 #define stgLidarMotor   4   // Lidar: Motor an/aus (Default an, NICHT persistiert).
                             // PowerActor2: Speisung des LD06 (Relais GPIO26)          [persistiert]
 #define stgCatDetLed    5   // catDetected-Anzeige an/aus (Manager: rotes Blinken beim EMPFANG) [persistiert]
