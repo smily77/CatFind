@@ -81,6 +81,8 @@
 #define LD06_MAX_WAIT_MS     30000  // so lange auf das erste Paket warten: nach dem Einschalten
                                     // lokalisiert sich der LD06 gerade selbst (HTTP blockiert)
 #define LD06_WAIT_IP_MS      15000  // LD06 noch nicht gehoert -> so lange warten, dann ohne
+#define LD06_POSE_TRIES      10     // Pose-Uebergabe an den LD06: Versuche ...
+#define LD06_POSE_CHECK_MS   5000   // ... in diesem Abstand (seine eigene Lokalisierung blockiert ~20 s)
 #define LD06_MIN_QUALITY     150
 #define LD06_MIN_MM          400
 

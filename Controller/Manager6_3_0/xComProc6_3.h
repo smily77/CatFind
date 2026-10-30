@@ -689,20 +689,33 @@ bool handleCommonMsg(const xMsg& m) {
       // Manuelle VPS-Pose: generisch fuer alle Geraete mit myPose.
       // Der Sensor speichert am Ende exakt dieselbe worldPose-Struktur wie nach
       // automatischer /localize- oder /calibrate-Antwort: Pose ist Pose.
+      // Uebernommen wird nur, wenn X, Y und Heading seit der letzten Uebernahme
+      // wirklich angekommen sind: mit nur EINEM Unicast-Puffer gehen Kommandos verloren,
+      // waehrend das Geraet blockiert (z.B. eigene VPS-Lokalisierung) - der LD06 hat so
+      // 2026-10-30 eine Pose 0/0/0 als gueltig uebernommen.
       if (c.cmd == cmdManualPoseX) {
         manualPoseDraft = myPose;
         manualPoseDraft.worldX = c.info;
+        manualPoseHave = 1;
         return true;
       }
       if (c.cmd == cmdManualPoseY) {
         manualPoseDraft.worldY = c.info;
+        manualPoseHave |= 2;
         return true;
       }
       if (c.cmd == cmdManualPoseHeading) {
         manualPoseDraft.heading = (float)(((c.info % 4096) + 4096) % 4096);
+        manualPoseHave |= 4;
         return true;
       }
       if (c.cmd == cmdManualPoseMirrorCommit) {
+        if (manualPoseHave != 7) {
+          sendUdpTextln("Manuelle Pose UNVOLLSTAENDIG (" + String(manualPoseHave) + "/7) - verworfen");
+          manualPoseHave = 0;
+          return true;
+        }
+        manualPoseHave = 0;
         manualPoseDraft.mirror = (c.info < 0) ? -1 : 1;
         manualPoseDraft.validWorldPose = true;
         myPose = manualPoseDraft;

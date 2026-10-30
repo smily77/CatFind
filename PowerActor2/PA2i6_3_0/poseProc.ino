@@ -204,7 +204,7 @@ static void sendLd06Pose() {
   c.cmd = cmdManualPoseHeading;      c.info = hu;      unicastMsg(commandMsg, c, ldIp); delay(30);
   c.cmd = cmdManualPoseMirrorCommit; c.info = 1;       unicastMsg(commandMsg, c, ldIp);
   ldPoseValid = false;
-  ldPoseCheckAt = millis() + 3000;
+  ldPoseCheckAt = millis() + LD06_POSE_CHECK_MS;
 }
 
 static void poseAccept() {
@@ -228,7 +228,7 @@ void poseTick() {
     ldPoseCheckAt = 0;
     bool ok = ldPoseValid && abs(ldPoseX - ldWantX) < 30 && abs(ldPoseY - ldWantY) < 30;
     if (ok) sendUdpTextln("PowerActor2: LD06-Pose uebergeben");
-    else if (++ldPoseTries < 3) sendLd06Pose();
+    else if (++ldPoseTries < LD06_POSE_TRIES) sendLd06Pose();   // LD06 evtl. noch blockiert
     else sendUdpTextln("PowerActor2: LD06-Pose-Uebergabe FEHLGESCHLAGEN");
   }
 

@@ -451,6 +451,7 @@ struct worldPose {
 };
 worldPose myPose = { 0, 0, 0.0f, 1, false };
 worldPose manualPoseDraft = { 0, 0, 0.0f, 1, false };
+uint8_t   manualPoseHave = 0;     // Bit 0/1/2 = X/Y/Heading seit der letzten Uebernahme erhalten
 
 //---------------------------------------------------------------------------------------
 // Einstellungen dieses Geraets. supported/actions kommen aus der hwDef (STG_*), values
