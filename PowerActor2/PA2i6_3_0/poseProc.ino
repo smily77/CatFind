@@ -31,7 +31,7 @@ uint16_t ldVal[360][LD_PER_BIN];
 uint8_t  ldCnt[360];
 uint8_t  ldIp = 0;                     // letztes Oktett des LD06 (DHCP, aus seinem HB)
 WiFiUDP  ldUdp;
-unsigned long ldReqAt = 0;
+unsigned long ldReqAt = 0, ldFirstAt = 0;   // ldFirstAt: erstes Rohdaten-Paket (0 = noch keins)
 uint32_t ldPoints = 0;
 int32_t  ldPoseX = 0, ldPoseY = 0;     // zuletzt vom LD06 gemeldete Pose (poseReport)
 bool     ldPoseValid = false;
@@ -173,7 +173,8 @@ static void readLd06() {
     static uint8_t buf[5 + 96 * 5];
     int n = ldUdp.read(buf, sizeof(buf));
     if (n < 5 || buf[0] != 'L' || buf[1] != '6') continue;
-    if (millis() - poseStateAt < LD06_SPINUP_MS) continue;    // Motor laeuft erst an
+    if (!ldFirstAt) ldFirstAt = millis();
+    if (millis() - ldFirstAt < LD06_SPINUP_MS) continue;      // Motor laeuft erst an
     uint8_t cnt = buf[4];
     for (int i = 0; i < cnt && 5 + 5 * i + 5 <= n; i++) {
       const uint8_t* p = buf + 5 + 5 * i;
@@ -271,7 +272,7 @@ void poseTick() {
         servoGoTo(SERVO_CENTER);
         if (lpSamples < 200) { poseFail("zu wenige LP40B-Messungen (" + String(lpSamples) + ")"); return; }
         ldUdp.begin(LD06_DATA_PORT);
-        ldReqAt = 0;
+        ldReqAt = 0; ldFirstAt = 0;
         poseState = PS_LD06;
         poseStateAt = millis();
       }
@@ -286,7 +287,8 @@ void poseTick() {
         ldReqAt = millis();
       }
       readLd06();
-      if (millis() - poseStateAt > (ldIp ? LD06_SCAN_MS : LD06_WAIT_IP_MS)) {
+      if ((ldFirstAt && millis() - ldFirstAt > LD06_SPINUP_MS + LD06_SCAN_MS) ||
+          millis() - poseStateAt > (ldIp ? LD06_MAX_WAIT_MS : LD06_WAIT_IP_MS)) {
         ldUdp.stop();
         buildBody();
         poseHttpDone = false;
