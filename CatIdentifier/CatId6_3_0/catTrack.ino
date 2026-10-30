@@ -40,6 +40,9 @@ void ctSetDefaults() {
   CTP.fusion_distance_mm = 500; CTP.fusion_time_s = 0.7f;
   CTP.cam_feed = 0;
   CTP.eye_confirm = 1; CTP.eye_dist_mm = 1500; CTP.eye_time_s = 5.0f; CTP.score_eyes = 100;
+  CTP.cont_confirm = 1; CTP.cont_gap_s = 15.0f; CTP.cont_dist_mm = 5000;
+  CTP.cont_v_min_mm_s = 150; CTP.cont_v_max_mm_s = 3000; CTP.cont_near_mm = 800;
+  CTP.cont_angle_deg = 60;
   CTP.quiet_t0_min = 900; CTP.quiet_t1_min = 990;   // NoShot-Zeit 15:00-16:30 lokal
 }
 
@@ -88,6 +91,13 @@ static bool ctApplyParam(const String& k, float v) {
   else if (k == "eye_dist_mm")         CTP.eye_dist_mm = v;
   else if (k == "eye_time_ms")         CTP.eye_time_s = v / 1000.0f;
   else if (k == "score_eyes")          CTP.score_eyes = (int)v;
+  else if (k == "cont_confirm")        CTP.cont_confirm = (int)v;
+  else if (k == "cont_gap_ms")         CTP.cont_gap_s = v / 1000.0f;
+  else if (k == "cont_dist_mm")        CTP.cont_dist_mm = v;
+  else if (k == "cont_v_min_mm_s")     CTP.cont_v_min_mm_s = v;
+  else if (k == "cont_v_max_mm_s")     CTP.cont_v_max_mm_s = v;
+  else if (k == "cont_near_mm")        CTP.cont_near_mm = v;
+  else if (k == "cont_angle_deg")      CTP.cont_angle_deg = v;
   else if (k == "quiet_t0_min")        CTP.quiet_t0_min = (int)v;
   else if (k == "quiet_t1_min")        CTP.quiet_t1_min = (int)v;
   else return false;                   // unbekannt (z.B. reine VPS-Parameter) - ok
@@ -492,10 +502,86 @@ static bool ctCheckStationary(const CtTrack& tr) {
 }
 
 // Score kausal bewerten und ggf. catDetected ausloesen
+// Laufrichtung am Ende des Tracks (letzte 2 s im Ring), Vektor in mm
+static void ctHeading(const CtTrack& tr, float& hx, float& hy) {
+  hx = hy = 0;
+  for (int i = tr.rn - 1; i >= 0; i--) {
+    int ci = ctRingIdx(tr, i);
+    if (tr.tLast - tr.rt[ci] > 2.0) break;
+    hx = tr.xLast - tr.rx[ci]; hy = tr.yLast - tr.ry[ci];
+  }
+}
+
+// Austritt einer bestaetigten Katze merken, bevor ihr Track-Platz frei wird
+static CtExit ctEx[CT_EXITS];
+static void ctNoteExit(const CtTrack& tr) {
+  if (!tr.used || !tr.reported || tr.dead) return;
+  int slot = 0;                        // freien Platz, sonst den aeltesten
+  for (int i = 0; i < CT_EXITS; i++) {
+    if (!ctEx[i].used) { slot = i; break; }
+    if (ctEx[i].t < ctEx[slot].t) slot = i;
+  }
+  CtExit& e = ctEx[slot];
+  e.used = true; e.t = tr.tLast; e.x = tr.xLast; e.y = tr.yLast;
+  ctHeading(tr, e.hx, e.hy);
+}
+
+// Setzt eine Geburt bei (wx, wy) zur Zeit t eine bestaetigte Katze fort? Wie
+// catmodel._cont_match: Luecke, Distanz, Tempo ueber die Luecke, Richtung.
+static bool ctContOne(double te, int32_t xe, int32_t ye, float hx, float hy,
+                      double t, int32_t wx, int32_t wy) {
+  double gt = t - te;
+  if (gt < 0 || gt > CTP.cont_gap_s) return false;
+  float gx = wx - xe, gy = wy - ye, gd = sqrtf(gx * gx + gy * gy);
+  if (gd > CTP.cont_dist_mm) return false;
+  float v = gd / (float)max(gt, 0.2);
+  if (v > CTP.cont_v_max_mm_s || (v < CTP.cont_v_min_mm_s && gd > CTP.cont_near_mm)) return false;
+  float hd = sqrtf(hx * hx + hy * hy);
+  if (hd > 300 && gd > 300) {
+    float cs = (hx * gx + hy * gy) / (hd * gd);
+    if (cs < cosf(CTP.cont_angle_deg * (float)M_PI / 180.0f)) return false;
+  }
+  return true;
+}
+
+static bool ctContMatch(double t, int32_t wx, int32_t wy) {
+  if (!CTP.cont_confirm) return false;
+  for (int i = 0; i < CT_MAX_TRACKS; i++) {
+    const CtTrack& a = ctTr[i];
+    if (!a.used || !a.reported || a.dead) continue;
+    float hx, hy; ctHeading(a, hx, hy);
+    if (ctContOne(a.tLast, a.xLast, a.yLast, hx, hy, t, wx, wy)) return true;
+  }
+  for (int i = 0; i < CT_EXITS; i++)
+    if (ctEx[i].used && ctContOne(ctEx[i].t, ctEx[i].x, ctEx[i].y, ctEx[i].hx, ctEx[i].hy, t, wx, wy))
+      return true;
+  return false;
+}
+
+static void ctTrackPayload(const CtTrack& tr, bool stationary, catDetectedPayload& cd) {
+  cd.worldX = tr.xLast; cd.worldY = tr.yLast;
+  cd.score = (uint8_t)CTP.confirm_score;
+  cd.flags = (stationary ? catDetFlagStationary : 0) | (tr.fusion ? catDetFlagFusion : 0);
+  cd.trackMs = (uint32_t)((tr.tLast - tr.t0) * 1000.0);
+  float ndx = tr.xLast - tr.x0, ndy = tr.yLast - tr.y0;
+  cd.netMm = (int32_t)sqrtf(ndx * ndx + ndy * ndy);
+}
+
 static void ctEvaluate(CtTrack& tr, bool stationaryNow) {
   if (tr.dead || tr.reported) return;
   if (CTP.max_path_mm > 0 && tr.path > CTP.max_path_mm) {   // Maeher/Person: hartes K.o.
     tr.dead = true;
+    return;
+  }
+  if (tr.cont && tr.n >= 2) {          // Fortsetzung: dieselbe Katze, kein neues catDetected -
+    tr.reported = true;                // die Aktoren folgen per catTracked weiter
+    tr.tTracked = tr.tLast;
+    catDetectedPayload cd;
+    ctTrackPayload(tr, stationaryNow, cd);
+    announceTrack(cd);
+    if (deviceActive() && !ctInQuietWindow())
+      sendUdpTextln("CatIdent: Fortsetzung einer bestaetigten Katze bei x=" + String(tr.xLast) +
+                    " y=" + String(tr.yLast));
     return;
   }
   if (!tr.moveFound && !tr.eyes) return;                   // Pflicht wie im VPS-Modell
@@ -540,7 +626,7 @@ void ctFeed(uint8_t sender, int32_t wx, int32_t wy) {
     CtTrack& tr = ctTr[i];
     if (!tr.used) continue;
     double dt = t - tr.tLast;
-    if (dt > CTP.stitch_gap_s) { tr.used = false; continue; }   // abgelaufen
+    if (dt > CTP.stitch_gap_s) { ctNoteExit(tr); tr.used = false; continue; }   // abgelaufen
     float gate = (dt <= CTP.track_gap_s)
                    ? CTP.gate_base_mm + CTP.gate_speed_mm_s * (float)max(dt, 0.0)
                    : CTP.stitch_dist_mm;
@@ -555,8 +641,11 @@ void ctFeed(uint8_t sender, int32_t wx, int32_t wy) {
     if (slot < 0)                                           // alle belegt: aeltesten opfern
       for (int i = 0; i < CT_MAX_TRACKS; i++)
         if (ctTr[i].tLast < oldest) { oldest = ctTr[i].tLast; slot = i; }
+    bool cont = ctContMatch(t, wx, wy);
     CtTrack& tr = ctTr[slot];
+    ctNoteExit(tr);                                         // geopferte bestaetigte Katze merken
     memset(&tr, 0, sizeof(tr));
+    tr.cont = cont;
     tr.used = true;
     tr.t0 = tr.tLast = t;
     tr.x0 = tr.xLast = wx; tr.y0 = tr.yLast = wy;
@@ -596,12 +685,7 @@ void ctFeed(uint8_t sender, int32_t wx, int32_t wy) {
   if (wasReported && t - tr.tTracked >= CT_TRACKED_S) {
     tr.tTracked = t;
     catDetectedPayload cd;
-    cd.worldX = tr.xLast; cd.worldY = tr.yLast;
-    cd.score = (uint8_t)CTP.confirm_score;
-    cd.flags = (stationary ? catDetFlagStationary : 0) | (tr.fusion ? catDetFlagFusion : 0);
-    cd.trackMs = (uint32_t)((tr.tLast - tr.t0) * 1000.0);
-    float ndx = tr.xLast - tr.x0, ndy = tr.yLast - tr.y0;
-    cd.netMm = (int32_t)sqrtf(ndx * ndx + ndy * ndy);
+    ctTrackPayload(tr, stationary, cd);
     announceTrack(cd);
   }
 }
@@ -632,5 +716,5 @@ void ctTick() {
   lastSweep = millis();
   double t = ctNow();
   for (int i = 0; i < CT_MAX_TRACKS; i++)
-    if (ctTr[i].used && t - ctTr[i].tLast > CTP.stitch_gap_s) ctTr[i].used = false;
+    if (ctTr[i].used && t - ctTr[i].tLast > CTP.stitch_gap_s) { ctNoteExit(ctTr[i]); ctTr[i].used = false; }
 }

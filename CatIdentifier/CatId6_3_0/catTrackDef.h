@@ -21,6 +21,8 @@ struct CatParams {
   int   cam_feed;                    // 1 = visionObserved (Kamera) ins Modell
   int   eye_confirm;                 // 1 = Augen (visionObserved sensor 1) bestaetigen eine Spur
   float eye_dist_mm, eye_time_s; int score_eyes;
+  int   cont_confirm;                // 1 = Fortsetzung erbt die Bestaetigung (catmodel.continuations)
+  float cont_gap_s, cont_dist_mm, cont_v_min_mm_s, cont_v_max_mm_s, cont_near_mm, cont_angle_deg;
   int   quiet_t0_min, quiet_t1_min;   // NoShot-Zeit (Maeher-Ruhefenster), lokale Minuten
 };
 extern CatParams CTP;               // in catTrack.ino
@@ -36,6 +38,7 @@ struct CtStormSlot { uint32_t key; uint16_t cnt; int32_t x0, x1, y0, y1; };
 struct CtTrack {
   bool     used, reported, moveFound, fusion, dead;
   bool     eyes;                       // Kamera sah leuchtende Augen an der Spur
+  bool     cont;                       // bei Geburt: setzt eine bestaetigte Katze fort
   double   t0, tLast;
   double   tTracked;                   // letzte catTracked-Nachfuehrung (bestaetigte Tracks)
   int32_t  x0, y0, xLast, yLast;
@@ -52,6 +55,9 @@ struct CtTrack {
   uint8_t  rn, rh;                     // Anzahl (<=CT_RING), Schreibkopf
 };
 
+// Austritt einer bestaetigten Katze (fuer Fortsetzungen nach dem Freigeben des Tracks)
+#define CT_EXITS 4
+struct CtExit { bool used; double t; int32_t x, y; float hx, hy; };
 
 // Erfassungs-Polygone vom VPS (/coverage_export.csv). Der ESP32 nutzt eine
 // Liste aktiver Polygone (inside-any) statt eine teure Polygon-Union zu bauen.
