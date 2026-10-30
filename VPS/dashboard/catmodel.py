@@ -47,6 +47,10 @@ die ESP32-Implementierung (catTrack.ino spiegelt score_track 1:1).
 """
 import math
 
+# Rechenweg-Version: ändert sie sich, rechnet der VPS-Analysierer alle Tracks
+# neu (Teil von _model_sig, wie die Parameter).
+MODEL_VERSION = "2026-10-30 cov_senders"
+
 DEFAULT_PARAMS = {
     # --- Track-Assoziation
     "gate_speed_mm_s": 4000,        # max. Katzengeschwindigkeit fürs Gate
@@ -151,6 +155,16 @@ def _weight(p, devices, sender):
 
 
 # ---------------------------------------------------------------- Abdeckung
+
+def cov_senders(polys, devices, p):
+    """Nur Sensoren, die allein bestätigen könnten (Typ-Gewicht >=
+    min_confirm_weight, heute die HLK-Radare), bilden die Gesamtabdeckung der
+    Randlogik. Ein Lidar-Kreis (12 m) reicht weit über den Garten hinaus — mit
+    ihm galt JEDE Katze als "mitten drin aufgetaucht" (2026-10-30: Recall an den
+    markierten Katzen/Füchsen 42 % -> 80 %). Wie ctCovSensor im CatIdentifier."""
+    return {sid: poly for sid, poly in (polys or {}).items()
+            if _weight(p, devices, sid) >= p["min_confirm_weight"]}
+
 
 def _cov_finish(senders, cell_mm, source, sectors=None):
     """Gemeinsamer Abschluss beider Abdeckungs-Bauer: Union + Randzellen."""
