@@ -49,7 +49,7 @@ import math
 
 # Rechenweg-Version: ändert sie sich, rechnet der VPS-Analysierer alle Tracks
 # neu (Teil von _model_sig, wie die Parameter).
-MODEL_VERSION = "2026-10-30 trusted+near"
+MODEL_VERSION = "2026-10-30 trusted+near+eyes"
 
 DEFAULT_PARAMS = {
     # --- Track-Assoziation
@@ -122,6 +122,14 @@ DEFAULT_PARAMS = {
     #     wie ein weiterer Sensor. 0 = nur aufgezeichnet und angezeigt, damit
     #     man erst prüft, ob sie das Modell besser machen (gilt auch im ESP32).
     "cam_feed": 0,
+    # --- Augen-Bestaetigung (KIVision-Augensuche, visionObserved sensor=1): leuchtende
+    #     Augen nahe einer laufenden Radarspur bestaetigen sie sofort als Katze (auch
+    #     ohne kohaerente Bewegung). Allein bewirken Augen nichts; die Bewegungsspuren
+    #     der Kamera (sensor=0) bleiben ueber cam_feed abgeschaltet.
+    "eye_confirm": 1,
+    "eye_dist_mm": 1500,            # Augen hoechstens so weit vom letzten Spurpunkt
+    "eye_time_ms": 5000,            # ... und hoechstens so lange nach ihm
+    "score_eyes": 100,
 }
 
 
@@ -132,6 +140,37 @@ def _drop_vision(events, p, devices):
         return events
     cams = {int(k) for k, d in devices.items() if (d or {}).get("type") == "VisionLocator"}
     return [e for e in events if e["sender"] not in cams] if cams else events
+
+
+def split_eyes(events, devices):
+    """Augen-Meldungen der Kamera (Typ VisionLocator, sensor=1) -> sortierte
+    [(t, x, y)] fuer die Augen-Bestaetigung; sie fliessen nie ins Tracking."""
+    if not devices:
+        return []
+    cams = {int(k) for k, d in devices.items() if (d or {}).get("type") == "VisionLocator"}
+    return sorted((e["t"], e["wx"], e["wy"]) for e in events
+                  if e["sender"] in cams and e.get("sensor") == 1)
+
+
+def _eye_time(clean, eyes, p):
+    """Erste Augen-Meldung, die zu dieser Spur passt (kausal wie ctEyes auf dem
+    Geraet): hoechstens eye_time_ms nach dem letzten Spurpunkt davor und hoechstens
+    eye_dist_mm von ihm entfernt. None = keine."""
+    if not eyes or not clean or not p["eye_confirm"]:
+        return None
+    win = p["eye_time_ms"] / 1000.0
+    k = 0
+    for te, ex, ey in eyes:
+        if te < clean[0][0]:
+            continue
+        if te > clean[-1][0] + win:
+            break
+        while k + 1 < len(clean) and clean[k + 1][0] <= te:
+            k += 1
+        pt = clean[k]
+        if te - pt[0] <= win and math.hypot(ex - pt[1], ey - pt[2]) <= p["eye_dist_mm"]:
+            return te
+    return None
 
 
 def merged_params(params):
@@ -706,7 +745,7 @@ def _signed_edge(cov, x, y):
     return ed if _in_union(cov, x, y) else -ed
 
 
-def score_track(pts, storms, cov, devices, p, tid, w_t0, w_t1):
+def score_track(pts, storms, cov, devices, p, tid, w_t0, w_t1, eyes=None):
     """KAUSALE Bewertung — treuer Nachbau der Echtzeit-Erkennung des
     CatIdentifier (catTrack.ino, ctFeed/ctEvaluate). Statt den fertigen Track als
     Ganzes zu bewerten (retrospektiv), wird er Punkt für Punkt durchgespielt und
@@ -717,7 +756,8 @@ def score_track(pts, storms, cov, devices, p, tid, w_t0, w_t1):
     das Gerät im Feld entscheiden würde, und das Modell lässt sich daran justieren.
 
     w_t0 wird nicht mehr gebraucht (das Gerät hat immer eine echte Geburt);
-    w_t1 markiert nur noch einen am Fensterende offenen Track als OFFEN."""
+    w_t1 markiert nur noch einen am Fensterende offenen Track als OFFEN.
+    eyes: [(t,x,y)] Augen-Meldungen der Kamera (split_eyes) fuer die Augen-Bestaetigung."""
     gap = p["track_gap_ms"] / 1000.0
     # Sturmpunkte fallen VOR dem Tracking weg (ctFeed kehrt bei Sturm sofort um) —
     # der Durchlauf sieht nur die sturmbereinigten Punkte, wie auf dem Gerät.
@@ -756,6 +796,10 @@ def score_track(pts, storms, cov, devices, p, tid, w_t0, w_t1):
     # eine kohärente Bewegung zeigt — _find_move liefert genau diesen Zeitpunkt.
     move = _find_move(clean, devices, p) if clean else None
     move_t = move[0] if move else None
+    # Augen nahe der Spur: ab diesem Moment gilt sie als Katze (Geraet: ctEyes)
+    eye_t = _eye_time(clean, eyes, p)
+    if eye_t is not None:
+        feats["flags"].append("AUGEN")
 
     st = p["confirm_score"]                        # Bestätigungsschwelle
     stat_gate = st - p["score_stationary"]         # ab hier kann Sitzen kippen/zählen
@@ -771,9 +815,17 @@ def score_track(pts, storms, cov, devices, p, tid, w_t0, w_t1):
     fus_dist = p["fusion_distance_mm"]
     fus_win = p["fusion_time_ms"] / 1000.0
 
-    for k in range(len(clean)):
+    # Auswertungsschritte: jeder Spurpunkt, dazu der Moment der Augen-Meldung mit dem
+    # Stand des letzten Punkts davor (das Geraet bestaetigt beim Eintreffen der Augen)
+    steps = [(k, None) for k in range(len(clean))]
+    if eye_t is not None:
+        k_eye = max(k for k in range(len(clean)) if clean[k][0] <= eye_t)
+        steps.insert(k_eye + 1, (k_eye, eye_t))
+
+    for k, t_eval in steps:
         t, x, y, snd = clean[k][0], clean[k][1], clean[k][2], clean[k][3]
-        if k > 0:
+        eyes_now = eye_t is not None and (t_eval is not None or t >= eye_t)
+        if t_eval is None and k > 0:
             path += math.hypot(x - clean[k - 1][1], y - clean[k - 1][2])
         # Fusion (sticky): anderer Sender sah fast gleichzeitig fast denselben Ort
         if not fusion:
@@ -790,11 +842,17 @@ def score_track(pts, storms, cov, devices, p, tid, w_t0, w_t1):
         if p["max_path_mm"] > 0 and path > p["max_path_mm"]:
             dead_far = True
             break
-        if move_t is None or t < move_t:
-            continue                               # Pflicht: kohärente Bewegung gefunden
+        moving = move_t is not None and t >= move_t
+        if not moving and not eyes_now:
+            continue                               # Pflicht: kohärente Bewegung (oder Augen)
         # ---- laufender Score mit ausschliesslich kausalen Merkmalen ----
-        detail = [["kohärente Bewegung", p["score_move"]]]
-        score = p["score_move"]
+        detail, score = [], 0
+        if moving:
+            detail.append(["kohärente Bewegung", p["score_move"]])
+            score = p["score_move"]
+        if eyes_now:
+            detail.append(["leuchtende Augen (Kamera)", p["score_eyes"]])
+            score += p["score_eyes"]
         if math.hypot(x - x0, y - y0) >= p["crossing_net_mm"]:
             score += p["score_crossing"]
             detail.append(["durchquert das Feld", p["score_crossing"]])
@@ -824,7 +882,7 @@ def score_track(pts, storms, cov, devices, p, tid, w_t0, w_t1):
             best_score, best_detail = score, detail
         if score >= st:
             reported = True
-            t_confirm, conf_score, conf_detail = t, score, detail
+            t_confirm, conf_score, conf_detail = (t_eval or t), score, detail
 
     if _stationary_end(pts, p):
         feats["flags"].append("STATIONAER")        # sitzt — koten? Ziel nicht verlieren!
@@ -872,6 +930,7 @@ def analyze(events, params=None, devices=None, coverage=None, exclude=None):
     Aufnahme und in der Karten-/Zeitleisten-Darstellung — sie fließen nur nicht
     in Tracking/Bestätigung ein."""
     p = merged_params(params)
+    eyes = split_eyes(events, devices)
     events = _drop_vision(events, p, devices)
     n_raw = len(events)
     if exclude:
@@ -882,7 +941,7 @@ def analyze(events, params=None, devices=None, coverage=None, exclude=None):
     tracks = stitch_tracks(build_tracks(evs, p), p)
     w_t0 = evs[0]["t"] if evs else 0.0
     w_t1 = evs[-1]["t"] if evs else 0.0
-    scored = [score_track(tr, storms, coverage, devices, p, i, w_t0, w_t1)
+    scored = [score_track(tr, storms, coverage, devices, p, i, w_t0, w_t1, eyes)
               for i, tr in enumerate(tracks)]
     return {
         "tracks": scored,
@@ -910,6 +969,7 @@ def analyze_stream(events, params=None, devices=None, coverage=None,
     möglicherweise noch und bleiben provisorisch (Flag OFFEN, kein
     Austritts-Urteil). Rückgabe {"final": [...], "prov": [...], "storms": {}}."""
     p = merged_params(params)
+    eyes = split_eyes(events, devices)
     events = _drop_vision(events, p, devices)
     if exclude:
         events = [e for e in events
@@ -923,9 +983,9 @@ def analyze_stream(events, params=None, devices=None, coverage=None,
         if tr[-1][0] < fb:
             # fertig: Geburt/Tod sind echt beobachtet -> volle Randlogik
             final.append(score_track(tr, storms, coverage, devices, p, 0,
-                                     -1e18, 1e18))
+                                     -1e18, 1e18, eyes))
         else:
             # läuft evtl. noch: w_t1 = fb setzt das Flag OFFEN (kein Austritts-Malus)
             prov.append(score_track(tr, storms, coverage, devices, p, 0,
-                                    -1e18, fb))
+                                    -1e18, fb, eyes))
     return {"final": final, "prov": prov, "storms": storms, "params": p}

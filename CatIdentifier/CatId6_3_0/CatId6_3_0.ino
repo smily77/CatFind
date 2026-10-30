@@ -172,6 +172,12 @@ void handleBusMsg(const xMsg& m) {
   }
   // visionObserved (Kamera) nur mit cam_feed=1 - erst pruefen, ob die Kamera-
   // Spuren das Modell besser machen, bevor sie die Feuer-Entscheidung beeinflussen.
+  // Augen (sensor 1) bestaetigen eine laufende Radarspur (eye_confirm), unabhaengig von cam_feed
+  if (m.header.msgCode == visionObserved && m.header.sender != ID && deviceActive() &&
+      !ctInQuietWindow()) {
+    posPayload eo;
+    if (getPayload(m, eo) && eo.worldValid && eo.sensor == 1) ctEyes(eo.worldX, eo.worldY);
+  }
   bool vision = m.header.msgCode == visionObserved && CTP.cam_feed;
   if ((m.header.msgCode == catObserved || vision) && m.header.sender != ID) {
     if (!deviceActive()) return;       // Ruhemodus (stgActive AUS): Modell wird nicht gefuettert

@@ -39,6 +39,7 @@ void ctSetDefaults() {
   CTP.storm_min_events = 12; CTP.storm_scatter_mm = 2500;
   CTP.fusion_distance_mm = 500; CTP.fusion_time_s = 0.7f;
   CTP.cam_feed = 0;
+  CTP.eye_confirm = 1; CTP.eye_dist_mm = 1500; CTP.eye_time_s = 5.0f; CTP.score_eyes = 100;
   CTP.quiet_t0_min = 900; CTP.quiet_t1_min = 990;   // NoShot-Zeit 15:00-16:30 lokal
 }
 
@@ -83,6 +84,10 @@ static bool ctApplyParam(const String& k, float v) {
   else if (k == "fusion_distance_mm")  CTP.fusion_distance_mm = v;
   else if (k == "fusion_time_ms")      CTP.fusion_time_s = v / 1000.0f;
   else if (k == "cam_feed")            CTP.cam_feed = (int)v;
+  else if (k == "eye_confirm")         CTP.eye_confirm = (int)v;
+  else if (k == "eye_dist_mm")         CTP.eye_dist_mm = v;
+  else if (k == "eye_time_ms")         CTP.eye_time_s = v / 1000.0f;
+  else if (k == "score_eyes")          CTP.score_eyes = (int)v;
   else if (k == "quiet_t0_min")        CTP.quiet_t0_min = (int)v;
   else if (k == "quiet_t1_min")        CTP.quiet_t1_min = (int)v;
   else return false;                   // unbekannt (z.B. reine VPS-Parameter) - ok
@@ -493,8 +498,9 @@ static void ctEvaluate(CtTrack& tr, bool stationaryNow) {
     tr.dead = true;
     return;
   }
-  if (!tr.moveFound) return;                                // Pflicht wie im VPS-Modell
-  int score = CTP.score_move;
+  if (!tr.moveFound && !tr.eyes) return;                   // Pflicht wie im VPS-Modell
+  int score = tr.moveFound ? CTP.score_move : 0;
+  if (tr.eyes) score += CTP.score_eyes;                     // Augen-Bestaetigung (Kamera)
   float ndx = tr.xLast - tr.x0, ndy = tr.yLast - tr.y0;
   float net = sqrtf(ndx * ndx + ndy * ndy);
   if (net >= CTP.crossing_net_mm) score += CTP.score_crossing;
@@ -597,6 +603,24 @@ void ctFeed(uint8_t sender, int32_t wx, int32_t wy) {
     float ndx = tr.xLast - tr.x0, ndy = tr.yLast - tr.y0;
     cd.netMm = (int32_t)sqrtf(ndx * ndx + ndy * ndy);
     announceTrack(cd);
+  }
+}
+
+// Augen-Meldung der Kamera (visionObserved sensor 1): jede Spur, deren letzter Punkt
+// hoechstens eye_time_s alt und eye_dist_mm entfernt ist, gilt ab jetzt als Katze -
+// wie catmodel._eye_time (VPS). Allein (ohne Spur) bewirken Augen nichts.
+void ctEyes(int32_t wx, int32_t wy) {
+  if (!CTP.eye_confirm) return;
+  double t = ctNow();
+  for (int i = 0; i < CT_MAX_TRACKS; i++) {
+    CtTrack& tr = ctTr[i];
+    if (!tr.used || tr.dead || tr.eyes) continue;
+    double dt = t - tr.tLast;
+    if (dt < 0 || dt > CTP.eye_time_s) continue;
+    float dx = wx - tr.xLast, dy = wy - tr.yLast;
+    if (sqrtf(dx * dx + dy * dy) > CTP.eye_dist_mm) continue;
+    tr.eyes = true;
+    ctEvaluate(tr, ctCheckStationary(tr));
   }
 }
 

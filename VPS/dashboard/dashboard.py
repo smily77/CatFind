@@ -1985,8 +1985,15 @@ def _combine_tracks(members, params, devices, coverage, storms=None):
     in den Einzeltracks verworfen waren, nach dem Kleben plötzlich als Evidenz."""
     members = sorted(members, key=lambda m: m["t0"])
     pts = sorted([list(p) for m in members for p in m["pts"]])
+    # Augen-Meldungen der Kamera im Zeitraum (Augen-Bestaetigung wie im Analysierer)
+    with _reading() as db:
+        rows = db.execute("SELECT t,sender,sensor,wx,wy FROM events WHERE wv=1 AND sensor=1 "
+                          "AND t BETWEEN ? AND ?",
+                          (pts[0][0], pts[-1][0] + params["eye_time_ms"] / 1000.0)).fetchall()
+    eyes = catmodel.split_eyes([{"t": r[0], "sender": r[1], "sensor": r[2], "wx": r[3], "wy": r[4]}
+                                for r in rows], devices)
     feats = catmodel.score_track(pts, storms or {}, coverage, devices, params, 0,
-                                 -1e18, 1e18)
+                                 -1e18, 1e18, eyes)
     feats["id"] = min(m["id"] for m in members)
     feats["key"] = members[0]["key"]
     feats["members"] = [{"id": m["id"], "key": m["key"]} for m in members]
