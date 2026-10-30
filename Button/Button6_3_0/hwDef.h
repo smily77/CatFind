@@ -31,3 +31,4 @@ uint8_t BRIGHTNESS = 20;
 #define colMixed   0xFF6000          // orange:  gemischt
 #define colInhibit 0xFFC000          // gelb:    Personensperre aktiv (Aktoren feuern nicht)
 #define colError   0xFF00FF          // magenta: Kommando nicht bestaetigt / kein Aktor
+#define WIFI_BLINK_COLOR 0x0000FF    // blau: WLAN-Suche beim Start (rot = scharf)
