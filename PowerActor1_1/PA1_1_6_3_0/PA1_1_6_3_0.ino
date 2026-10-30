@@ -88,7 +88,8 @@ void loop() {
           ESP.restart();
         break;
         case cmdArmFire:
-          hbState.readyToFire = !hbState.readyToFire;
+          // 1 = scharf, 2 = sichern (absolut, Button/VPS); 0 = umschalten (alt)
+          hbState.readyToFire = cmd.info == 1 ? true : cmd.info == 2 ? false : !hbState.readyToFire;
         break;
         case cmdSetLeftLimit:
           hbState.leftLimit = cmd.info;  hbState.limitsActive = true;  saveHBToVault();

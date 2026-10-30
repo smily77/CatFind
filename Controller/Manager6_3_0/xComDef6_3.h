@@ -399,7 +399,7 @@ struct __attribute__((packed)) settingsPayload {
 #define cmdLaser                   2
 #define cmdAdjustAngle             3
 #define cmdTaste                   4
-#define cmdArmFire                 5   // info 0 = umschalten (Button/Display), PowerActor2 zusaetzlich: 1 = scharf, 2 = sichern (absolut)
+#define cmdArmFire                 5   // info 1 = scharf, 2 = sichern (absolut, Button/VPS); 0 = umschalten (alt, Display)
 #define cmdSetLeftLimit            6
 #define cmdSetRightLimit           7
 #define cmdSetFarLimit             8

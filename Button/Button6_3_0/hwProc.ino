@@ -1,37 +1,11 @@
-void writelnComment(String comment) {
-  if (DEBUG) Serial << comment  <<  endl;
-  //tft << comment << endl;
-  //gfx -> println(comment);
-}
-
-void writeComment(String comment) {
-  if (DEBUG) Serial << comment;
-  //tft << comment;
-  //gfx -> print(comment);
-}
 #ifdef Atom3S
-void undefFireState(){
-  M5.Lcd.fillScreen(TFT_WHITE);
+void showColor(uint32_t c) {
+  shownColor = c;
+  M5.Lcd.fillScreen(M5.Lcd.color565(c >> 16, (c >> 8) & 0xFF, c & 0xFF));
 }
-
-void fireReady() {
-  M5.Lcd.fillScreen(TFT_RED);
-}
-
-void fireNotReady() {
-  M5.Lcd.fillScreen(TFT_GREEN);
-}
-
 #else
-void undefFireState(){
-  allPixel(0xFFFFFF);
-}
-
-void fireReady() {
-  allPixel(0xFF0000);
-}
-
-void fireNotReady() {
-  allPixel(0x00FF00);
+void showColor(uint32_t c) {
+  shownColor = c;
+  allPixel(c);
 }
 #endif
