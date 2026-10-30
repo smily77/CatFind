@@ -81,8 +81,32 @@
 #define LD06_MAX_WAIT_MS     30000  // so lange auf das erste Paket warten: nach dem Einschalten
                                     // lokalisiert sich der LD06 gerade selbst (HTTP blockiert)
 #define LD06_WAIT_IP_MS      15000  // LD06 noch nicht gehoert -> so lange warten, dann ohne
-#define LD06_POSE_TRIES      10     // Pose-Uebergabe an den LD06: Versuche ...
-#define LD06_POSE_CHECK_MS   5000   // ... in diesem Abstand (seine eigene Lokalisierung blockiert ~20 s)
+#define HAND_TRIES           10     // Pose-Uebergabe an LD06/Compact Dome: Versuche ...
+#define HAND_CHECK_MS        5000   // ... in diesem Abstand (LD06-Eigenlokalisierung blockiert ~20 s)
+#define HAND_REBOOT_MS       30000  // so lange kein HB = Geraet war weg (Neustart/Speisung aus)
+// Compact Dome im Traeger (calibration.json, Platzhalter bis zur Outdoor-Messung):
+// 18,5 cm vor der Achse in 0-Grad-Richtung, Radar-y = Traeger-y, ungespiegelt
+#define CD_ROT_DEG           0.0f
+#define CD_OFF_MM            185
+
+// Mitgefuehrter Sensor, der seine Pose vom Traeger bekommt (poseProc.ino; Typ hier,
+// damit die automatisch erzeugten Funktions-Prototypen ihn kennen)
+// Mitgefuehrte Sensoren, die ihre Pose vom Traeger bekommen
+struct PoseHand {
+  uint8_t  dev;                        // xCom-ID
+  float    rotDeg;                     // Einbaulage: Drehung gegen die Traeger-0-Linie
+  int16_t  offMm;                      // ... und Abstand vor der Drehachse
+  bool     clearNoPose;                // ohne Traegerpose seine Pose loeschen (NVS-Pose)
+  const char* name;
+  uint8_t  ip;                         // letztes Oktett (DHCP, aus seinem HB)
+  unsigned long hbAt;                  // letzter HB
+  int32_t  gotX, gotY;                 // zuletzt gemeldete Pose (poseReport)
+  bool     gotValid;
+  int32_t  wantX, wantY;
+  uint8_t  tries;
+  unsigned long checkAt;               // Kontrolle der Uebergabe faellig (0 = keine)
+  bool     handed;                     // hat seine Pose vom Traeger bekommen
+};
 #define LD06_MIN_QUALITY     150
 #define LD06_MIN_MM          400
 

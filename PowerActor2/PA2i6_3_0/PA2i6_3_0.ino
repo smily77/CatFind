@@ -90,10 +90,14 @@ void loop() {
 // Unicast: gemeinsame Kommandos (Einstellungen, manuelle Pose, Neustart), Scharf/Aus
 void handleCommand(const xMsg& m) {
   uint16_t before = mySettings.values;
-  bool poseBefore = myPose.validWorldPose;
+  worldPose poseBefore = myPose;
   if (handleCommonMsg(m)) {
     if (mySettings.values != before) applyPower();
-    if (myPose.validWorldPose && !poseBefore) sendUdpTextln(statusText("Pose gesetzt"));
+    if (myPose.validWorldPose && (!poseBefore.validWorldPose || myPose.worldX != poseBefore.worldX ||
+        myPose.worldY != poseBefore.worldY || myPose.heading != poseBefore.heading)) {
+      sendUdpTextln(statusText("Pose gesetzt"));
+      poseHandOver();                // mitgefuehrte Sensoren nachziehen
+    }
     return;
   }
   cmdPayload c;

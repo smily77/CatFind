@@ -8,9 +8,12 @@
 //   3. Beides an den VPS-Localizer (/localize_carrier, in einer eigenen Task, damit HB
 //      und Bus weiterlaufen). Die Pose kommt global aus dem LP40B; der LD06 prueft, ob
 //      der Schwenk stimmt (beide sehen im Nahbereich dieselben Konturen).
-//   4. Angenommen -> myPose + poseReport, der LD06 bekommt seine Pose vom Traeger
-//      (er kann sie gegen den reinen Rasenumriss nicht selbst eindeutig finden).
+//   4. Angenommen -> myPose + poseReport, LD06 und Compact Dome bekommen ihre Pose vom
+//      Traeger (der LD06 findet sie gegen den reinen Rasenumriss nicht eindeutig, der
+//      Compact Dome gar nicht selbst).
 //      Abgelehnt -> keine Pose (kein Schuss), neuer Versuch nach POSE_RETRY_MS.
+//   Ohne Traegerpose wird die Pose des Compact Dome geloescht: er laedt sonst beim Start
+//   seine gespeicherte (NVS) und meldet nach dem Umstellen Ziele am falschen Ort.
 // Traeger-System: Ursprung Drehachse, x rechts, y = 0-Grad-Linie (Servo 2048) nach vorn.
 
 enum PoseState { PS_IDLE, PS_TO_START, PS_SWEEP, PS_LD06, PS_HTTP };
@@ -28,16 +31,17 @@ uint16_t lpSamples = 0;
 #define LD_PER_BIN 7
 uint16_t ldVal[360][LD_PER_BIN];
 uint8_t  ldCnt[360];
-uint8_t  ldIp = 0;                     // letztes Oktett des LD06 (DHCP, aus seinem HB)
 WiFiUDP  ldUdp;
 unsigned long ldReqAt = 0, ldFirstAt = 0;   // ldFirstAt: erstes Rohdaten-Paket (0 = noch keins)
 uint32_t ldPoints = 0;
-int32_t  ldPoseX = 0, ldPoseY = 0;     // zuletzt vom LD06 gemeldete Pose (poseReport)
-bool     ldPoseValid = false;
-uint8_t  ldPoseTries = 0;
-unsigned long ldPoseCheckAt = 0;
-int32_t  ldWantX = 0, ldWantY = 0;
-bool     ldHanded = false;             // LD06 hat seine Pose vom Traeger bekommen
+
+// Mitgefuehrte Sensoren, die ihre Pose vom Traeger bekommen (PoseHand: hwDef.h)
+PoseHand hand[] = {
+  {LD06,        LD06_ROT_DEG, LD06_OFF_MM, false, "LD06"},
+  {CompactDome, CD_ROT_DEG,   CD_OFF_MM,   true,  "Compact Dome"},
+};
+#define HAND_N  (sizeof(hand) / sizeof(hand[0]))
+#define ldIp    hand[0].ip
 
 // HTTP-Task <-> loop
 String   poseBody;
@@ -49,21 +53,52 @@ float    poseH = 0, poseUniq = 0, poseInlier = 0, poseMutual = -1;
 
 bool poseBusy() { return poseState != PS_IDLE; }
 
-// Vom Bus: HB des LD06 (IP) und seine Pose (Kontrolle der Uebergabe)
+static PoseHand* handOf(uint8_t dev) {
+  for (auto& h : hand) if (h.dev == dev) return &h;
+  return nullptr;
+}
+
+static void sendCmd(uint8_t ip, uint8_t cmd, int32_t info) {
+  cmdPayload c;
+  c.cmd = cmd; c.info = info;
+  unicastMsg(commandMsg, c, ip);
+}
+
+static void handClear(PoseHand& h) {
+  if (!h.clearNoPose || !h.ip) return;
+  sendCmd(h.ip, cmdClearPose, 0);
+  sendUdpTextln(String("PowerActor2: ") + h.name + "-Pose geloescht (Traeger ohne Pose)");
+}
+
+// Kontrolle in 0,5 s ansetzen (bei Uebergabe: neu senden, falls er abweicht)
+static void handRecheck(PoseHand& h) {
+  h.handed = true; h.tries = 0; h.gotValid = false;
+  h.checkAt = millis() + 500;
+}
+
+// Vom Bus: HB (IP) und Pose (Kontrolle der Uebergabe) der mitgefuehrten Sensoren
 void poseNoteHB(uint8_t sender) {
-  if (sender == LD06) ldIp = device[LD06].IP;   // traegt initMcUdp aus jedem HB ein
+  PoseHand* h = handOf(sender);
+  if (!h) return;
+  bool back = !h->hbAt || millis() - h->hbAt > HAND_REBOOT_MS;   // neu gestartet / wieder gespeist
+  h->hbAt = millis();
+  h->ip = device[sender].IP;           // traegt initMcUdp aus jedem HB ein
+  if (!back) return;
+  if (myPose.validWorldPose) handRecheck(*h);
+  else handClear(*h);
 }
 void poseNoteReport(uint8_t sender, const xMsg& m) {
   worldPosePayload wp;
-  if (sender != LD06 || !getPayload(m, wp)) return;
-  ldPoseValid = wp.validWorldPose;
-  ldPoseX = wp.worldX; ldPoseY = wp.worldY;
+  PoseHand* h = handOf(sender);
+  if (!h || !getPayload(m, wp)) return;
+  h->gotValid = wp.validWorldPose;
+  h->gotX = wp.worldX; h->gotY = wp.worldY;
   // Der LD06 lokalisiert sich nach dem Start auch selbst (gegen den Rasenumriss
-  // mehrdeutig) - ueberschreibt er die Traeger-Pose danach, gleich wieder setzen.
-  if (ldHanded && !ldPoseCheckAt && myPose.validWorldPose &&
-      (!ldPoseValid || abs(ldPoseX - ldWantX) > 100 || abs(ldPoseY - ldWantY) > 100)) {
-    ldPoseTries = 0;
-    ldPoseCheckAt = millis() + 500;
+  // mehrdeutig), das Radar kalibriert sich evtl. selbst - weicht er ab, gleich neu setzen.
+  if (h->handed && !h->checkAt && myPose.validWorldPose &&
+      (!h->gotValid || abs(h->gotX - h->wantX) > 100 || abs(h->gotY - h->wantY) > 100)) {
+    h->tries = 0;
+    h->checkAt = millis() + 500;
   }
 }
 
@@ -85,7 +120,7 @@ void poseStart(const char* why) {
   memset(lpCnt, 0, sizeof(lpCnt));
   memset(ldCnt, 0, sizeof(ldCnt));
   lpSamples = 0; ldPoints = 0;
-  ldHanded = false; ldPoseCheckAt = 0;
+  for (auto& h : hand) { h.handed = false; h.checkAt = 0; handClear(h); }
   poseState = PS_TO_START;
   poseStateAt = millis();
   servoGoal = POSE_SWEEP_LO;
@@ -188,23 +223,21 @@ static void readLd06() {
   }
 }
 
-// LD06 bekommt seine Pose vom Traeger: Ort = Drehachse + LD06_OFF_MM in 0-Grad-Richtung,
-// Richtung = Traeger + LD06_ROT_DEG (Kalibrierung), gleiche Kommandos wie die manuelle VPS-Pose.
-static void sendLd06Pose() {
-  if (!ldIp || !myPose.validWorldPose) return;
+// Sensor bekommt seine Pose vom Traeger: Ort = Drehachse + offMm in 0-Grad-Richtung,
+// Richtung = Traeger + rotDeg (Kalibrierung), gleiche Kommandos wie die manuelle VPS-Pose.
+static void sendHandPose(PoseHand& h) {
+  if (!h.ip || !myPose.validWorldPose) return;
   float a = myPose.heading * 2.0f * PI / 4096.0f;
-  ldWantX = myPose.worldX - (int32_t)lroundf(LD06_OFF_MM * sinf(a));
-  ldWantY = myPose.worldY + (int32_t)lroundf(LD06_OFF_MM * cosf(a));
-  float hd = myPose.heading * 360.0f / 4096.0f + LD06_ROT_DEG;
-  while (hd >= 360.0f) hd -= 360.0f;
+  h.wantX = myPose.worldX - (int32_t)lroundf(h.offMm * sinf(a));
+  h.wantY = myPose.worldY + (int32_t)lroundf(h.offMm * cosf(a));
+  float hd = wrap360f(myPose.heading * 360.0f / 4096.0f + h.rotDeg);
   int32_t hu = (int32_t)lroundf(hd * 4096.0f / 360.0f) % 4096;
-  cmdPayload c;
-  c.cmd = cmdManualPoseX;            c.info = ldWantX; unicastMsg(commandMsg, c, ldIp); delay(30);
-  c.cmd = cmdManualPoseY;            c.info = ldWantY; unicastMsg(commandMsg, c, ldIp); delay(30);
-  c.cmd = cmdManualPoseHeading;      c.info = hu;      unicastMsg(commandMsg, c, ldIp); delay(30);
-  c.cmd = cmdManualPoseMirrorCommit; c.info = 1;       unicastMsg(commandMsg, c, ldIp);
-  ldPoseValid = false;
-  ldPoseCheckAt = millis() + LD06_POSE_CHECK_MS;
+  sendCmd(h.ip, cmdManualPoseX, h.wantX);       delay(30);
+  sendCmd(h.ip, cmdManualPoseY, h.wantY);       delay(30);
+  sendCmd(h.ip, cmdManualPoseHeading, hu);      delay(30);
+  sendCmd(h.ip, cmdManualPoseMirrorCommit, 1);
+  h.gotValid = false;
+  h.checkAt = millis() + HAND_CHECK_MS;
 }
 
 static void poseAccept() {
@@ -216,19 +249,27 @@ static void poseAccept() {
   sendPoseReport();
   sendUdpTextln(statusText("Traegerpose gefunden") + " (Eindeutigkeit " + String(poseUniq, 2) +
                 ", LP40B " + String(poseInlier, 2) + ", LD06 " + String(poseMutual, 2) + ")");
-  ldPoseTries = 0;
-  ldHanded = true;
-  sendLd06Pose();
+  poseHandOver();
+}
+
+// Traegerpose an LD06/Compact Dome weitergeben (auch nach einer manuellen Pose per VPS)
+void poseHandOver() {
+  for (auto& h : hand) {
+    h.tries = 0; h.handed = true;
+    sendHandPose(h);
+    if (!h.ip) sendUdpTextln(String("PowerActor2: ") + h.name + " unbekannt - Pose folgt mit seinem HB");
+  }
 }
 
 void poseTick() {
-  // LD06-Pose-Uebergabe kontrollieren (UDP ohne Resend)
-  if (ldPoseCheckAt && (long)(millis() - ldPoseCheckAt) >= 0) {
-    ldPoseCheckAt = 0;
-    bool ok = ldPoseValid && abs(ldPoseX - ldWantX) < 30 && abs(ldPoseY - ldWantY) < 30;
-    if (ok) sendUdpTextln("PowerActor2: LD06-Pose uebergeben");
-    else if (++ldPoseTries < LD06_POSE_TRIES) sendLd06Pose();   // LD06 evtl. noch blockiert
-    else sendUdpTextln("PowerActor2: LD06-Pose-Uebergabe FEHLGESCHLAGEN");
+  // Pose-Uebergabe kontrollieren (UDP ohne Resend)
+  for (auto& h : hand) {
+    if (!h.checkAt || (long)(millis() - h.checkAt) < 0) continue;
+    h.checkAt = 0;
+    bool ok = h.gotValid && abs(h.gotX - h.wantX) < 30 && abs(h.gotY - h.wantY) < 30;
+    if (ok) sendUdpTextln(String("PowerActor2: ") + h.name + "-Pose uebergeben");
+    else if (++h.tries < HAND_TRIES) sendHandPose(h);          // evtl. noch blockiert
+    else sendUdpTextln(String("PowerActor2: ") + h.name + "-Pose-Uebergabe FEHLGESCHLAGEN");
   }
 
   switch (poseState) {
