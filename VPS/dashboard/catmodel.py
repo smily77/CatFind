@@ -49,7 +49,7 @@ import math
 
 # Rechenweg-Version: ändert sie sich, rechnet der VPS-Analysierer alle Tracks
 # neu (Teil von _model_sig, wie die Parameter).
-MODEL_VERSION = "2026-10-30 trusted+near+eyes"
+MODEL_VERSION = "2026-10-30 trusted+near+eyes+cont"
 
 DEFAULT_PARAMS = {
     # --- Track-Assoziation
@@ -130,6 +130,17 @@ DEFAULT_PARAMS = {
     "eye_dist_mm": 1500,            # Augen hoechstens so weit vom letzten Spurpunkt
     "eye_time_ms": 5000,            # ... und hoechstens so lange nach ihm
     "score_eyes": 100,
+    # --- Fortsetzung: zwischen den Erfassungsbereichen (v.a. Dome <-> Dome-C1) reisst die
+    #     Spur einer Katze oft ab. Beginnt kurz nach dem Ende eines BESTAETIGTEN Tracks ein
+    #     neuer Track in plausibler Distanz, Geschwindigkeit und Richtung, erbt er die
+    #     Bestaetigung (Auswertung der Klebungen 19.-30.10.: Luecke 2-13 s, 2-4,7 m).
+    "cont_confirm": 1,
+    "cont_gap_ms": 15000,           # neuer Track beginnt hoechstens so lange nach dem Ende
+    "cont_dist_mm": 5000,           # ... und hoechstens so weit vom letzten Punkt
+    "cont_v_min_mm_s": 150,         # Luecken-Geschwindigkeit (Distanz/Zeit) mindestens ...
+    "cont_v_max_mm_s": 3000,        # ... und hoechstens
+    "cont_near_mm": 800,            # naeher als das: Mindestgeschwindigkeit egal (sass kurz)
+    "cont_angle_deg": 60,           # Abweichung von der Laufrichtung am Ende (letzte 2 s)
 }
 
 
@@ -920,6 +931,58 @@ def score_track(pts, storms, cov, devices, p, tid, w_t0, w_t1, eyes=None):
     return feats
 
 
+def _cont_match(a, b, p):
+    """Setzt Track b den bestaetigten Track a fort? (Luecke, Distanz, Tempo, Richtung)"""
+    e, s = a["pts"][-1], b["pts"][0]
+    gt = s[0] - e[0]
+    if gt < 0 or gt > p["cont_gap_ms"] / 1000.0:
+        return None
+    gx, gy = s[1] - e[1], s[2] - e[2]
+    gd = math.hypot(gx, gy)
+    if gd > p["cont_dist_mm"]:
+        return None
+    v = gd / max(gt, 0.2)
+    if v > p["cont_v_max_mm_s"] or (v < p["cont_v_min_mm_s"] and gd > p["cont_near_mm"]):
+        return None
+    tail = [q for q in a["pts"] if q[0] >= e[0] - 2.0]
+    hx, hy = tail[-1][1] - tail[0][1], tail[-1][2] - tail[0][2]
+    hd = math.hypot(hx, hy)
+    if hd > 300 and gd > 300:
+        cs = max(-1.0, min(1.0, (hx * gx + hy * gy) / (hd * gd)))
+        if math.degrees(math.acos(cs)) > p["cont_angle_deg"]:
+            return None
+    return gt, gd
+
+
+def continuations(tracks, p, prior=()):
+    """Fortsetzungen bestaetigen (in place): ein unbestaetigter Track (>= 2 Punkte, kein
+    K.o.) erbt die Bestaetigung eines kurz vorher geendeten bestaetigten Tracks. prior =
+    bestaetigte Tracks davor (z.B. aus der DB, wenn ueber eine Haeppchengrenze hinweg).
+    In Geburtsreihenfolge, damit auch Ketten (A -> B -> C) durchgehen."""
+    if not p.get("cont_confirm"):
+        return
+    pool = [t for t in prior if t.get("confirmed") and t.get("pts")]
+    for b in sorted(tracks, key=lambda t: t["t0"]):
+        if (not b["confirmed"] and b["n"] >= 2 and len(b["pts"]) >= 2 and
+                b.get("reject") not in ("Sturm/Burst", "Weg zu lang (Mäher/Person?)")):
+            for a in reversed(pool):
+                m = _cont_match(a, b, p)
+                if not m:
+                    continue
+                b["confirmed"] = True
+                b["reject"] = None
+                b["cont_from"] = a["key"]
+                b["t_confirm"] = b["pts"][1][0]
+                b["score"] = max(b["score"], p["confirm_score"])
+                b["flags"] = b["flags"] + ["FORTSETZUNG"]
+                b["score_detail"] = b["score_detail"] + [
+                    ["Fortsetzung eines bestätigten Tracks (%.1f s, %.1f m Lücke)" %
+                     (m[0], m[1] / 1000.0), 0]]
+                break
+        if b["confirmed"]:
+            pool.append(b)
+
+
 def analyze(events, params=None, devices=None, coverage=None, exclude=None):
     """events: [{t,sender,sensor,wx,wy,speed}] (nur worldValid).
     devices:  {sender: {"name","type"}} — dynamisch aus xComDef6_3.h.
@@ -943,6 +1006,7 @@ def analyze(events, params=None, devices=None, coverage=None, exclude=None):
     w_t1 = evs[-1]["t"] if evs else 0.0
     scored = [score_track(tr, storms, coverage, devices, p, i, w_t0, w_t1, eyes)
               for i, tr in enumerate(tracks)]
+    continuations(scored, p)
     return {
         "tracks": scored,
         "storms": {str(k): v for k, v in storms.items()},
@@ -957,7 +1021,7 @@ def analyze(events, params=None, devices=None, coverage=None, exclude=None):
 
 
 def analyze_stream(events, params=None, devices=None, coverage=None,
-                   exclude=None, final_before=None):
+                   exclude=None, final_before=None, prior=()):
     """Kontinuierliche Analyse für den Hintergrund-Analysierer im Dashboard:
     wie analyze(), aber OHNE Betrachtungsfenster-Logik — die Trackerkennung
     läuft fortlaufend über die Aufnahme, völlig unabhängig davon, was im
@@ -967,7 +1031,8 @@ def analyze_stream(events, params=None, devices=None, coverage=None,
     final_before: Tracks, deren letzter Punkt davor liegt, sind FERTIG
     (bekommen in der DB eine fortlaufende Nummer); jüngere Tracks laufen
     möglicherweise noch und bleiben provisorisch (Flag OFFEN, kein
-    Austritts-Urteil). Rückgabe {"final": [...], "prov": [...], "storms": {}}."""
+    Austritts-Urteil). prior: bestaetigte Tracks aus frueheren Haeppchen (Fortsetzung).
+    Rückgabe {"final": [...], "prov": [...], "storms": {}}."""
     p = merged_params(params)
     eyes = split_eyes(events, devices)
     events = _drop_vision(events, p, devices)
@@ -988,4 +1053,5 @@ def analyze_stream(events, params=None, devices=None, coverage=None,
             # läuft evtl. noch: w_t1 = fb setzt das Flag OFFEN (kein Austritts-Malus)
             prov.append(score_track(tr, storms, coverage, devices, p, 0,
                                     -1e18, fb, eyes))
+    continuations(final + prov, p, prior)
     return {"final": final, "prov": prov, "storms": storms, "params": p}

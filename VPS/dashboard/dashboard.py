@@ -1830,10 +1830,14 @@ def _analyzer_step():
     with _db_lock:
         mow = _db.execute("SELECT t0,t1 FROM labels WHERE label='Mäher' "
                           "AND t1>=? AND t0<=?", (rows[0][0], rows[-1][0])).fetchall()
+        # bestaetigte Tracks kurz vor dem Haeppchen: moegliche Vorgaenger einer Fortsetzung
+        prior = [json.loads(d) for (d,) in _db.execute(
+            "SELECT data FROM tracks WHERE confirmed=1 AND t1<? AND t1>=? ORDER BY t1",
+            (rows[0][0], rows[0][0] - params["cont_gap_ms"] / 1000.0)).fetchall()]
     res = catmodel.analyze_stream(evs, params, devices=load_devices(),
                                   coverage=get_coverage(params),
                                   exclude=[(a, b) for a, b in mow],
-                                  final_before=final_before)
+                                  final_before=final_before, prior=prior)
     prov = res["prov"]
     # bis wohin ist ENDGÜLTIG gerechnet? Offene Tracks müssen im nächsten
     # Häppchen ab ihrer Geburt nochmals rein (sie wachsen evtl. noch).
