@@ -224,6 +224,7 @@ String statusText(const char* what) {
   s += String(", IR ") + (irOk ? "ok" : "fehlt");
   s += String(", No-Shot ") + (noShotOK ? "ok" : "FEHLT");
   if (settingOn(stgLaserFollow)) s += ", Laser folgt catObserved";
+  if (!settingOn(stgAutoCalib)) s += ", Auto-Kalibrierung AUS";
 #ifdef NO_VALVE_TEST
   s += ", DIAGNOSE: Ventil abgeklemmt";
 #endif
