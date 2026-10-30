@@ -76,8 +76,10 @@
 #define LD06_OFF_MM          135
 #define LD06_REQ_PORT        4320   // Rohdaten-Strom wie das Kalibrier-Tool
 #define LD06_DATA_PORT       4321
-#define LD06_SCAN_MS         5000   // so lange Rohdaten sammeln
+#define LD06_SCAN_MS         5000   // so lange Rohdaten sammeln (ab dem ersten Paket)
 #define LD06_SPINUP_MS       1000   // erste Sekunde verwerfen (Motor laeuft an)
+#define LD06_MAX_WAIT_MS     30000  // so lange auf das erste Paket warten: nach dem Einschalten
+                                    // lokalisiert sich der LD06 gerade selbst (HTTP blockiert)
 #define LD06_WAIT_IP_MS      15000  // LD06 noch nicht gehoert -> so lange warten, dann ohne
 #define LD06_MIN_QUALITY     150
 #define LD06_MIN_MM          400
