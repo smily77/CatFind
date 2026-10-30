@@ -185,6 +185,10 @@ void loop() {
 void handleCommand(const xMsg& m) {
   if (handleCommonMsg(m)) return;
   cmdPayload c;
+  if (m.header.msgCode == commandMsg && getPayload(m, c) && c.cmd == cmdCarrierState) {
+    noteCarrierState(c.info);          // Traeger-Anzeige auf dem Ring (hwProc.ino)
+    return;
+  }
   if (m.header.msgCode == commandMsg && getPayload(m, c) && c.cmd == cmdCalibrate) {
     sendUdpTextln("LD06: Hintergrund neu lernen + Pose neu bestimmen");
     myPose.validWorldPose = false;     // ausdruecklich: selbst neu lokalisieren

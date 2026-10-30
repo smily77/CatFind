@@ -438,6 +438,19 @@ struct __attribute__((packed)) settingsPayload {
 // handleCommonMsg (Radar/Lidar/CatIdent/CatCam/Manager) generisch, bei Aktoren
 // (PA1_1/PA2i/LaserMarker) im geraetespezifischen Command-Switch.
 #define cmdReboot                 30   // info: ignoriert - ESP.restart() nach kurzer Verzoegerung
+// Traeger-Anzeige: PowerActor2 -> LD06 (Unicast). Der LD06-Pixelring zeigt in der
+// Startphase den Zustand des ganzen Traegers. info = Zustand (Bit 0..7) | Wert << 8.
+// Der Traeger wiederholt es (Schwenk 5x/s, sonst alle 2 s); 30 s ohne = LD06-eigene Anzeige.
+#define cmdCarrierState           31
+#define csStart      1   // Traeger startet (wartet auf den LD06)
+#define csSweep      2   // Turm-Schwenk, Wert = LP40B-Richtung als LD06-Winkel (Grad)
+#define csLdScan     3   // LD06 liefert seinen Scan
+#define csVps        4   // VPS rechnet
+#define csHandOver   5   // Pose gefunden, Uebergabe laeuft; Wert = Richtung "vorn" als LD06-Winkel
+#define csHandFail   6   // Uebergabe gescheitert (Traeger trotzdem bereit); Wert wie csHandOver
+#define csRetry      7   // keine Pose, Wert = Promille der Wartezeit bis zum naechsten Versuch
+#define csWait       8   // keine Pose, Auto-Kalibrierung aus: wartet auf "Kalibrieren"
+#define csDone       9   // Startphase vorbei -> Ring wieder LD06
 
 //---------------------------------------------------------------------------------------
 // Welt-Pose dieses Geraets (jedes Geraet besitzt diese Variablen, damit die

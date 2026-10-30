@@ -86,6 +86,9 @@
 #define HAND_REBOOT_MS       30000  // so lange kein HB = Geraet war weg (Neustart/Speisung aus)
 // Compact Dome im Traeger (calibration.json, Platzhalter bis zur Outdoor-Messung):
 // 18,5 cm vor der Achse in 0-Grad-Richtung, Radar-y = Traeger-y, ungespiegelt
+#define CS_SWEEP_MS          200    // Traeger-Anzeige am LD06-Ring: Schwenk-Richtung so oft
+#define CS_REPEAT_MS         2000   // ... sonst den Zustand so oft wiederholen
+#define CS_FAIL_SHOW_MS      60000  // gescheiterte Uebergabe so lange zeigen
 #define CD_ROT_DEG           0.0f
 #define CD_OFF_MM            185
 
@@ -106,6 +109,7 @@ struct PoseHand {
   uint8_t  tries;
   unsigned long checkAt;               // Kontrolle der Uebergabe faellig (0 = keine)
   bool     handed;                     // hat seine Pose vom Traeger bekommen
+  bool     ok;                         // ... und bestaetigt
 };
 #define LD06_MIN_QUALITY     150
 #define LD06_MIN_MM          400
