@@ -65,6 +65,11 @@
   #define periodeForHB 5000
   #define statusLightDuration 10
   #define deadZone 500
+  // Ziele ausserhalb +/-maxTargetAngleDeg (vom Radar aus, 0 = geradeaus) verwerfen:
+  // HLK-2450 faltet Personen seitlich/knapp dahinter (92..105 Grad) auf ~55 Grad mit
+  // richtiger Entfernung -> Geister im Schussbereich (Situations-Doku 2026-10-31).
+  // Echte Ziele lagen bis 44 Grad; an anderem Standort ggf. nachjustieren.
+  #define maxTargetAngleDeg 45
 
 #elif defined DomeC1Device
   // Aufbau wie CompactDome (ESP32, HLK-2450 an GPIO19, ein Pixel an GPIO27),
