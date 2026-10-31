@@ -31,6 +31,7 @@ Endpunkte:
   GET  /commands        Manager holt anstehende Kommandos ab (CSV "target,cmd,info"), leert die Queue
   GET  /env             Umweltwerte (envReport, heute Dome-C1/BMP180): aktuell + Verlauf
                         (?sender=21&hours=24); POST /env_request fragt alle sofort ab
+  GET  /actlog?t0&t1    Aktor-Kette: catDetected / Feuersperren / Schuesse (actor_log)
 
 Analyse (Aufgabe "VPS-Modellierung der Katzenerkennung", GesamtKonzeptCatFinder.md):
   Alle catObserved werden zusätzlich PERSISTENT in SQLite gespeichert (Docker-
@@ -494,6 +495,16 @@ def init_db():
     _db.execute("""CREATE TABLE IF NOT EXISTS env(
         t REAL, sender INT, temp REAL, press REAL)""")
     _db.execute("CREATE INDEX IF NOT EXISTS idx_env_t ON env(sender,t)")
+    # Aktor-Kette (vom Manager weitergereicht): kind 'det' = catDetected (Cat Identifier),
+    # 'inh' = fireInhibit (Feuersperre, aufeinanderfolgende Verlaengerungen zu EINER Zeile
+    # t..t_end zusammengefasst), 'hit' = catHit (Aktor hat geschossen). Rein additiv -
+    # bestehende Tabellen/Tracks bleiben unberuehrt; Zeit vor der Einfuehrung = leer.
+    # Felder a..d je kind: det (score, flags, trackMs, netMm), inh (reason, holdMs,
+    # score, -), hit (Servo, Distanz mm, LP40B mm [0 = keine Messung], -).
+    _db.execute("""CREATE TABLE IF NOT EXISTS actor_log(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, t REAL, t_end REAL, sender INT,
+        kind TEXT, wv INT, wx INT, wy INT, a INT, b INT, c INT, d INT)""")
+    _db.execute("CREATE INDEX IF NOT EXISTS idx_actor_t ON actor_log(t)")
     # Spin-off BurglerProtect: visitorObserved (Veranda, Welt X>0/Y<0, ausserhalb der
     # Filterkarte) - getrennt von events, damit Analyse/Tracks/Karten unberuehrt
     # bleiben; unabhaengig von der Aufnahme, nach VISITOR_KEEP_S automatisch weg.
@@ -693,6 +704,15 @@ def ingest():
             press = int(v.get("press", 0)) / 100.0    # Pa -> hPa
             _env[sid] = {"temp": temp, "press": press, "valid": 1, "t": now}
             env_rows.append((now, sid, temp, press))
+        act_rows = []
+        for a in data.get("acts", []):
+            k = {"d": "det", "i": "inh", "h": "hit"}.get(str(a.get("k", "")))
+            if not k:
+                continue
+            act_rows.append((ev_time(a), int(a.get("sender", -1)), k,
+                             int(a.get("wv", 0)), int(a.get("wx", 0)), int(a.get("wy", 0)),
+                             int(a.get("a", 0)), int(a.get("b", 0)), int(a.get("c", 0)),
+                             int(a.get("d", 0))))
         pose_rows = []
         invalid_pose_sids = []
         for p in data.get("poses", []):
@@ -765,7 +785,9 @@ def ingest():
             hb_wrote = True
         if env_rows:
             _db.executemany("INSERT INTO env(t,sender,temp,press) VALUES(?,?,?,?)", env_rows)
-        if hb_wrote or env_rows:
+        for r in act_rows:
+            _actor_store(*r)
+        if hb_wrote or env_rows or act_rows:
             _db.commit()
     if pose_rows or invalid_pose_sids:
         with _db_lock:
@@ -1189,6 +1211,40 @@ def env_request():
     with _cmd_lock:
         _cmd_queue.append((ENV_REQUEST_TARGET, 0, 0))
     return jsonify(ok=True)
+
+
+ACT_INH_GAP_S = 5.0     # Feuersperre: so dicht an der laufenden Sperre = Verlaengerung
+
+
+def _actor_store(t, sid, kind, wv, wx, wy, a, b, c, d):
+    """Eine Aktor-Meldung ablegen (unter _db_lock). fireInhibit kommt alle paar
+    Sekunden erneut (KIVision: 60 s halten, alle 2 s) -> solange es die laufende
+    Sperre desselben Senders/Grunds verlaengert, nur deren Ende nachziehen."""
+    if kind == "inh":
+        end = t + b / 1000.0
+        row = _db.execute("SELECT id,t_end,c FROM actor_log WHERE kind='inh' AND sender=? "
+                          "AND a=? ORDER BY t DESC LIMIT 1", (sid, a)).fetchone()
+        if row and t <= row[1] + ACT_INH_GAP_S:
+            _db.execute("UPDATE actor_log SET t_end=max(t_end,?), c=max(c,?), "
+                        "wv=?, wx=?, wy=? WHERE id=?", (end, c, wv, wx, wy, row[0]))
+            return
+    else:
+        end = t
+    _db.execute("INSERT INTO actor_log(t,t_end,sender,kind,wv,wx,wy,a,b,c,d) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (t, end, sid, kind, wv, wx, wy, a, b, c, d))
+
+
+@app.get("/actlog")
+def actlog():
+    # Aktor-Kette im Zeitfenster (Analyse-Tab: Zeitleiste + Track-Liste)
+    now = time.time()
+    t0 = request.args.get("t0", now - 3600, type=float)
+    t1 = request.args.get("t1", now, type=float)
+    with _reading() as db:
+        rows = db.execute("SELECT t,t_end,sender,kind,wv,wx,wy,a,b,c,d FROM actor_log "
+                          "WHERE t<=? AND t_end>=? ORDER BY t LIMIT 5000", (t1, t0)).fetchall()
+    keys = ("t", "t_end", "sender", "kind", "wv", "wx", "wy", "a", "b", "c", "d")
+    return jsonify(acts=[dict(zip(keys, r)) for r in rows])
 
 
 @app.get("/env")

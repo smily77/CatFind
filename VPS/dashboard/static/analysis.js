@@ -168,6 +168,7 @@ async function anaFetchWindowOnce(){
     catch(e){ ANA.model = null; anaEl("anaModelErr").textContent = "Modell: " + e.message; }
   } else ANA.model = null;
   try{ ANA.labels = (await anaJson(`/alabels?${q}`)).labels; }catch(e){ ANA.labels = []; }
+  try{ ANA.acts = (await anaJson(`/actlog?${q}`)).acts; }catch(e){ ANA.acts = []; }
   renderSensors(); renderTracks(); renderLabels(); drawAnaMap(); drawTimeline(); renderWinInfo();
   // Analysierer noch am Nachrechnen (Backlog)? -> in 5 s automatisch nachladen
   clearTimeout(ANA.behindTimer);
@@ -345,6 +346,29 @@ function drawTimeline(){
     ctx.beginPath(); ctx.arc(x, densH-7, 4, 0, 7); ctx.fill();
     ctx.strokeStyle = "#fff8"; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.arc(x, densH-7, 4, 0, 7); ctx.stroke();
+  }
+  // Aktor-Kette (/actlog): BLAUES Band oben = Feuersperre, MAGENTA Raute = echtes
+  // catDetected des Cat Identifiers, ORANGES Dreieck = Schuss eines Aktors
+  for(const a of (ANA.acts||[])){
+    const x0 = tlX(a.t, W);
+    if(a.kind === "inh"){
+      const x1 = tlX(a.t_end, W);
+      if(x1 < 0 || x0 > W) continue;
+      ctx.fillStyle = "#3a8ee6aa";
+      ctx.fillRect(Math.max(0,x0), 16, Math.max(Math.min(W,x1)-Math.max(0,x0), 2), 4);
+      continue;
+    }
+    if(x0 < -6 || x0 > W+6) continue;
+    const y = densH - 19;
+    ctx.beginPath();
+    if(a.kind === "det"){
+      ctx.fillStyle = "#e040fb";
+      ctx.moveTo(x0, y-5); ctx.lineTo(x0+4, y); ctx.lineTo(x0, y+5); ctx.lineTo(x0-4, y);
+    } else {
+      ctx.fillStyle = "#ff9f1a";
+      ctx.moveTo(x0, y+5); ctx.lineTo(x0+5, y-4); ctx.lineTo(x0-5, y-4);
+    }
+    ctx.closePath(); ctx.fill();
   }
   // Fenstergrenzen als Beschriftung
   ctx.fillStyle = "#89a"; ctx.font = "10px system-ui";
@@ -989,6 +1013,27 @@ function trackPhotos(tr){
     .sort((a,b)=>(a.t-b.t) || ((b.trigger||"").endsWith("crop")-(a.trigger||"").endsWith("crop")));
 }
 
+// Aktor-Kette zum Track: catDetected/Schuss im Zeitfenster des Tracks (+ Nachlauf, der
+// Aktor schiesst erst nach dem Ausrichten) und nahe an der Track-Position; Feuersperren,
+// die sich zeitlich mit dem Track ueberschneiden.
+const ACT_PAD_S = 6, ACT_NEAR_MM = 2500;
+function trackActs(tr){
+  return (ANA.acts||[]).filter(a=>{
+    if(a.kind === "inh") return a.t <= tr.t1 && a.t_end >= tr.t0;
+    if(a.t < tr.t0-1 || a.t > tr.t1+ACT_PAD_S) return false;
+    if(!a.wv) return true;
+    const near = tr.pts.filter(p=>Math.abs(p[0]-a.t) <= ACT_PAD_S);
+    return (near.length ? near : tr.pts).some(p=>Math.hypot(p[1]-a.wx, p[2]-a.wy) <= ACT_NEAR_MM);
+  });
+}
+function actLine(a){
+  const who = escapeHtml(devInfo(a.sender)?.name || ("#"+a.sender));
+  const at = a.wv ? ` bei ${(a.wx/1000).toFixed(1)}/${(a.wy/1000).toFixed(1)} m` : "";
+  if(a.kind === "det") return `🔔 ${fmtDT(a.t)} catDetected (${who}) Score ${a.a}${at}`;
+  if(a.kind === "inh") return `🚫 ${fmtDT(a.t)} → ${fmtDT(a.t_end)} Feuersperre (${who}, ${a.a===1?"Person":a.a===2?"Button":"Grund "+a.a}${a.c?" "+a.c+" %":""})`;
+  return `🎯 ${fmtDT(a.t)} Schuss (${who})${at}, ${(a.b/1000).toFixed(1)} m` + (a.c ? `, LP40B ${(a.c/1000).toFixed(2)} m` : "");
+}
+
 function renderTracks(){
   const el = anaEl("anaTracks"); if(!el) return;
   if(!ANA.model){ el.innerHTML = "<div class='hint'>— Modell aus / kein Ergebnis —</div>"; return; }
@@ -1041,6 +1086,12 @@ function renderTracks(){
       const num = t.id!=null ? "Nr "+t.id : "läuft…";
       const phs = trackPhotos(t);
       const cam = phs.length ? `<span class="flg" title="${phs.length} Kamerabild(er) zu diesem Track">📷${phs.length}</span>` : "";
+      const acts = trackActs(t);
+      const nDet = acts.filter(a=>a.kind==="det").length, nHit = acts.filter(a=>a.kind==="hit").length;
+      const nInh = acts.filter(a=>a.kind==="inh").length;
+      const actChips = (nDet ? `<span class="flg" title="Cat Identifier hat catDetected gesendet">🔔</span>` : "") +
+        (nInh ? `<span class="flg" title="Feuersperre aktiv">🚫</span>` : "") +
+        (nHit ? `<span class="flg" title="${nHit} Schuss/Schüsse eines Aktors">🎯${nHit}</span>` : "");
       const glue = t.members
         ? `<span class="flg" title="Klebung aus ${t.members.map(m=>"Nr "+m.id).join(", ")}">🔗×${t.members.length}</span>` : "";
       const chk = t.id!=null
@@ -1052,6 +1103,7 @@ function renderTracks(){
               (phs.length ? `<div class="trPhotos">` + phs.map(ph=>
                 `<a href="photo/${ph.id}" target="_blank" title="${fmtDT(ph.t)} · ${escapeHtml(ph.trigger)}${ph.score?" · KI "+ph.score+"%":""}">` +
                 `<img src="photo/${ph.id}" loading="lazy" class="${ph.trigger.endsWith("crop")?"crop":""}"></a>`).join("") + `</div>` : "") +
+              (acts.length ? `<small>${acts.map(actLine).join("<br>")}</small><br>` : "") +
               (sd ? `<small>${sd}</small>` : "") +
               (t.members ? `<div class="mkRow"><button class="mk" data-unmerge="${t.merge_id}">🔗 Klebung lösen</button></div>` : "") +
               `<div class="mkRow">` +
@@ -1062,7 +1114,7 @@ function renderTracks(){
         det = t.confirmed ? "" : `<small>${escapeHtml(t.reject||"")}</small>`;
       }
       return `<div class="anaTrack${t.confirmed?' cat':''}${sel?' sel':''}${dis?' dis':''}" data-key="${t.key}">
-      ${chk}${t.confirmed?'🐱':'·'} <b>${num}</b> · ${t.score}P${badge}${glue}${cam} n=${t.n} · ${fmtDur(t.t1-t.t0)} · ${(t.net_mm/1000).toFixed(1)}m
+      ${chk}${t.confirmed?'🐱':'·'} <b>${num}</b> · ${t.score}P${badge}${glue}${cam}${actChips} n=${t.n} · ${fmtDur(t.t1-t.t0)} · ${(t.net_mm/1000).toFixed(1)}m
       ${t.v_mean? '· '+(t.v_mean/1000).toFixed(1)+'m/s':''} ${chips}
       ${det}</div>`;
     }).join("");
