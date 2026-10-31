@@ -46,8 +46,9 @@
 // HLK-Radare: -60/+60 Grad, 7 m. 360-Grad-Lidare: -180/+180 Grad, 12 m.
 // Radar6_3_0 verwirft Ziele ausserhalb covLeftDeg..covRightDeg (zentral hier
 // einstellen, z.B. Compact Dome +/-45 gegen seitliche Geister, 2026-10-31).
-// actRangeMm = Wirkreichweite eines Aktors (Wasserstrahl), 0 = kein Aktor; der
-// Aktor schiesst nur bis dahin (PA2i6_3_0 zielProc).
+// actRangeMm = Wirkreichweite eines Aktors (Wasserstrahl), 0 = kein Aktor;
+// actMinMm = Mindestentfernung (naeher nicht schiessen). Der Aktor schiesst nur
+// zwischen actMinMm und actRangeMm (PA2i6_3_0 zielProc).
 // Der VPS parst diese Tabelle direkt aus dem Repo (dashboard.py parse_xcomdef) und
 // legt die Sektoren ueber die per poseReport gemeldeten Welt-Posen in die Karte.
 struct stationDefinitions {
@@ -60,6 +61,7 @@ struct stationDefinitions {
   int16_t  covRightDeg;   // rechter Erfassungswinkel (Grad, positiv)
   uint16_t covRangeMm;    // Reichweite (mm); 0 = kein Sensor
   uint16_t actRangeMm;    // Wirkreichweite Aktor (mm); 0 = kein Aktor
+  uint16_t actMinMm;      // Mindestentfernung Aktor (mm), naeher nicht schiessen
 };
 //Device
 #define Manager 0
@@ -106,7 +108,7 @@ stationDefinitions device[deviceCount] = {
   {HLK,0,0,testGroup,  "Dome",         -60, 60, 7000},                  //Dome
   {HLK,0,0,groupPA1_1, "Mini_Dome",    -60, 60, 7000},                  //MiniDome  -> Gruppe PA1_1
   {HLK,0,0,groupPA2,   "Compact_Dome", -45, 45, 7000},                  //CompactDome - auf PA M5PicoDome -> Gruppe PA2 (+/-45: seitliche Geister 2026-10-31)
-  {PowerActor,181,0x02,groupPA2, "PowerActor2", 0,0,0, 6500},           //PowerActor2 (PA2i) -> Gruppe PA2, Wasserstrahl 6,5 m
+  {PowerActor,181,0x02,groupPA2, "PowerActor2", 0,0,0, 6500, 500},      //PowerActor2 (PA2i) -> Gruppe PA2, Wasserstrahl 0,5..6,5 m
   {Screen,0,0,groupNone, "Disp_7", 0,0,0},                              //Display 7 Inch
   {Controller,0,0,groupNone, "CYD", 0,0,0},                             //CYD Controller
   {Lidar,0,0,groupPA2, "LD6",         -180, 180, 12000},                //LD06 -> Gruppe PA2

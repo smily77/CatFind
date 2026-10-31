@@ -43,7 +43,7 @@
 // --- Schuss -----------------------------------------------------------------------------
 #define FIRE_MS        500        // Wasserstoss / Laser
 #define WATER_RANGE_MM device[PA2i].actRangeMm   // Reichweite des Wasserstrahls (xComDef6_3.h)
-#define NEAR_MM        500        // naeher nicht schiessen
+#define NEAR_MM        device[PA2i].actMinMm     // naeher nicht schiessen (xComDef6_3.h)
 #define TRACK_LOST_MS  2500       // so lange ohne catTracked = Track verloren
 #define ENGAGE_MAX_MS  60000      // laenger verfolgt er einen Track nicht
 #define REFIRE_MS      3000       // nach einem Schuss so lange kein neuer (gleicher Track)
