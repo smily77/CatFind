@@ -217,14 +217,13 @@ void handleObservation(const xMsg& m) {
   }
 }
 
-// Winkelgrenze je Variante (hwDef.h maxTargetAngleDeg); ohne Definition alles zulassen.
+// Winkelgrenze aus xComDef6_3.h (device[ID].covLeftDeg/covRightDeg, zentral fuer alle
+// Geraete + VPS): HLK-2450 faltet Personen seitlich/knapp dahinter mit richtiger
+// Entfernung auf ~55 Grad -> Geister (Compact Dome 2026-10-31, dort +/-45).
 static bool insideAngleLimit(int16_t x, int16_t y) {
-#ifdef maxTargetAngleDeg
-  static const float tanMax = tanf(maxTargetAngleDeg * PI / 180.0f);
-  return y > 0 && fabsf((float)x) <= tanMax * (float)y;
-#else
-  return true;
-#endif
+  if (y <= 0) return false;
+  float deg = atan2f((float)x, (float)y) * 180.0f / PI;   // 0 = geradeaus, links negativ
+  return deg >= device[ID].covLeftDeg && deg <= device[ID].covRightDeg;
 }
 
 // Radar-Frame auswerten: catObserved (mit Welt-Koordinaten, falls Pose gueltig) senden,
