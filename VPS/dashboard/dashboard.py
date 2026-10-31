@@ -327,14 +327,15 @@ def parse_xcomdef(text):
     defines = dict(re.findall(r"#define\s+(\w+)\s+(\d+)", text))
     tab = {}
     pat = re.compile(r"\{\s*(\w+)\s*,\s*\w+\s*,\s*\w+\s*,\s*(\w+)\s*,\s*\"([^\"]*)\""
-                     r"(?:\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)(?:\s*,\s*(\d+))?)?")
+                     r"(?:\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)(?:\s*,\s*(\d+))?(?:\s*,\s*(\d+))?)?")
     for i, em in enumerate(pat.finditer(m.group(1))):
-        typ, grp, name, cl, cr, rng, act = em.groups()
+        typ, grp, name, cl, cr, rng, act, amin = em.groups()
         tab[i] = {"name": name, "type": typ,
                   "group": int(defines.get(grp, grp if grp.isdigit() else "0")),
                   "covL": int(cl or 0), "covR": int(cr or 0),
                   "covRange": int(rng or 0),
-                  "actRange": int(act or 0)}     # Wirkreichweite Aktor (mm), 0 = kein Aktor
+                  "actRange": int(act or 0),     # Wirkreichweite Aktor (mm), 0 = kein Aktor
+                  "actMin": int(amin or 0)}      # Mindestentfernung Aktor (mm)
     return tab
 
 
