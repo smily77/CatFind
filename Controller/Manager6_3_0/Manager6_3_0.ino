@@ -166,6 +166,8 @@ void loop() {
                    memcmp(&lastCd, &cd, sizeof(cd)) == 0;
         lastCd = cd; lastCdMs = millis();
         if (!dup) {
+          gwAddAct('d', mcMsg.header.sender, 1, cd.worldX, cd.worldY,
+                   cd.score, cd.flags, (int32_t)cd.trackMs, cd.netMm);   // Gateway: Aktor-Kette
           gwAddDebug("CatDetected #" + String(mcMsg.header.sender) +
                      " score=" + String(cd.score) + " x=" + String(cd.worldX) +
                      " y=" + String(cd.worldY) + " net=" + String(cd.netMm) + "mm" +
@@ -179,6 +181,18 @@ void loop() {
           }
         }
       }
+    }
+    else if (mcMsg.header.msgCode == fireInhibit) {
+      fireInhibitPayload fi;                                             // Gateway: Feuersperre (Aktor-Kette)
+      if (getPayload(mcMsg, fi))
+        gwAddAct('i', mcMsg.header.sender, fi.worldValid, fi.worldX, fi.worldY,
+                 fi.reason, (int32_t)fi.holdMs, fi.score, 0);
+    }
+    else if (mcMsg.header.msgCode == catHit) {
+      posPayload hit;                                                    // Gateway: Schuss eines Aktors
+      if (getPayload(mcMsg, hit))
+        gwAddAct('h', mcMsg.header.sender, hit.worldValid, hit.worldX, hit.worldY,
+                 (int32_t)hit.angle, (int32_t)hit.radius, hit.res, 0);
     }
     else if (mcMsg.header.msgCode == settingsReport) {
       settingsPayload sp;

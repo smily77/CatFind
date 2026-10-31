@@ -51,6 +51,24 @@ static unsigned long gwLastPoseReq = 0;
 struct GwEnv { uint8_t sender, valid; int16_t temp; uint32_t press; };
 static GwEnv gwEnv[GW_MAX_ENV]; static int gwEnvN = 0;
 
+// Aktor-Kette (catDetected / fireInhibit / catHit vom Bus): jede Meldung einzeln an den
+// VPS (Tabelle actor_log) - so ist nachtraeglich sichtbar, ob eine Katze erkannt, der
+// Schuss gesperrt oder abgegeben wurde. Wie Events: nach dem Flush geleert.
+// kind: 'd' = catDetected (a score, b flags, c trackMs, d netMm),
+//       'i' = fireInhibit (a reason, b holdMs, c score),
+//       'h' = catHit      (a Servo, b Distanz mm, c LP40B mm, 0 = keine Messung).
+#define GW_MAX_ACTS 16
+struct GwAct { char kind; uint8_t sender, wv; int32_t wx, wy, a, b, c, d; uint32_t ms; };
+static GwAct gwActs[GW_MAX_ACTS]; static int gwActN = 0;
+
+void gwAddAct(char kind, uint8_t sender, uint8_t wv, int32_t wx, int32_t wy,
+              int32_t a, int32_t b, int32_t c, int32_t d) {
+  if (gwActN >= GW_MAX_ACTS) return;
+  GwAct& x = gwActs[gwActN++];
+  x.kind = kind; x.sender = sender; x.wv = wv; x.wx = wx; x.wy = wy;
+  x.a = a; x.b = b; x.c = c; x.d = d; x.ms = millis();
+}
+
 void gwAddEnv(uint8_t sender, const envPayload& ep) {
   int i = 0;
   while (i < gwEnvN && gwEnv[i].sender != sender) i++;
@@ -295,7 +313,8 @@ void gwFlush() {
     if (slot < 0) for (int i = 0; i < GW_MAX_SETTINGS; i++) if (!gwSet[i].used) { gwSet[i].used = true; gwSet[i].sender = ID; slot = i; break; }
     if (slot >= 0) { gwSet[slot].sup = mySettings.supported; gwSet[slot].val = mySettings.values; gwSet[slot].act = mySettings.actions; }
   }
-  if (gwEventN == 0 && gwDebugN == 0 && gwHbN == 0 && gwEnvN == 0 && !gwSettingsDirty && !gwPosesDirty) return;
+  if (gwEventN == 0 && gwDebugN == 0 && gwHbN == 0 && gwEnvN == 0 && gwActN == 0 &&
+      !gwSettingsDirty && !gwPosesDirty) return;
 
   String body;
   body.reserve(2048 + gwEventN * 160);
@@ -334,6 +353,15 @@ void gwFlush() {
     body += "{\"sender\":" + String(gwEnv[i].sender) + ",\"valid\":" + String(gwEnv[i].valid)
           + ",\"temp\":" + String(gwEnv[i].temp) + ",\"press\":" + String(gwEnv[i].press) + "}";
   }
+  body += "],\"acts\":[";
+  for (int i = 0; i < gwActN; i++) {
+    GwAct& x = gwActs[i]; if (i) body += ',';
+    body += "{\"k\":\"" + String(x.kind) + "\",\"sender\":" + String(x.sender)
+          + ",\"ms\":" + String(x.ms) + ",\"wv\":" + String(x.wv)
+          + ",\"wx\":" + String(x.wx) + ",\"wy\":" + String(x.wy)
+          + ",\"a\":" + String(x.a) + ",\"b\":" + String(x.b)
+          + ",\"c\":" + String(x.c) + ",\"d\":" + String(x.d) + "}";
+  }
   // Leichter Kartenstand (Version/CRC, kein Body) - aus dem Cache, kein LittleFS-
   // Zugriff im Hot Path. Der VPS erkennt daran Abweichungen (z.B. nach einem
   // Notweg-Flash) und stoesst per cmdMapPush ueber /commands einen Re-Sync an.
@@ -356,7 +384,7 @@ void gwFlush() {
                                        // sonst wuerden Events bei VPS-Fehlern endlos dupliziert)
   gwSettingsDirty = false;
   gwPosesDirty = false;
-  gwEventN = gwDebugN = gwHbN = gwEnvN = 0; gwDropped = 0;
+  gwEventN = gwDebugN = gwHbN = gwEnvN = gwActN = 0; gwDropped = 0;
 }
 
 // Ein vom VPS-Webinterface angefordertes Kommando auf den lokalen Bus geben. Der VPS ist
