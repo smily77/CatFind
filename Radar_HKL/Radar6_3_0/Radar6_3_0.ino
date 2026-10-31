@@ -217,6 +217,16 @@ void handleObservation(const xMsg& m) {
   }
 }
 
+// Winkelgrenze je Variante (hwDef.h maxTargetAngleDeg); ohne Definition alles zulassen.
+static bool insideAngleLimit(int16_t x, int16_t y) {
+#ifdef maxTargetAngleDeg
+  static const float tanMax = tanf(maxTargetAngleDeg * PI / 180.0f);
+  return y > 0 && fabsf((float)x) <= tanMax * (float)y;
+#else
+  return true;
+#endif
+}
+
 // Radar-Frame auswerten: catObserved (mit Welt-Koordinaten, falls Pose gueltig) senden,
 // im Kalibrierfenster die eigenen Bahnen sammeln, juengstes Target fuer Health-Check merken.
 // Mit gueltiger Welt-Pose UND geladener Filterkarte (NoShot oder RasenKarte, siehe
@@ -228,7 +238,8 @@ void processTargets() {
   if (!deviceActive()) { if (!lightIsOn) setPixel(maxPix, 0x000000); return; }
   boolean validTarget = false;
   for (int i = 0; i < 3; i++) {
-    if (target[i].active && (target[i].l > deadZone)) {
+    if (target[i].active && (target[i].l > deadZone) &&
+        insideAngleLimit(target[i].x, target[i].y)) {
       validTarget = true;
       obsData.x = target[i].x;
       obsData.y = target[i].y;
