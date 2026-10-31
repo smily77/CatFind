@@ -100,7 +100,7 @@ stationDefinitions device[deviceCount] = {
   {MananagementDevice,180,0x01,groupNone, "Manager_Dev", 0,0,0},        //Manager
   {HLK,0,0,testGroup,  "Dome",         -60, 60, 7000},                  //Dome
   {HLK,0,0,groupPA1_1, "Mini_Dome",    -60, 60, 7000},                  //MiniDome  -> Gruppe PA1_1
-  {HLK,0,0,groupPA2,   "Compact_Dome", -60, 60, 7000},                  //CompactDome - auf PA M5PicoDome -> Gruppe PA2
+  {HLK,0,0,groupPA2,   "Compact_Dome", -45, 45, 7000},                  //CompactDome - auf PA M5PicoDome -> Gruppe PA2 (+/-45 = Radar6_3_0 maxTargetAngleDeg)
   {PowerActor,181,0x02,groupPA2, "PowerActor2", 0,0,0},                 //PowerActor2 (PA2i) -> Gruppe PA2
   {Screen,0,0,groupNone, "Disp_7", 0,0,0},                              //Display 7 Inch
   {Controller,0,0,groupNone, "CYD", 0,0,0},                             //CYD Controller

@@ -289,7 +289,7 @@ def _github_commit_map(map_type, csv_text, version, path):
 # Namen identisch zur device[]-Tabelle in xComDef6_3.h halten!
 FALLBACK_DEVICES = {
     0:("Manager_Dev","MananagementDevice",0,0,0,0), 1:("Dome","HLK",3,-60,60,7000),
-    2:("Mini_Dome","HLK",2,-60,60,7000), 3:("Compact_Dome","HLK",1,-60,60,7000),
+    2:("Mini_Dome","HLK",2,-60,60,7000), 3:("Compact_Dome","HLK",1,-45,45,7000),
     4:("PowerActor2","PowerActor",1,0,0,0), 5:("Disp_7","Screen",0,0,0,0),
     6:("CYD","Controller",0,0,0,0), 7:("LD6","Lidar",1,-180,180,12000),
     8:("Button","onOffSchalter",0,0,0,0), 9:("Disp_5","Screen",0,0,0,0),
