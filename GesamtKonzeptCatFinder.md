@@ -150,7 +150,7 @@ Weiteres:
 ### Festlegungen, Umsetzung
 
 - **Gerät:** neuer Sketch `C1Lidar6_3_0` (Ordner `CF_LidarC1/`), RPLidar C1 (Serial1, 460800), 2× WS2812. Device-DB-Eintrag `LidarC1` (ID 17), Typ `Lidar`, **DHCP** (keine feste IP nötig; IP wird per HB gelernt), `group = groupNone` (weltfähig, keine relative Gruppe). Flash per **OTA**.
-- **Sensor↔VPS:** **HTTP-POST** vom Sensor an den VPS (`ipVPS` aus `Credentials.h` als `IPAddress ipVPS(***REMOVED***);`), Body = 360-Bin-Scan (mm), Antwort = Pose-JSON (`x_mm,y_mm,heading_deg,mirror,confidence,inlier_ratio`). Ausgehend → kein NAT-Port. **Offener Endpoint, kein Token.**
+- **Sensor↔VPS:** **HTTP-POST** vom Sensor an den VPS (`ipVPS` aus `Credentials.h` als `IPAddress ipVPS(xxx,xxx,xxx,xxx);`), Body = 360-Bin-Scan (mm), Antwort = Pose-JSON (`x_mm,y_mm,heading_deg,mirror,confidence,inlier_ratio`). Ausgehend → kein NAT-Port. **Offener Endpoint, kein Token.**
 - **VPS:** Docker-Container `VPS/localizer/` im Repo (HTTP-Dienst, portiert aus `lidar_localize.py`), lädt `Map/RasenKarte.csv` aus dem GitHub-Repo (raw) beim Start bzw. periodisch. Kartenänderungen erfordern keinen VPS-Eingriff.
 - **Scan-Quelle für die Lokalisierung:** der nach 20 s gelernte 360-Bin-Hintergrund (ortsunabhängig; **keine Wand/Nische mehr nötig**). Wand- und Landmark-Modell der alten Firmware entfallen; der Perimeter-/Hintergrund-Detektor bleibt und arbeitet rundum.
 - **Plausibilitätsprüfung:** Die NVS-Pose wird gegen die globale VPS-Pose verglichen. Wenn sie übereinstimmen (Toleranz) und die Konfidenz hoch ist, wird `validWorldPose=true` gesetzt und die NVS-Pose behalten. Andernfalls wird die VPS-Pose übernommen und im NVS gespeichert.
