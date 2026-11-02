@@ -94,6 +94,7 @@ void loop() {
     xMsg uc = lastUcMsg;
     ucDataReceived = false;
     handleCommonMsg(uc);               // settingsRequest/cmdSetSetting (eigene Anzeige-Settings)
+    if (uc.header.msgCode == vpsRequest) answerVpsRequest(lastUcSenderOctet);
   }
   // Karten-Anfragen (Unicast) bedienen: Sensor fordert No-Shot- oder RasenKarte an.
   // Sie kommen aus der eigenen Queue (siehe MAP_REQ_QUEUE_LEN) und werden hier der
@@ -117,6 +118,8 @@ void loop() {
   while (mcQueuePop(mcMsg)) {
     if (PRINT_BUS_TRAFFIC) printSensorData(mcMsg);
     handleCommonMsg(mcMsg);            // settingsRequest/poseRequest generisch beantworten
+    if (mcMsg.header.msgCode == vpsRequest && mcMsg.header.sender < deviceCount)
+      answerVpsRequest(device[mcMsg.header.sender].IP);
     if (mcMsg.header.msgCode == catObserved || mcMsg.header.msgCode == catDetected)
       forwardToKIVision(mcMsg);        // Notbehelf: Pi empfaengt kaum Multicast (s. unten)
 
@@ -225,6 +228,16 @@ void loop() {
 // Unicast schon. Ziel-Meldungen deshalb zusaetzlich UNVERAENDERT (Original-Absender
 // und -Zeitstempel) per Unicast an den Pi. Der Pi verwirft doppelte Kopien selbst.
 // Rein additiv: ohne Manager bekommt der Pi sie weiter nur per Multicast.
+// vpsRequest: VPS-Adresse (ipVPS aus Credentials.h) an den Fragenden; ohne bekannte IP
+// (DHCP-Geraet ohne Eintrag) als Broadcast.
+void answerVpsRequest(uint8_t octet) {
+  vpsPayload v;
+  v.ip0 = ipVPS[0]; v.ip1 = ipVPS[1]; v.ip2 = ipVPS[2]; v.ip3 = ipVPS[3];
+  v.port = 80;
+  if (octet) unicastMsg(vpsReport, v, octet);
+  else       broadcastMsg(vpsReport, v);
+}
+
 void forwardToKIVision(const xMsg &m) {
   uint8_t octet = device[KIVision].IP;
   if (octet == 0 || m.header.sender == KIVision) return;

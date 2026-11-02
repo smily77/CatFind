@@ -26,12 +26,16 @@ from xcom import Bus
 
 HB_PERIOD_MS = 10000     # == periodeForHB der CatCam; VPS erwartet 10 s fuer Kameras
 REJOIN_S = 60            # Multicast-Mitgliedschaft auffrischen (WLAN-Abrisse)
+VPS_RETRY_S = 60.0       # VPS-Adresse noch unbekannt -> so oft beim Manager nachfragen
+VPS_RECHECK_S = 6 * 3600.0  # bekannt -> selten nachfragen (VPS-IP koennte wechseln)
+MANAGER_OCTET = 180      # feste IP des Managers (xComDef: device[Manager].IP), bis sein HB kam
 DEDUP_S = 1.5            # CatIdent sendet jede catDetected doppelt (40 ms Abstand)
 WORLD_MAX_MM = 1000000   # unplausible Weltpunkte (Horizont) gar nicht erst packen
 
 
 class BusNode:
-    def __init__(self, defs, get_ai, set_ai, on_active, on_target=None, on_shot=None):
+    def __init__(self, defs, get_ai, set_ai, on_active, on_target=None, on_shot=None,
+                 on_vps=None, vps_known=None):
         """get_ai()/set_ai(bool): KI-Erkennung lesen/setzen (persistiert die
         Web-Konfiguration). on_active(bool): Ruhemodus umschalten.
         on_target(msg, kind, payload): ein Sensor meldet ein Ziel (kind
@@ -43,6 +47,10 @@ class BusNode:
         self._get_ai, self._set_ai, self._on_active = get_ai, set_ai, on_active
         self._on_target = on_target
         self._on_shot = on_shot
+        # VPS-Adresse vom Manager lernen (vpsRequest/vpsReport): on_vps(ip, port) speichert,
+        # vps_known() sagt, ob schon eine bekannt ist (dann nur noch selten nachfragen).
+        self._on_vps = on_vps
+        self._vps_known = vps_known or (lambda: False)
         self.active = True
         self.supported = (1 << defs.stgCamAi) | (1 << defs.stgActive)
         self.actions = 0
@@ -122,6 +130,15 @@ class BusNode:
             score=max(0, min(100, int(score))), worldValid=int(ok), worldX=wx, worldY=wy))
         self.inhibit_tx += 1
 
+    def request_vps(self):
+        """VPS-Adresse beim Manager erfragen: Unicast (kommt auch bei schlechtem
+        Multicast-Empfang an) und zusaetzlich Broadcast."""
+        if not hasattr(self.x, "vpsRequest"):
+            return                      # alter Header ohne den Code
+        self.bus.unicast(self.x.vpsRequest, b"",
+                         self.bus.device_ips.get(self.x.Manager, MANAGER_OCTET))
+        self.bus.broadcast(self.x.vpsRequest)
+
     def text(self, line):
         self.bus.text("KIVision: " + line)
 
@@ -153,6 +170,10 @@ class BusNode:
             p = x.unpack_prefix("posPayload", m.payload)
             if p:
                 self._on_shot(m, p)
+        elif m.code == getattr(x, "vpsReport", None) and self._on_vps:
+            v = x.unpack("vpsPayload", m.payload)
+            if v and m.sender == x.Manager:
+                self._on_vps("%d.%d.%d.%d" % (v["ip0"], v["ip1"], v["ip2"], v["ip3"]), v["port"])
         elif m.code == x.commandMsg:
             c = x.unpack("cmdPayload", m.payload)
             if c:
@@ -204,7 +225,8 @@ class BusNode:
         self.send_settings()
         self.send_pose()
         self.text("online, IP %s, KI %s" % (self.bus.ip, "an" if self._get_ai() else "aus"))
-        last_hb = last_join = time.monotonic()
+        self.request_vps()
+        last_hb = last_join = last_vps = time.monotonic()
         while not self._stop.wait(0.5):
             now = time.monotonic()
             # Jeder Fehler hier haette sonst den HB-Thread fuer immer beendet.
@@ -212,6 +234,9 @@ class BusNode:
                 if now - last_hb >= HB_PERIOD_MS / 1000.0:
                     last_hb = now
                     self.send_hb()
+                if now - last_vps >= (VPS_RECHECK_S if self._vps_known() else VPS_RETRY_S):
+                    last_vps = now
+                    self.request_vps()
                 if now - last_join >= REJOIN_S:
                     last_join = now
                     self.bus.rejoin()

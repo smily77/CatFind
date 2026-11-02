@@ -67,8 +67,45 @@ THUMB_WIDTH = 360
 # und erscheinen dort beim Track im Analyse-Tab - als Beleg fuers Klassifizieren.
 # Je Bild eine Uebersicht und, wenn die Rasenposition bekannt ist, ein Ausschnitt
 # um das Ziel aus dem vollen KI-Bild. Klein halten: das Pi-WLAN schafft ~60 kB/s.
-VPS_PHOTO_URL = os.environ.get("KIVISION_VPS_PHOTO", "http://***REMOVED***/photo")
-VPS_PERSON_URL = os.environ.get("KIVISION_VPS_PERSON", "http://***REMOVED***/person")
+# VPS-Adresse: steht bewusst NICHT im Repo. Der Pi lernt sie vom Manager (vpsRequest/
+# vpsReport, ipVPS aus dessen Credentials.h) und merkt sie sich in VPS_FILE. Uebersteuern
+# per Umgebung KIVISION_VPS (z.B. "http://1.2.3.4"). Ohne Adresse keine VPS-Uploads -
+# Bus, Personensperre und Bilder auf dem Pi laufen trotzdem.
+VPS_FILE = HOME / "vps.json"
+_vps_base = [os.environ.get("KIVISION_VPS", "").rstrip("/")]
+
+
+def _vps_load():
+    if _vps_base[0]:
+        print("[web] VPS aus Umgebung: %s" % _vps_base[0], flush=True)
+        return
+    try:
+        _vps_base[0] = json.loads(VPS_FILE.read_text())["base"]
+        print("[web] VPS gespeichert: %s" % _vps_base[0], flush=True)
+    except (OSError, ValueError, KeyError):
+        print("[web] VPS-Adresse noch unbekannt - frage den Manager", flush=True)
+
+
+def _vps_learned(ip, port):
+    """vpsReport vom Manager: Adresse uebernehmen und dauerhaft speichern."""
+    if os.environ.get("KIVISION_VPS"):
+        return                      # Umgebung hat Vorrang
+    base = "http://%s" % ip + ("" if port in (0, 80) else ":%d" % port)
+    if base == _vps_base[0]:
+        return
+    _vps_base[0] = base
+    try:
+        tmp = VPS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"base": base, "t": round(time.time())}))
+        tmp.replace(VPS_FILE)
+    except OSError as exc:
+        print("[web] VPS-Adresse nicht gespeichert: %s" % exc, flush=True)
+    print("[web] VPS-Adresse vom Manager gelernt: %s" % base, flush=True)
+
+
+def vps_url(path):
+    """Volle URL auf dem VPS oder None, solange keine Adresse bekannt ist."""
+    return _vps_base[0] + path if _vps_base[0] else None
 VPS_WIDTH = 1024
 VPS_CROP = 0.22            # Ausschnittbreite als Anteil der Bildbreite (4:3)
 VPS_QUEUE = 16             # mehr wartende Bilder -> neue verwerfen (WLAN haengt)
@@ -1453,7 +1490,10 @@ def _person_vps_run():
             continue
         body = json.dumps({"sender": node.id if node else 20, "samples": samples}).encode()
         try:
-            req = urllib.request.Request(VPS_PERSON_URL, data=body,
+            url = vps_url("/person")
+            if not url:
+                continue
+            req = urllib.request.Request(url, data=body,
                                          headers={"Content-Type": "application/json"})
             urllib.request.urlopen(req, timeout=15).read()
         except Exception as exc:                              # noqa: BLE001
@@ -1802,9 +1842,14 @@ def _vps_run():
             print("[web] VPS-Bild: %s" % exc)
             continue
         x, y = world or (0, 0)
+        base = vps_url("/photo")
+        if not base:
+            _vps_stats["fail"] += 1
+            _vps_stats["err"] = "%s VPS-Adresse unbekannt" % time.strftime("%H:%M")
+            continue
         for trig, data in imgs:
             url = "%s?sender=%d&trigger=%s&score=%d&x=%d&y=%d&t=%.2f" % (
-                VPS_PHOTO_URL, node.id if node else 20, trig, round(best * 100), x, y, t)
+                base, node.id if node else 20, trig, round(best * 100), x, y, t)
             try:
                 req = urllib.request.Request(url, data=data, headers={"Content-Type": "text/plain"})
                 urllib.request.urlopen(req, timeout=30).read()
@@ -1851,7 +1896,8 @@ def _start_bus():
         from kivision_bus import BusNode
         node = BusNode(XComDef(cand), lambda: bool(cfg["detect"].get("enabled")),
                        _bus_set_ai, _bus_on_active, on_target=_bus_on_target,
-                       on_shot=_bus_on_shot)
+                       on_shot=_bus_on_shot, on_vps=_vps_learned,
+                       vps_known=lambda: bool(_vps_base[0]))
         node.start()
         print("[bus] Geraet %d auf dem Bus, IP %s" % (node.id, node.bus.ip))
         return node
@@ -1861,6 +1907,7 @@ def _start_bus():
 
 
 apply_detect()
+_vps_load()
 node = _start_bus()
 
 app = Flask(__name__, template_folder=str(BASE / "templates"))

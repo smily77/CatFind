@@ -175,6 +175,11 @@ stationDefinitions device[deviceCount] = {
                              // Aktoren genau dem Track, den der Identifier erkannt hat, statt die
                              // Zuordnung selbst nachzubauen. Kein catDetected: Manager/VPS zaehlen
                              // es nicht als neue Katze.
+#define vpsRequest      20   // "Wie erreiche ich den VPS?" (ohne Payload, Unicast an den Manager oder
+                             // Broadcast). Fuer Geraete ohne Credentials.h (KIVision-Pi): die VPS-IP
+                             // steht so nirgends im Repo und ein Ersatzgeraet lernt sie selbst.
+#define vpsReport       21   // Antwort des Managers (vpsPayload, ipVPS aus seiner Credentials.h), Unicast
+                             // an den Fragenden. Der Empfaenger speichert sie dauerhaft.
 
 // Karten-Typen (fuer mapRequest/mapInfo/mapChunk)
 #define mapNoShot   1   // Schusszonen-/No-Shot-Karte (innerhalb = Feuern erlaubt)
@@ -286,6 +291,15 @@ struct __attribute__((packed)) envPayload {
   uint8_t  valid;       // 1 = Sensor gelesen; 0 = Sensor fehlt/defekt (Werte dann 0)
   int16_t  tempDeci;    // Temperatur in 0,1 Grad C (z.B. 215 = 21,5 Grad C)
   uint32_t pressPa;     // Luftdruck in Pa, absolut (Stationsdruck, NICHT auf Meereshoehe reduziert)
+};
+
+// vpsReport: Adresse des VPS-Dashboards (IPv4 einzeln, damit der Python-Parser es lesen kann)
+struct __attribute__((packed)) vpsPayload {
+  uint8_t  ip0;
+  uint8_t  ip1;
+  uint8_t  ip2;
+  uint8_t  ip3;
+  uint16_t port;        // HTTP-Port des Dashboards (80)
 };
 
 // commandMsg (ersetzt ucDataStruct) - typischerweise per Unicast
