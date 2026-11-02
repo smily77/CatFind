@@ -49,6 +49,9 @@
 #define REFIRE_MS      3000       // nach einem Schuss so lange kein neuer (gleicher Track)
 #define LASER_HOLD_MS  400        // Laser-Folgemodus: Laser aus, wenn so lange kein catObserved
 #define CATDET_DUP_MS  1500       // CatIdent sendet doppelt
+#define FROZEN_MS      1000       // gleicher Zielpunkt laenger = Radar haengt, ignorieren
+#define PERSON_GRACE_MS 2500      // Bedenkzeit vor dem 1. Schuss, solange KIVision lebt
+#define KIV_ALIVE_MS   30000      // KIVision gilt als lebend, so lange nach ihrem letzten HB (HB alle 10 s)
 
 // Veranda: Linie y = 0 von x = 3,0 bis 8,0 m (Welt-mm), dahinter (y < 0) die Veranda.
 // Steht der Aktor auf der Veranda (y < 0, 3 < x < 8 m), darf der Strahl NUR durch diese

@@ -31,7 +31,7 @@ WORLD_MAX_MM = 1000000   # unplausible Weltpunkte (Horizont) gar nicht erst pack
 
 
 class BusNode:
-    def __init__(self, defs, get_ai, set_ai, on_active, on_target=None):
+    def __init__(self, defs, get_ai, set_ai, on_active, on_target=None, on_shot=None):
         """get_ai()/set_ai(bool): KI-Erkennung lesen/setzen (persistiert die
         Web-Konfiguration). on_active(bool): Ruhemodus umschalten.
         on_target(msg, kind, payload): ein Sensor meldet ein Ziel (kind
@@ -42,6 +42,7 @@ class BusNode:
         self.bus = Bus(defs, self.id)
         self._get_ai, self._set_ai, self._on_active = get_ai, set_ai, on_active
         self._on_target = on_target
+        self._on_shot = on_shot
         self.active = True
         self.supported = (1 << defs.stgCamAi) | (1 << defs.stgActive)
         self.actions = 0
@@ -145,6 +146,13 @@ class BusNode:
             p = x.unpack_prefix(name, m.payload)
             if p:
                 self._on_target(m, kind, p)
+        elif m.code == getattr(x, "catHit", None) and self._on_shot:
+            # Schuss eines Aktors (PA2 schickt beim Feuerbeginn Multicast + Unicast-Kopie)
+            if self._duplicate(m):
+                return
+            p = x.unpack_prefix("posPayload", m.payload)
+            if p:
+                self._on_shot(m, p)
         elif m.code == x.commandMsg:
             c = x.unpack("cmdPayload", m.payload)
             if c:

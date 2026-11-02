@@ -20,6 +20,19 @@ float    aimDist = 0;
 String   lastReason = "";
 uint8_t  shots = 0;
 
+// Eingefrorene Position: liefert der Identifier laenger als FROZEN_MS bitgenau denselben Punkt
+// (Radar haengt, 2026-11-01/02 16 Schuss ins Leere), zaehlt das nicht mehr als Nachfuehrung -
+// der Track laeuft dann nach TRACK_LOST_MS ab und startet auch nicht neu.
+int32_t  rxX = 0, rxY = 0;
+unsigned long rxSince = 0;
+bool     rxFrozenNoted = false;
+
+// KIVision lebt (HB) -> vor dem ersten Schuss auf einen Track PERSON_GRACE_MS warten, damit
+// ihre Personen-Feuersperre rechtzeitig ankommt (2026-11-02 09:18: Sperre 1 s nach dem Schuss).
+unsigned long kivHbMs = 0;
+void noteKIVisionHB() { kivHbMs = millis(); }
+static bool kivAlive() { return kivHbMs && millis() - kivHbMs < KIV_ALIVE_MS; }
+
 unsigned long laserFollowMs = 0;       // letztes catObserved im Laser-Folgemodus
 bool     laserFollowOn = false;
 
@@ -94,6 +107,17 @@ static void trackUpdate(const catDetectedPayload& cd, bool detected) {
                                 (inhibited() ? ", Feuersperre" : ", gesichert"));
     return;
   }
+  if (cd.worldX == rxX && cd.worldY == rxY) {
+    if (millis() - rxSince > FROZEN_MS) {
+      if (!rxFrozenNoted) {
+        rxFrozenNoted = true;
+        sendUdpTextln("PowerActor2: Ziel bei " + atStr(rxX, rxY) + " eingefroren, ignoriert");
+      }
+      return;                         // keine Nachfuehrung -> Track verloren
+    }
+  } else {
+    rxX = cd.worldX; rxY = cd.worldY; rxSince = millis(); rxFrozenNoted = false;
+  }
   tgtX = cd.worldX; tgtY = cd.worldY;
   lastTrackMs = millis();
   if (engState != ENG_IDLE) return;
@@ -141,7 +165,6 @@ void engageTick() {
     fireOff();
     lastShotMs = now;
     shots++;
-    reportShot();
     engState = ENG_TRACK;             // Track weiter verfolgen (naechster Schuss nach REFIRE_MS)
     aimStart = now;
     return;
@@ -165,13 +188,23 @@ void engageTick() {
   if (abs((int)sv - (int)servoGoal) > 5) servoGoTo(sv);   // dem Track mit dem Turm folgen
   aimServo = sv; aimDist = dist;
   if (shots && now - lastShotMs < REFIRE_MS) return;
+  if (!shots && kivAlive() && now - engageStart < PERSON_GRACE_MS) {
+    if (lastReason != "Bedenkzeit") {
+      lastReason = "Bedenkzeit";
+      sendUdpTextln("PowerActor2: Katze bei " + atStr(tgtX, tgtY) + ", Bedenkzeit (Personen-Sperre)");
+    }
+    return;
+  }
   if (!servoAligned() && now - aimStart < AIM_MAX_MS) return;
   fireOn();
   fireStart = now;
   engState = ENG_FIRE;
+  reportShot();                       // schon beim Feuerbeginn: KIVision fotografiert den Laser
 }
 
-// Nach dem Schuss: catHit auf den Bus + Zeile fuer den VPS-Debug (mit LP40B-Messung)
+// Beim Feuerbeginn: catHit auf den Bus (Zielpunkt = worauf gerade gezielt wird) + Zeile fuer
+// den VPS-Debug (mit LP40B-Messung). Zusaetzlich direkt an KIVision (Pi empfaengt Multicast
+// schlecht), die beim catHit ein Schussfoto macht - solange der Laser noch leuchtet.
 void reportShot() {
   posPayload hit;
   int xl, yl;
@@ -183,7 +216,8 @@ void reportShot() {
   hit.worldX = tgtX; hit.worldY = tgtY; hit.worldValid = 1;
   hit.sensor = 0;
   broadcastMsg(catHit, hit);
-  sendUdpTextln("PowerActor2: SCHUSS " + String(shots) + " auf " + atStr(tgtX, tgtY) + ", " +
+  unicastMsg(catHit, hit, device[KIVision].IP);
+  sendUdpTextln("PowerActor2: SCHUSS " + String(shots + 1) + " auf " + atStr(tgtX, tgtY) + ", " +
                 String(aimDist / 1000.0f, 2) + " m, Servo " + String(aimServo) + "/" + String(servoPos) +
                 ", LP40B " + (lidarFresh() ? String(lidarMm / 1000.0f, 2) + " m" : String("-")));
 }

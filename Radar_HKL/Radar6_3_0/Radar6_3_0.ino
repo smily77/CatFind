@@ -226,6 +226,20 @@ static bool insideAngleLimit(int16_t x, int16_t y) {
   return deg >= device[ID].covLeftDeg && deg <= device[ID].covRightDeg;
 }
 
+// Eingefrorene Ziele: der HLK-2450 liefert manchmal bis ~36 s lang bitgenau denselben Punkt
+// weiter, nachdem das Ziel weg ist (2026-11-01/02 bei Dome, Dome-C1 und Compact Dome; der
+// PA2 hat 16x darauf geschossen). Ein echtes Ziel wackelt immer um ein paar mm (in 3 Tagen
+// 7850 Laeufe mit 1 Frame, nur 30 mit 3..9). Gleicher Punkt im selben Slot laenger als
+// RADAR_FREEZE_MS -> nicht mehr melden, bis er sich wieder bewegt.
+#define RADAR_FREEZE_MS 500
+static int16_t frzX[3], frzY[3];
+static unsigned long frzSince[3];
+static bool frozenTarget(int i, int16_t x, int16_t y) {
+  unsigned long now = millis();
+  if (x != frzX[i] || y != frzY[i]) { frzX[i] = x; frzY[i] = y; frzSince[i] = now; return false; }
+  return now - frzSince[i] > RADAR_FREEZE_MS;
+}
+
 // Radar-Frame auswerten: catObserved (mit Welt-Koordinaten, falls Pose gueltig) senden,
 // im Kalibrierfenster die eigenen Bahnen sammeln, juengstes Target fuer Health-Check merken.
 // Mit gueltiger Welt-Pose UND geladener Filterkarte (NoShot oder RasenKarte, siehe
@@ -238,7 +252,8 @@ void processTargets() {
   boolean validTarget = false;
   for (int i = 0; i < 3; i++) {
     if (target[i].active && (target[i].l > deadZone) &&
-        insideAngleLimit(target[i].x, target[i].y)) {
+        insideAngleLimit(target[i].x, target[i].y) &&
+        !frozenTarget(i, target[i].x, target[i].y)) {
       validTarget = true;
       obsData.x = target[i].x;
       obsData.y = target[i].y;

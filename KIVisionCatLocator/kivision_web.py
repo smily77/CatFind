@@ -240,7 +240,8 @@ DEFAULTS = {
     "zone": "rasen",
     # Personen-Sperre (siehe PERSON_EVERY): inhibit = fireInhibit auf den Bus,
     # die VPS-Meldung (Track-Markierung) laeuft auch ohne.
-    "person": {"inhibit": True, "threshold": 0.7, "need": 2, "window": 3, "hold": 60},
+    "person": {"inhibit": True, "threshold": 0.7, "need": 2, "window": 3, "hold": 60,
+               "fast": 0.9},
     "tuning": "auto",    # auto | normal | noir (NoIR-Modul: Magenta bei Tag)
     "controls": {},
     "detect": {
@@ -1388,7 +1389,11 @@ class PersonGuard:
         threshold = float(pc.get("threshold", 0.7))
         window = max(1, int(pc.get("window", 3)))
         need = max(1, min(window, int(pc.get("need", 2))))
+        # Ab "fast" genuegt EINE Runde: 2 von 3 kam 2026-11-02 09:18 eine Sekunde nach
+        # dem Schuss. Nacht-Fehlalarme lagen bis 67 %, der Blumen-Fehlalarm bei 23-28 %.
+        fast = float(pc.get("fast", 0.9))
         persons = [b for b in raw or [] if b["label"] == "person" and b["score"] >= threshold]
+        sure = any(b["score"] >= fast for b in persons)
         now = time.monotonic()
         # Zum Nachjustieren (nachts kam je Gang nur eine Sperre): jede Runde
         # mit einer halbwegs sicheren Person ins Journal.
@@ -1398,7 +1403,8 @@ class PersonGuard:
                   flush=True)
         with self.lock:
             self.recent = (self.recent + [bool(persons)])[-window:]
-            if not persons or sum(self.recent) < need or now - self.sent_at < PERSON_EVERY:
+            if (not persons or (sum(self.recent) < need and not sure)
+                    or now - self.sent_at < PERSON_EVERY):
                 return
             self.sent_at = now
         top = max(persons, key=lambda b: b["score"])
@@ -1472,6 +1478,47 @@ def _bus_set_ai(on):
 def _bus_on_active(on):
     _bus_active[0] = bool(on)
     apply_detect()
+
+
+SHOT_FRAMES = 2            # Schussfotos je catHit (Laser leuchtet 500 ms ab Feuerbeginn)
+SHOT_GAP = 0.2             # s Mindestabstand zwischen den beiden
+
+
+def _shot_photos(info, world):
+    """Schussfoto(s): die naechsten Kamerabilder nach dem catHit, an den VPS als kivshot."""
+    pump = detector.pump
+    seq, last_t = pump.seq, 0.0
+    for n in range(1, SHOT_FRAMES + 1):
+        while True:
+            frame, tracks, seq = pump.wait(seq)
+            if frame is None or time.monotonic() - last_t >= SHOT_GAP:
+                break
+        if frame is None:
+            return
+        last_t = time.monotonic()
+        note = "%s  Schussbild %d" % (info, n)
+        try:
+            path = save_hit(frame, [], note, RADAR_DIR, MAX_RADAR, name_score=0.0, tracks=tracks)
+        except Exception as exc:                              # noqa: BLE001
+            print("[web] Schussbild fehlgeschlagen: %s" % exc)
+            return
+        print("[web] Schussbild: %s (%s)" % (path.name, note), flush=True)
+        vps_upload(path, frame, world, 0.0, trig="kivshot")
+
+
+def _bus_on_shot(m, p):
+    """catHit vom Bus (Aktor feuert gerade) -> Schussfotos."""
+    if not _bus_active[0]:
+        return
+    name = SENDER_NAMES.get(m.sender, "#%d" % m.sender)
+    world = (p["worldX"], p["worldY"]) if p.get("worldValid") else None
+    info = "SCHUSS %s" % name
+    if world:
+        info += " Welt %.1f/%.1f m" % (world[0] / 1000.0, world[1] / 1000.0)
+    info += " %.1f m" % (p["radius"] / 1000.0)
+    if p.get("res"):
+        info += " LP40B %.1f m" % (p["res"] / 1000.0)
+    threading.Thread(target=_shot_photos, args=(info, world), daemon=True).start()
 
 
 def _bus_on_target(m, kind, p):
@@ -1803,7 +1850,8 @@ def _start_bus():
         from xcom import XComDef
         from kivision_bus import BusNode
         node = BusNode(XComDef(cand), lambda: bool(cfg["detect"].get("enabled")),
-                       _bus_set_ai, _bus_on_active, on_target=_bus_on_target)
+                       _bus_set_ai, _bus_on_active, on_target=_bus_on_target,
+                       on_shot=_bus_on_shot)
         node.start()
         print("[bus] Geraet %d auf dem Bus, IP %s" % (node.id, node.bus.ip))
         return node

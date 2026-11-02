@@ -1102,7 +1102,7 @@ function renderTracks(){
         det = `<small>Aufnahme: ${fmtDT(t.t0)} → ${fmtDT(t.t1)}</small>` +
               (phs.length ? `<div class="trPhotos">` + phs.map(ph=>
                 `<a href="photo/${ph.id}" target="_blank" title="${fmtDT(ph.t)} · ${escapeHtml(ph.trigger)}${ph.score?" · KI "+ph.score+"%":""}">` +
-                `<img src="photo/${ph.id}" loading="lazy" class="${ph.trigger.endsWith("crop")?"crop":""}"></a>`).join("") + `</div>` : "") +
+                `<img src="photo/${ph.id}" loading="lazy" class="${ph.trigger.endsWith("crop")?"crop":""}${ph.trigger.startsWith("kivshot")?" shot":""}"></a>`).join("") + `</div>` : "") +
               (acts.length ? `<small>${acts.map(actLine).join("<br>")}</small><br>` : "") +
               (sd ? `<small>${sd}</small>` : "") +
               (t.members ? `<div class="mkRow"><button class="mk" data-unmerge="${t.merge_id}">🔗 Klebung lösen</button></div>` : "") +

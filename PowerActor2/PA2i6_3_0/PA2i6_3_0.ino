@@ -115,7 +115,10 @@ void handleCommand(const xMsg& m) {
 void handleBusMsg(const xMsg& m) {
   if (handleCommonMsg(m)) return;
   switch (m.header.msgCode) {
-    case HB:         poseNoteHB(m.header.sender); break;          // IP des LD06
+    case HB:                         // IP des LD06; KIVision lebt -> Bedenkzeit
+      poseNoteHB(m.header.sender);
+      if (m.header.sender == KIVision) noteKIVisionHB();
+      break;
     case poseReport: poseNoteReport(m.header.sender, m); break;   // LD06 hat seine Pose?
     case fireInhibit: {
       fireInhibitPayload inh;
