@@ -1086,21 +1086,30 @@ Messung ergäbe bei 100 ms rund 2 mA.
 - **Keine Dev-Boards:** nacktes ESP32-Modul, Wandler mit sehr kleinem Eigenverbrauch,
   kein USB-Chip und keine Dauer-LEDs. Ein AMS1117 allein käme an 12 V auf rund 40 Wh
   in 4 Wochen.
-- **MOSFETs statt Relais:** Servo, Laser und LP40B sind im Schlaf stromlos. Die
-  Freilaufdiode am Ventil bleibt.
+- **MOSFETs statt Relais:** Servo, Laser, LP40B und Sprühpumpe sind im Schlaf stromlos.
+  Induktive Lasten wie Pumpe oder Ventil brauchen eine Freilaufdiode.
 - **Servo:** Nach dem Einschalten zuerst die Ist-Position lesen, erst dann das Drehmoment
   aktivieren.
-- **LD06 und Radar nicht im Akku-Kreis:** Sie würden das Budget sprengen. Der Aktor bleibt
-  reine Wirkeinheit.
+- **Wasser:** Es kommt aus einem Tank auf dem Aktor und wird mit einem elektrischen
+  Wassersprüh-Kit gefördert. Der Aktor braucht also keinen Schlauch.
+- **LP40B auf dem Drehturm, kein LD06 und kein Radar:** LD06 und Radar würden das Budget
+  sprengen. Der Aktor bleibt reine Wirkeinheit, der Turm-Lidar dient der Pose.
 
 ### Pose und Wartung
-Die Trägerpose dauert heute rund 55 s und passt nicht zu einem Aktor, der sofort bereit
-sein muss. Die Pose bleibt deshalb gespeichert, was die heutige Regel «keine NVS-Pose
-nach dem Boot» für diesen Aktor ablöst. Ein Beschleunigungssensor erklärt sie für ungültig,
-sobald der Aktor bewegt wird.
+Die Pose kommt von einem Lidar auf dem Drehturm, zum Beispiel dem LP40B oder einem
+ähnlichen Sensor. Der Rundumschwenk gegen die RasenKarte ist am PA2 erprobt und lieferte
+dort auch ohne LD06-Daten eine eindeutige Pose. Beim Aktor entfällt aber die heutige
+Gegenprüfung LD06 gegen LP40B, die Fehler des Turmwinkels erkennt. Dafür braucht es
+einen Ersatz.
 
-No-Shot-Karte, OTA und neue Pose laufen in einem seltenen WLAN-Wartungsfenster, das per
-Funkbefehl ausgelöst wird.
+Ein Schwenk dauert rund 35 s und passt nicht zum Sofort-Einsatz. Die Pose bleibt deshalb
+gespeichert, was die heutige Regel «keine NVS-Pose nach dem Boot» für diesen Aktor ablöst.
+Ein Beschleunigungssensor erklärt sie für ungültig, sobald der Aktor bewegt wird. Danach
+wird nicht geschossen, bis ein neuer Schwenk gelungen ist.
+
+No-Shot-Karte, OTA und die Lokalisierung laufen in einem seltenen WLAN-Wartungsfenster,
+das per Funkbefehl ausgelöst wird. Die Lokalisierung rechnet heute auf dem VPS. Fällt er
+aus, kann der Aktor nach dem Umstellen keine neue Pose finden und bleibt gesichert.
 
 ### Sicherheit
 Ein schlafender Aktor hört weder `fireInhibit` noch die Scharf/Sicher-Befehle. Deshalb gilt:
@@ -1118,7 +1127,8 @@ Ein schlafender Aktor hört weder `fireInhibit` noch die Scharf/Sicher-Befehle. 
 | Einsätze | 10 pro Tag, je 30 s bei 5 W | 11,7 Wh |
 | **Summe** | ohne Wandlerverluste und Selbstentladung | **ca. 14,5 Wh** |
 
-Den grössten Einfluss haben die Wachzeiten, nicht das Lauschen.
+Den grössten Einfluss haben die Wachzeiten, nicht das Lauschen. Die Sprühpumpe ist in den
+5 W noch nicht enthalten und kann das Budget deutlich verändern.
 
 ### Offene Punkte
 - Heutigen Verbrauch von PA2 je Komponente messen.
@@ -1126,11 +1136,15 @@ Den grössten Einfluss haben die Wachzeiten, nicht das Lauschen.
 - Prototyp mit zwei CC1101 und nacktem ESP32: Ruhestrom, Weckzeit, Paketverlust im Garten.
 - Zulässige Sendezeit und Leistung im 868-MHz-Band für die Schweiz prüfen.
 - Akku: Typ, Spannung, Laden, Verhalten bei Kälte, Solarzelle ja oder nein.
-- Eigentliche Wirkung: Wasserversorgung und Druck bei einem mobilen Aktor.
+- Sprüh-Kit: Modell, Stromaufnahme, Zeit bis zum Druckaufbau, Reichweite des Strahls.
+- Tank: Inhalt, Wasser pro Schuss, Füllstandsmeldung. Der Tank kann die Betriebsdauer
+  stärker begrenzen als der Akku.
+- Frost: Tank, Pumpe und Leitungen im Winter.
 - Brücke: Standort, Reichweite, mehrere Aktoren, Darstellung auf dem Bus (HB, Gerätenummer).
   Eine neue Nummer bedeutet heute `deviceCount` und Neuflashen aller Geräte.
 - Paketformat und Signaturverfahren festlegen.
-- Woher kommt die Pose nach einem Umstellen ohne LD06 (LP40B-Schwenk, manuell)?
+- Turm-Lidar: LP40B oder ein anderer Sensor, Ersatz für die Gegenprüfung durch den LD06,
+  Stromverbrauch und Dauer des Schwenks.
 
 ### Nicht Teil dieses Abschnitts
 Die konkrete Umsetzung, die Bauteilwahl und die Firmware werden erst festgelegt, wenn die
