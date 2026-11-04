@@ -1111,9 +1111,27 @@ gespeichert, was die heutige Regel «keine NVS-Pose nach dem Boot» für diesen 
 Ein Beschleunigungssensor erklärt sie für ungültig, sobald der Aktor bewegt wird. Danach
 wird nicht geschossen, bis ein neuer Schwenk gelungen ist.
 
-No-Shot-Karte, OTA und die Lokalisierung laufen in einem seltenen WLAN-Wartungsfenster,
-das per Funkbefehl ausgelöst wird. Die Lokalisierung rechnet heute auf dem VPS. Fällt er
-aus, kann der Aktor nach dem Umstellen keine neue Pose finden und bleibt gesichert.
+### Betriebsarten
+Die Pose wird nur bei der Initialisierung gebraucht. Der ESP32 des Aktors schaltet deshalb
+nur dafür das WLAN ein, ein zweiter Chip ist nicht nötig.
+
+| Betriebsart | WLAN | Aufgabe |
+|---|---|---|
+| **Initialisierung und Wartung** | an | Schwenk und Pose, No-Shot-Karte laden, OTA |
+| **Normalbetrieb** | aus | schlafen, per 868 MHz wecken, zielen, schiessen |
+
+- **Auslöser (Vorschlag):** Einschalten, Funkbefehl von VPS oder Display, und nach einer
+  Bewegung, sobald der Aktor wieder ruhig steht.
+- **Ablauf:** Der ESP32 startet neu ins WLAN, erledigt die Aufgaben, speichert Pose und
+  Karte im Flash und startet in den Normalbetrieb. So bleibt der Normalbetrieb frei vom
+  WLAN-Stack. Nach dem Neustart gilt der Scharf-Status aus dem nächsten Funkpaket.
+- **Zeitlimit:** Das WLAN schaltet nach einer festen Zeit ab, auch ohne Erfolg (z. B. 10 min),
+  damit eine fehlgeschlagene Wartung den Akku nicht leert.
+- **Sicherheit:** Während der Initialisierung schiesst der Aktor nicht.
+- **OTA:** Es läuft mit Rückfall auf die alte Firmware, weil ein Fehlstart im Feld den
+  einzigen Funkweg zum Aktor kosten würde.
+- **Ohne WLAN oder VPS:** Die Lokalisierung rechnet heute auf dem VPS. Fällt er aus, behält
+  ein unbewegter Aktor seine Pose. Ein bewegter Aktor bleibt ohne Pose und gesichert.
 
 ### Sprüh-Kit (Stand 2026-11-04)
 Laut Bambu-Lab-Shop (Suchergebnisse, die Produktseite selbst liess sich nicht lesen):
