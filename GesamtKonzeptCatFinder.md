@@ -1027,3 +1027,111 @@ auf der Drehachse neu justiert ist.
 Die konkrete Integration der einzelnen Komponenten (Reihenfolge, Protokoll,
 Pose-Algorithmus des LD06, Kalibrierung der Winkelabweichungen) wird in
 Folgeschritten festgelegt.
+
+
+## Aufgabe: Next-Gen-Aktor mit Akkubetrieb (Entwurf)
+
+**Status 2026-11-04: Entwurf, noch nicht zur Umsetzung freigegeben.** Dieser Abschnitt
+hält den Stand der Überlegungen fest und wird weiter ausgearbeitet. Alle Stromwerte sind
+Rechen- oder Schätzwerte aus Datenblättern und Forenmessungen. Am Aufbau ist noch nichts
+gemessen.
+
+### Grobkonzept
+Die heutigen Aktoren hängen per WLAN am Bus und halten mit Akku nur wenige Stunden.
+Die nächste Generation soll mit einem Akku **Wochen** durchhalten. Dafür schläft der
+Aktor, lauscht mit sehr wenig Strom auf Funk und ist nach dem Wecken sofort einsatzbereit.
+Den Link zum Bus stellt eine Brücke mit Netzteil her.
+
+```text
+Radare → CatIdent → WLAN-Multicast → Brücke (Netzteil: ESP32 + CC1101)
+                                          │ 868 MHz, beidseitig
+                                          ▼
+                 Aktor: CC1101 lauscht → weckt ESP32 → schaltet Servo/Laser/Ventil
+```
+
+### Ziele
+- Mindestens 4 Wochen Betrieb mit einem Akku von etwa 60 Wh (12 V, 5 Ah, Annahme).
+- Reaktion auf eine bestätigte Katze innerhalb von etwa 100 ms.
+- Betrieb ohne VPS und ohne Manager, wie im übrigen System.
+- Mindestens so sicher wie heute: Bei Funkverlust wird nicht geschossen.
+
+### Auslöser
+Geweckt wird bei `catDetected`, nicht bei jeder Radarmeldung. Darauf löst PA2 bereits aus,
+und `catTracked` liefert danach rund 5 Positionen pro Sekunde. Die Bestätigung durch den
+CatIdent dauert ohnehin länger als die Funkverzögerung, und rohe Radarmeldungen würden
+Wachzeit kosten, ohne dass geschossen werden darf.
+
+### Übertragung (Favorit)
+**CC1101 auf 868 MHz mit Wake-on-Radio.** Der Chip lauscht selbständig im Takt von etwa
+100 ms und weckt den ESP32 nur bei einem gültigen Paket. Die Brücke sendet dazu eine
+Präambel von etwa 120 ms. Der Link funktioniert in beide Richtungen, damit auch `catHit`
+und der Akkustand zurückkommen.
+
+| Lösung | Bereitschaftsstrom | Reaktion | Beurteilung |
+|---|---|---|---|
+| WLAN dauernd an | ca. 100 mA | sofort | scheidet aus |
+| ESP-NOW mit Wachfenster | ca. 4 mA | ca. 100 ms | keine neue Hardware, aber am WLAN-Kanal gebunden |
+| **CC1101 Wake-on-Radio** | **ca. 0,4 mA** | **max. ca. 100 ms** | **Favorit** |
+| nRF52 mit kurzem Lauschen, 2,4 GHz | ca. 50 µA | ca. 100 ms | Alternative, mehr Eigenentwicklung |
+| Weckempfänger (z. B. FH101RF) | wenige µA | 1–121 ms | bringt wenig, die Selbstentladung liegt höher |
+| RFSENSE (EFR32) | sehr tief | schnell | zu unempfindlich |
+
+Der CC1101-Wert ist aus Forenmessungen hochgerechnet (40 µA bei 1 s Takt). Eine andere
+Messung ergäbe bei 100 ms rund 2 mA.
+
+### Aktor-Hardware
+- **ESP32 im Light Sleep statt Tiefschlaf:** ca. 0,8 mA, Wecken in 1–3 ms, RAM mit Karte
+  und Pose bleibt erhalten. Tiefschlaf spart in 4 Wochen nur rund 1,6 Wh und kostet
+  200–500 ms Start.
+- **Keine Dev-Boards:** nacktes ESP32-Modul, Wandler mit sehr kleinem Eigenverbrauch,
+  kein USB-Chip und keine Dauer-LEDs. Ein AMS1117 allein käme an 12 V auf rund 40 Wh
+  in 4 Wochen.
+- **MOSFETs statt Relais:** Servo, Laser und LP40B sind im Schlaf stromlos. Die
+  Freilaufdiode am Ventil bleibt.
+- **Servo:** Nach dem Einschalten zuerst die Ist-Position lesen, erst dann das Drehmoment
+  aktivieren.
+- **LD06 und Radar nicht im Akku-Kreis:** Sie würden das Budget sprengen. Der Aktor bleibt
+  reine Wirkeinheit.
+
+### Pose und Wartung
+Die Trägerpose dauert heute rund 55 s und passt nicht zu einem Aktor, der sofort bereit
+sein muss. Die Pose bleibt deshalb gespeichert, was die heutige Regel «keine NVS-Pose
+nach dem Boot» für diesen Aktor ablöst. Ein Beschleunigungssensor erklärt sie für ungültig,
+sobald der Aktor bewegt wird.
+
+No-Shot-Karte, OTA und neue Pose laufen in einem seltenen WLAN-Wartungsfenster, das per
+Funkbefehl ausgelöst wird.
+
+### Sicherheit
+Ein schlafender Aktor hört weder `fireInhibit` noch die Scharf/Sicher-Befehle. Deshalb gilt:
+- Jedes Funkpaket führt Scharf-Status und Sperre mit.
+- Geschossen wird nur mit einem frischen Paket (z. B. höchstens 500 ms alt).
+- Pakete tragen Zähler und Signatur, weil der Funk über den Garten hinausreicht.
+- Nach einem Neustart ist der Aktor gesichert, wie heute.
+
+### Energiebudget (4 Wochen, Schätzung)
+
+| Posten | Annahme | Energie |
+|---|---|---|
+| ESP32 Light Sleep | 0,8 mA bei 3,3 V | 1,8 Wh |
+| CC1101 | 0,4 mA | 0,9 Wh |
+| Einsätze | 10 pro Tag, je 30 s bei 5 W | 11,7 Wh |
+| **Summe** | ohne Wandlerverluste und Selbstentladung | **ca. 14,5 Wh** |
+
+Den grössten Einfluss haben die Wachzeiten, nicht das Lauschen.
+
+### Offene Punkte
+- Heutigen Verbrauch von PA2 je Komponente messen.
+- `catDetected` pro Tag aus `actor_log` auswerten, die 10 Einsätze sind nur geschätzt.
+- Prototyp mit zwei CC1101 und nacktem ESP32: Ruhestrom, Weckzeit, Paketverlust im Garten.
+- Zulässige Sendezeit und Leistung im 868-MHz-Band für die Schweiz prüfen.
+- Akku: Typ, Spannung, Laden, Verhalten bei Kälte, Solarzelle ja oder nein.
+- Eigentliche Wirkung: Wasserversorgung und Druck bei einem mobilen Aktor.
+- Brücke: Standort, Reichweite, mehrere Aktoren, Darstellung auf dem Bus (HB, Gerätenummer).
+  Eine neue Nummer bedeutet heute `deviceCount` und Neuflashen aller Geräte.
+- Paketformat und Signaturverfahren festlegen.
+- Woher kommt die Pose nach einem Umstellen ohne LD06 (LP40B-Schwenk, manuell)?
+
+### Nicht Teil dieses Abschnitts
+Die konkrete Umsetzung, die Bauteilwahl und die Firmware werden erst festgelegt, wenn die
+offenen Punkte geklärt sind.
