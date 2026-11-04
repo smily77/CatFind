@@ -1050,7 +1050,7 @@ Radare → CatIdent → WLAN-Multicast → Brücke (Netzteil: ESP32 + CC1101)
 ```
 
 ### Ziele
-- Mindestens 4 Wochen Betrieb mit einem Akku von etwa 60 Wh (12 V, 5 Ah, Annahme).
+- Mindestens 4 Wochen Betrieb mit einem Akku von etwa 60 Wh (Annahme).
 - Reaktion auf eine bestätigte Katze innerhalb von etwa 100 ms.
 - Betrieb ohne VPS und ohne Manager, wie im übrigen System.
 - Mindestens so sicher wie heute: Bei Funkverlust wird nicht geschossen.
@@ -1084,14 +1084,18 @@ Messung ergäbe bei 100 ms rund 2 mA.
   und Pose bleibt erhalten. Tiefschlaf spart in 4 Wochen nur rund 1,6 Wh und kostet
   200–500 ms Start.
 - **Keine Dev-Boards:** nacktes ESP32-Modul, Wandler mit sehr kleinem Eigenverbrauch,
-  kein USB-Chip und keine Dauer-LEDs. Ein AMS1117 allein käme an 12 V auf rund 40 Wh
+  kein USB-Chip und keine Dauer-LEDs. Ein AMS1117 allein käme an 7,4 V auf rund 25 Wh
   in 4 Wochen.
-- **MOSFETs statt Relais:** Servo, Laser, LP40B und Sprühpumpe sind im Schlaf stromlos.
-  Induktive Lasten wie Pumpe oder Ventil brauchen eine Freilaufdiode.
+- **MOSFETs statt Relais:** Servo, Laser, LP40B und Sprüh-Kit sind im Schlaf stromlos.
+  Der Motor des Sprüh-Kits braucht eine Freilaufdiode.
 - **Servo:** Nach dem Einschalten zuerst die Ist-Position lesen, erst dann das Drehmoment
   aktivieren.
-- **Wasser:** Es kommt aus einem Tank auf dem Aktor und wird mit einem elektrischen
-  Wassersprüh-Kit gefördert. Der Aktor braucht also keinen Schlauch.
+- **Wasser:** Es kommt aus einem Tank auf dem Aktor und wird mit dem Bambu Lab Electric
+  Water Spray Kit 01 (ZC004) gefördert. Der Aktor braucht also keinen Schlauch. Ein Ventil
+  entfällt voraussichtlich, der Schuss wird über den Kit-Motor ausgelöst.
+- **Akku 2S (7,4 V) als Systemspannung (Vorschlag):** Das Kit läuft mit 7,4 V und der
+  Servo ST3020 mit 6–12 V. Damit entfällt voraussichtlich eine eigene 12-V-Schiene.
+  60 Wh entsprechen etwa 2S3P mit 18650-Zellen.
 - **LP40B auf dem Drehturm, kein LD06 und kein Radar:** LD06 und Radar würden das Budget
   sprengen. Der Aktor bleibt reine Wirkeinheit, der Turm-Lidar dient der Pose.
 
@@ -1111,6 +1115,24 @@ No-Shot-Karte, OTA und die Lokalisierung laufen in einem seltenen WLAN-Wartungsf
 das per Funkbefehl ausgelöst wird. Die Lokalisierung rechnet heute auf dem VPS. Fällt er
 aus, kann der Aktor nach dem Umstellen keine neue Pose finden und bleibt gesichert.
 
+### Sprüh-Kit (Stand 2026-11-04)
+Laut Bambu-Lab-Shop (Suchergebnisse, die Produktseite selbst liess sich nicht lesen):
+
+| Eigenschaft | Wert |
+|---|---|
+| Spannung | 7,4 V (mitgelieferter 18650-Akku, 2200 mAh) |
+| Reichweite | 10 m |
+| Schussfolge | 2 Schuss/s |
+| Stromaufnahme, Druck, Wasser pro Schuss | nicht angegeben |
+| Trockenlauf | verboten, kann das Gerät beschädigen |
+
+Der Wert «Schuss pro Sekunde» deutet auf einen Impulsbetrieb ohne langen Druckaufbau hin.
+Das ist nicht belegt und muss getestet werden. Die 10 m liegen über den heutigen 6,5 m
+des PA2, gelten aber als Herstellerangabe.
+
+Wegen des Trockenlaufverbots ist eine Füllstandserkennung Pflicht. Bei leerem Tank wird
+das Kit nicht mehr ausgelöst.
+
 ### Sicherheit
 Ein schlafender Aktor hört weder `fireInhibit` noch die Scharf/Sicher-Befehle. Deshalb gilt:
 - Jedes Funkpaket führt Scharf-Status und Sperre mit.
@@ -1127,7 +1149,7 @@ Ein schlafender Aktor hört weder `fireInhibit` noch die Scharf/Sicher-Befehle. 
 | Einsätze | 10 pro Tag, je 30 s bei 5 W | 11,7 Wh |
 | **Summe** | ohne Wandlerverluste und Selbstentladung | **ca. 14,5 Wh** |
 
-Den grössten Einfluss haben die Wachzeiten, nicht das Lauschen. Die Sprühpumpe ist in den
+Den grössten Einfluss haben die Wachzeiten, nicht das Lauschen. Das Sprüh-Kit ist in den
 5 W noch nicht enthalten und kann das Budget deutlich verändern.
 
 ### Offene Punkte
@@ -1135,9 +1157,10 @@ Den grössten Einfluss haben die Wachzeiten, nicht das Lauschen. Die Sprühpumpe
 - `catDetected` pro Tag aus `actor_log` auswerten, die 10 Einsätze sind nur geschätzt.
 - Prototyp mit zwei CC1101 und nacktem ESP32: Ruhestrom, Weckzeit, Paketverlust im Garten.
 - Zulässige Sendezeit und Leistung im 868-MHz-Band für die Schweiz prüfen.
-- Akku: Typ, Spannung, Laden, Verhalten bei Kälte, Solarzelle ja oder nein.
-- Sprüh-Kit: Modell, Stromaufnahme, Zeit bis zum Druckaufbau, Reichweite des Strahls.
-- Tank: Inhalt, Wasser pro Schuss, Füllstandsmeldung. Der Tank kann die Betriebsdauer
+- Akku: 2S bestätigen, Laden, Verhalten bei Kälte, Solarzelle ja oder nein.
+- Sprüh-Kit messen: Stromaufnahme, Zeit bis zum ersten Strahl, Wasser pro Schuss,
+  wirkliche Reichweite und Flugbahn im Freien, Ansteuerung per MOSFET.
+- Tank: Inhalt, Füllstandssensor, Ansaugen ohne Luft. Der Tank kann die Betriebsdauer
   stärker begrenzen als der Akku.
 - Frost: Tank, Pumpe und Leitungen im Winter.
 - Brücke: Standort, Reichweite, mehrere Aktoren, Darstellung auf dem Bus (HB, Gerätenummer).
