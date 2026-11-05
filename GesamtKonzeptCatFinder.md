@@ -1119,14 +1119,25 @@ Paket etwa 8 ms, bei 5 Paketen pro Sekunde bleibt also genug Platz. Eine zweite 
 braucht es nur, wenn ein Actor ausser Funkreichweite steht.
 
 ### Aktor-Hardware
-- **Bestückung:** ESP32, RFM95, Servo ST3020 für den Turm, Ziel-Laser, Sprüh-Kit
+- **Bestückung:** ESP32-S3, RFM95, Servo ST3020 für den Turm, Ziel-Laser, Sprüh-Kit
   (Bambu Lab Electric Water Spray Kit 01, Modell B-ZC004), LP40B für die Pose und ADXL362
   als Bewegungssensor.
 - **ESP32 im Light Sleep statt Tiefschlaf:** ca. 0,8 mA, Wecken in 1–3 ms, RAM mit Karte
   und Pose bleibt erhalten. Tiefschlaf spart in 4 Wochen nur rund 1,6 Wh und kostet
   200–500 ms Start.
-- **Keine Dev-Boards:** nacktes ESP32-Modul, Wandler mit sehr kleinem Eigenverbrauch,
-  kein USB-Chip und keine Dauer-LEDs. Ein AMS1117 allein käme an 7,4 V auf rund 25 Wh
+- **Chip ESP32-S3:** Modul ESP32-S3-WROOM-1-N8 ohne PSRAM. Der USB-Anschluss ist im Chip,
+  der Actor braucht also keinen USB-Chip, und die Basis nutzt dieselbe Chipfamilie. Laut
+  Forenbeiträgen zum Datenblatt braucht der S3 im Light Sleep 240 µA, gemeldet werden real aber
+  220–700 µA und mehr. Der Vorteil gegenüber dem ESP32 ist deshalb unsicher und wird
+  am Aufbau gemessen. Die 0,8 mA im Energiebudget bleiben bis dahin stehen.
+- **Antenne:** Die Modulantenne des WROOM-1 sitzt am Gehäuserand, weg vom Wassertank. Die
+  Variante WROOM-1U nimmt eine externe Antenne.
+- **Pins:** Der Actor braucht rund 18: RFM95 6, ADXL362 2, Servobus 2, LP40B 2, MOSFETs 4,
+  Füllstand 1, Akkuspannung 1.
+- **Keine Dev-Boards:** nacktes Modul auf einer kleinen eigenen Trägerplatine mit 3,3-V-Wandler
+  mit sehr kleinem Eigenverbrauch, Abblockkondensatoren, EN und BOOT sowie USB-Pads.
+  Ein passendes fertiges Trägerboard ist nicht bekannt. Für erste Funktionstests reicht ein
+  S3-Board, für die Strommessung nicht. Es gibt keinen USB-Chip und keine Dauer-LEDs. Ein AMS1117 allein käme an 7,4 V auf rund 25 Wh
   in 4 Wochen.
 - **MOSFETs statt Relais:** Servo, Laser, LP40B und Sprüh-Kit sind im Schlaf stromlos.
   Der Motor des Sprüh-Kits braucht eine Freilaufdiode.
