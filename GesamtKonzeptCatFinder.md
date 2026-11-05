@@ -1203,6 +1203,9 @@ des PA2, gelten aber als Herstellerangabe.
 Wegen des Trockenlaufverbots ist eine Füllstandserkennung Pflicht. Bei leerem Tank wird
 das Kit nicht mehr ausgelöst.
 
+**Mögliche Option: doppelläufig mit zwei Sprüh-Kits (noch nicht entschieden).** Beide Kits
+sässen auf dem Turm und würden Stromaufnahme, Wasserverbrauch und Turmlast erhöhen.
+
 ### Sicherheit
 Ein schlafender Aktor hört weder `fireInhibit` noch die Scharf/Sicher-Befehle. Deshalb gilt:
 - Jedes Funkpaket führt Scharf-Status und Sperre mit.
