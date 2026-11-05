@@ -1087,6 +1087,37 @@ Der RFM95-Wert ist gerechnet: 3 ms Empfang bei etwa 12 mA alle 100 ms, dazwische
 1,5 µA. Die 3 ms sind angenommen und bestimmen das Ergebnis. Der CC1101-Wert ist aus
 Forenmessungen hochgerechnet (40 µA bei 1 s Takt).
 
+### Basis
+Die Basis ist ein Radar nach dem Vorbild des Dome-C1 mit zusätzlichem RFM95. Sie erfüllt
+also zwei Aufgaben: Sie beobachtet wie jedes Radar und verbindet den Bus mit den Actors.
+
+- **Board:** XIAO ESP32-S3 statt M5Stamp Pico (8 MB statt 4 MB Flash). Der CatIdent läuft
+  bereits auf diesem Board. Die Firmware für den S3 ist noch nicht kompiliert.
+- **Funk als eigene Task:** Der RFM95 sendet die Präambel selbst. Die Firmware wartet nicht
+  darauf, damit das Radar nicht stockt.
+- **WLAN-Antenne:** Der XIAO braucht die externe IPEX-Antenne. Die WLAN-Antenne und die
+  868-MHz-Antenne erhalten etwas Abstand zueinander.
+- **LED-Pixel:** Der XIAO hat keines an Bord, es kommt extern dazu. Es wird am besten mit
+  3,3 V versorgt, damit der Datenpegel sicher passt.
+
+Die 11 Anschlüsse des XIAO sind damit alle belegt, es bleibt keine Reserve:
+
+| Funktion | Pins |
+|---|---|
+| RFM95 (SCK, MISO, MOSI, NSS, RESET, DIO0) | 6 |
+| Radar (nur RX, die Firmware sendet nichts ans Radar) | 1 |
+| LED-Pixel | 1 |
+| BMP180 (I2C) | 2 |
+| IR-Schalter | 1 |
+| **Summe** | **11** |
+
+**Zwei Actors:** Eine Basis genügt. Sie sendet ein Paket an alle mit Weltposition der Katze
+und Scharf-Status, die Präambel weckt beide Actors. Jeder Actor zielt aus seiner eigenen
+Pose. Für Rückmeldungen hat jeder ein festes Zeitfenster nach dem Basis-Paket, weil beide
+nicht gleichzeitig senden dürfen. Bei angenommenen 40 Byte und 38,4 kbit/s dauert ein
+Paket etwa 8 ms, bei 5 Paketen pro Sekunde bleibt also genug Platz. Eine zweite Basis
+braucht es nur, wenn ein Actor ausser Funkreichweite steht.
+
 ### Aktor-Hardware
 - **ESP32 im Light Sleep statt Tiefschlaf:** ca. 0,8 mA, Wecken in 1–3 ms, RAM mit Karte
   und Pose bleibt erhalten. Tiefschlaf spart in 4 Wochen nur rund 1,6 Wh und kostet
@@ -1212,7 +1243,8 @@ Abstand. So lange bliebe der Aktor nicht wach, die Grenze dient nur dem Zählen.
 - Tank: Inhalt, Füllstandssensor, Ansaugen ohne Luft. Der Tank kann die Betriebsdauer
   stärker begrenzen als der Akku.
 - Frost: Tank, Pumpe und Leitungen im Winter.
-- Basis: Standort, Reichweite, mehrere Aktoren, Darstellung auf dem Bus (HB, Gerätenummer).
+- Antenne des XIAO ESP32-S3 prüfen: Sie überzeugt schon beim CatIdent nicht.
+- Basis: Standort, Reichweite, Darstellung auf dem Bus (HB, Gerätenummer).
   Eine neue Nummer bedeutet heute `deviceCount` und Neuflashen aller Geräte.
 - Paketformat und Signaturverfahren festlegen.
 - Turm-Lidar: LP40B oder ein anderer Sensor, Ersatz für die Gegenprüfung durch den LD06,
