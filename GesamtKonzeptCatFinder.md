@@ -1040,13 +1040,14 @@ gemessen. Die Einsatzzahlen stammen dagegen aus dem `actor_log`.
 Die heutigen Aktoren hängen per WLAN am Bus und halten mit Akku nur wenige Stunden.
 Die nächste Generation soll mit einem Akku **Wochen** durchhalten. Dafür schläft der
 Aktor, lauscht mit sehr wenig Strom auf Funk und ist nach dem Wecken sofort einsatzbereit.
-Den Link zum Bus stellt eine Brücke mit Netzteil her.
+Der Aktor besteht aus zwei Teilen: Die **Basis** hängt am Netzteil und am Bus, der
+**Actor** läuft mit Akku. Beide haben einen ESP32 und sind über 868 MHz verbunden.
 
 ```text
-Radare → CatIdent → WLAN-Multicast → Brücke (Netzteil: ESP32 + CC1101)
-                                          │ 868 MHz, beidseitig
-                                          ▼
-                 Aktor: CC1101 lauscht → weckt ESP32 → schaltet Servo/Laser/Ventil
+Radare → CatIdent → WLAN-Multicast → Basis (Netzteil: ESP32 + RFM95)
+                                         │ 868 MHz FSK, beidseitig
+                                         ▼
+                 Actor: RFM95 lauscht → weckt ESP32 → schaltet Servo/Laser/Ventil
 ```
 
 ### Ziele
@@ -1062,22 +1063,29 @@ CatIdent dauert ohnehin länger als die Funkverzögerung, und rohe Radarmeldunge
 Wachzeit kosten, ohne dass geschossen werden darf.
 
 ### Übertragung (Favorit)
-**CC1101 auf 868 MHz mit Wake-on-Radio.** Der Chip lauscht selbständig im Takt von etwa
-100 ms und weckt den ESP32 nur bei einem gültigen Paket. Die Brücke sendet dazu eine
-Präambel von etwa 120 ms. Der Link funktioniert in beide Richtungen, damit auch `catHit`
-und der Akkustand zurückkommen.
+**RFM95 (SX1276) auf 868 MHz im FSK-Betrieb mit Sequencer.** Die Module sind vorhanden
+(868-MHz-Ausführung). Der Chip öffnet über eigene Timer selbständig im Takt von etwa
+100 ms kurz den Empfang und weckt den ESP32 per DIO-Pin erst, wenn er etwas erkannt hat.
+Die Basis sendet dazu eine Präambel von etwa 120 ms. Der Link funktioniert in beide
+Richtungen, damit auch `catHit` und der Akkustand zurückkommen.
+
+Der LoRa-Betrieb scheidet aus: Dort muss der ESP32 jede Kanalsuche selbst anstossen, wäre
+also rund 10-mal pro Sekunde wach. Den Sequencer richtet die Firmware voraussichtlich
+selbst über die Register ein.
 
 | Lösung | Bereitschaftsstrom | Reaktion | Beurteilung |
 |---|---|---|---|
 | WLAN dauernd an | ca. 100 mA | sofort | scheidet aus |
 | ESP-NOW mit Wachfenster | ca. 4 mA | ca. 100 ms | keine neue Hardware, aber am WLAN-Kanal gebunden |
-| **CC1101 Wake-on-Radio** | **ca. 0,4 mA** | **max. ca. 100 ms** | **Favorit** |
+| **RFM95 FSK mit Sequencer** | **ca. 0,4 mA** | **max. ca. 100 ms** | **Favorit, Module vorhanden** |
+| CC1101 Wake-on-Radio | ca. 0,4 mA | max. ca. 100 ms | gleichwertig, aber nicht vorhanden und nur ca. +10 dBm |
 | nRF52 mit kurzem Lauschen, 2,4 GHz | ca. 50 µA | ca. 100 ms | Alternative, mehr Eigenentwicklung |
 | Weckempfänger (z. B. FH101RF) | wenige µA | 1–121 ms | bringt wenig, die Selbstentladung liegt höher |
 | RFSENSE (EFR32) | sehr tief | schnell | zu unempfindlich |
 
-Der CC1101-Wert ist aus Forenmessungen hochgerechnet (40 µA bei 1 s Takt). Eine andere
-Messung ergäbe bei 100 ms rund 2 mA.
+Der RFM95-Wert ist gerechnet: 3 ms Empfang bei etwa 12 mA alle 100 ms, dazwischen rund
+1,5 µA. Die 3 ms sind angenommen und bestimmen das Ergebnis. Der CC1101-Wert ist aus
+Forenmessungen hochgerechnet (40 µA bei 1 s Takt).
 
 ### Aktor-Hardware
 - **ESP32 im Light Sleep statt Tiefschlaf:** ca. 0,8 mA, Wecken in 1–3 ms, RAM mit Karte
@@ -1163,7 +1171,7 @@ Ein schlafender Aktor hört weder `fireInhibit` noch die Scharf/Sicher-Befehle. 
 | Posten | Annahme | Energie |
 |---|---|---|
 | ESP32 Light Sleep | 0,8 mA bei 3,3 V | 1,8 Wh |
-| CC1101 | 0,4 mA | 0,9 Wh |
+| RFM95 | 0,4 mA | 0,9 Wh |
 | Einsätze | 6 pro Tag, je 30 s bei 5 W | 7,0 Wh |
 | **Summe** | ohne Wandlerverluste und Selbstentladung | **ca. 9,7 Wh** |
 
@@ -1195,7 +1203,8 @@ Abstand. So lange bliebe der Aktor nicht wach, die Grenze dient nur dem Zählen.
 - Heutigen Verbrauch von PA2 je Komponente messen.
 - `actor_log` im Sommer erneut auswerten, die heutigen Einsatzzahlen stammen nur aus dem
   November.
-- Prototyp mit zwei CC1101 und nacktem ESP32: Ruhestrom, Weckzeit, Paketverlust im Garten.
+- Prototyp mit zwei RFM95 und nacktem ESP32: Sequencer einrichten, kürzestes zuverlässiges
+  Empfangsfenster, Ruhestrom, Weckzeit, Reichweite und Paketverlust im Garten.
 - Zulässige Sendezeit und Leistung im 868-MHz-Band für die Schweiz prüfen.
 - Akku: 2S bestätigen, Laden, Verhalten bei Kälte, Solarzelle ja oder nein.
 - Sprüh-Kit messen: Stromaufnahme, Zeit bis zum ersten Strahl, Wasser pro Schuss,
@@ -1203,7 +1212,7 @@ Abstand. So lange bliebe der Aktor nicht wach, die Grenze dient nur dem Zählen.
 - Tank: Inhalt, Füllstandssensor, Ansaugen ohne Luft. Der Tank kann die Betriebsdauer
   stärker begrenzen als der Akku.
 - Frost: Tank, Pumpe und Leitungen im Winter.
-- Brücke: Standort, Reichweite, mehrere Aktoren, Darstellung auf dem Bus (HB, Gerätenummer).
+- Basis: Standort, Reichweite, mehrere Aktoren, Darstellung auf dem Bus (HB, Gerätenummer).
   Eine neue Nummer bedeutet heute `deviceCount` und Neuflashen aller Geräte.
 - Paketformat und Signaturverfahren festlegen.
 - Turm-Lidar: LP40B oder ein anderer Sensor, Ersatz für die Gegenprüfung durch den LD06,
