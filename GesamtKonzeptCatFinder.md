@@ -1137,8 +1137,8 @@ braucht es nur, wenn ein Actor ausser Funkreichweite steht.
 - **Keine Dev-Boards:** nacktes Modul auf einer kleinen eigenen Trägerplatine mit 3,3-V-Wandler
   mit sehr kleinem Eigenverbrauch, Abblockkondensatoren, EN und BOOT sowie USB-Pads.
   Ein passendes fertiges Trägerboard ist nicht bekannt. Für erste Funktionstests reicht ein
-  S3-Board, für die Strommessung nicht. Es gibt keinen USB-Chip und keine Dauer-LEDs. Ein AMS1117 allein käme an 7,4 V auf rund 25 Wh
-  in 4 Wochen.
+  S3-Board, für die Strommessung nicht. Es gibt keinen USB-Chip und keine Dauer-LEDs.
+  Ein AMS1117 allein käme an 7,4 V auf rund 25 Wh in 4 Wochen.
 - **MOSFETs statt Relais:** Servo, Laser, LP40B und Sprüh-Kit sind im Schlaf stromlos.
   Der Motor des Sprüh-Kits braucht eine Freilaufdiode.
   - **Plusleitung schalten:** Servo und LP40B hängen über Datenleitungen am ESP32. Würde ihre
@@ -1236,6 +1236,21 @@ des PA2, gelten aber als Herstellerangabe.
 Wegen des Trockenlaufverbots ist eine Füllstandserkennung Pflicht. Bei leerem Tank wird
 das Kit nicht mehr ausgelöst.
 
+**Füllstand: Schwimmerschalter mit Reedkontakt plus Schusszähler.** Der Schalter schützt
+vor dem Trockenlauf, der Zähler in der Firmware schätzt den Restinhalt.
+- **Montage:** Der Schwimmer sitzt deutlich über der Ansaugöffnung, damit auch bei Schieflage
+  noch Wasser ansteht.
+- **Lesen:** Der ESP32 prüft ihn nur vor einem Schuss mit kurz eingeschaltetem Pull-up. Im
+  Schlaf fliesst kein Strom. Die Leseroutine wartet ein ruhiges Signal ab, weil das Wasser
+  schwappen kann.
+- **Bei Reserve:** Das Kit wird gesperrt, auch wenn der Zähler noch Wasser anzeigt, und der
+  Actor meldet das über die Basis.
+- **Nach dem Auffüllen:** Der Zähler setzt sich zurück, sobald der Schwimmer wieder oben ist.
+  Das stimmt nur, wenn der Tank voll gefüllt wird.
+- **Zähler:** Er braucht die gemessene Wassermenge pro Schuss.
+- **Alternative:** Ein kapazitiver Sensor aussen am Tank kommt ohne Teile im Wasser aus,
+  braucht aber einen weiteren MOSFET-Kanal.
+
 **Mögliche Option: doppelläufig mit zwei Sprüh-Kits (noch nicht entschieden).** Beide Kits
 sässen auf dem Turm und würden Stromaufnahme, Wasserverbrauch und Turmlast erhöhen.
 
@@ -1302,8 +1317,8 @@ Abstand. So lange bliebe der Aktor nicht wach, die Grenze dient nur dem Zählen.
 - Akku: 2S bestätigen, Laden, Verhalten bei Kälte, Solarzelle ja oder nein.
 - Sprüh-Kit messen: Stromaufnahme, Zeit bis zum ersten Strahl, Wasser pro Schuss,
   wirkliche Reichweite und Flugbahn im Freien, Ansteuerung per MOSFET.
-- Tank: Inhalt, Füllstandssensor, Ansaugen ohne Luft. Der Tank kann die Betriebsdauer
-  stärker begrenzen als der Akku.
+- Tank: Inhalt, Ansaugen ohne Luft, Einbauort im festen Teil oder auf dem Turm. Der Tank
+  kann die Betriebsdauer stärker begrenzen als der Akku.
 - Frost: Tank, Pumpe und Leitungen im Winter.
 - Antenne des XIAO ESP32-S3 prüfen: Sie überzeugt schon beim CatIdent nicht.
 - Basis: Standort, Reichweite, Darstellung auf dem Bus (HB, Gerätenummer).
