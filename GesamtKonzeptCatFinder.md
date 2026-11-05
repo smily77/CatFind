@@ -1216,6 +1216,19 @@ das Kit nicht mehr ausgelöst.
 **Mögliche Option: doppelläufig mit zwei Sprüh-Kits (noch nicht entschieden).** Beide Kits
 sässen auf dem Turm und würden Stromaufnahme, Wasserverbrauch und Turmlast erhöhen.
 
+**Mögliche Option: Neigungsausgleich mit zweitem Servo (noch nicht entschieden).** Ein zweiter
+Servo am Turm neigt das Sprüh-Kit samt Ziel-Laser und gleicht Bodenunebenheiten aus.
+- **Ein Servo genügt:** Die Rollbewegung um die Strahlachse ändert die Schussrichtung nicht.
+  Der kleine Fehler in der Seitenrichtung lässt sich bei wenigen Grad Schieflage vernachlässigen.
+- **Sensor:** Der ADXL362 bleibt besser fest im Gehäuse statt auf dem Kit. Er misst die Schieflage
+  nach dem Aufstellen, und die Firmware rechnet daraus für jede Turmstellung die Neigung
+  aus. So bleibt er als Bewegungssensor brauchbar und spürt das Rütteln des Kits weniger.
+- **Zusatznutzen:** Mit der Neigung lässt sich auch die Flugbahn an die Distanz anpassen.
+- **Schlaf:** Ohne Strom hält der Servo nicht. Das Kit muss ausgewogen gelagert sein oder
+  einen Anschlag haben.
+- **Aufwand:** Der Servo hängt am selben Servobus, braucht also keinen weiteren Pin. Dazu
+  kommen Mechanik, Gewicht und etwas Strom bei jedem Einsatz.
+
 ### Sicherheit
 Ein schlafender Aktor hört weder `fireInhibit` noch die Scharf/Sicher-Befehle. Deshalb gilt:
 - Jedes Funkpaket führt Scharf-Status und Sperre mit.
