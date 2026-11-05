@@ -1047,7 +1047,7 @@ Der Aktor besteht aus zwei Teilen: Die **Basis** hängt am Netzteil und am Bus, 
 Radare → CatIdent → WLAN-Multicast → Basis (Netzteil: ESP32 + RFM95)
                                          │ 868 MHz FSK, beidseitig
                                          ▼
-                 Actor: RFM95 lauscht → weckt ESP32 → schaltet Servo/Laser/Ventil
+                 Actor: RFM95 lauscht → weckt ESP32 → schaltet Servo/Laser/Sprüh-Kit
 ```
 
 ### Ziele
@@ -1119,6 +1119,8 @@ Paket etwa 8 ms, bei 5 Paketen pro Sekunde bleibt also genug Platz. Eine zweite 
 braucht es nur, wenn ein Actor ausser Funkreichweite steht.
 
 ### Aktor-Hardware
+- **Bestückung:** ESP32, RFM95, Servo ST3020 für den Turm, Ziel-Laser, Sprüh-Kit
+  (Bambu Lab Electric Water Spray Kit 01, Modell B-ZC004) und LP40B für die Pose.
 - **ESP32 im Light Sleep statt Tiefschlaf:** ca. 0,8 mA, Wecken in 1–3 ms, RAM mit Karte
   und Pose bleibt erhalten. Tiefschlaf spart in 4 Wochen nur rund 1,6 Wh und kostet
   200–500 ms Start.
@@ -1149,6 +1151,17 @@ Ein Schwenk dauert rund 35 s und passt nicht zum Sofort-Einsatz. Die Pose bleibt
 gespeichert, was die heutige Regel «keine NVS-Pose nach dem Boot» für diesen Aktor ablöst.
 Ein Beschleunigungssensor erklärt sie für ungültig, sobald der Aktor bewegt wird. Danach
 wird nicht geschossen, bis ein neuer Schwenk gelungen ist.
+
+**Mögliche Variante: Lidar C1 statt LP40B (noch nicht entschieden).** Der C1 ist ausser als
+Pose-Referenz für die Radare kaum noch nötig und könnte auf dem Turm sitzen.
+- **Vorteile:** Die Pose kommt ohne Schwenk, und der Sensor misst im selben Bezug wie die
+  Düse. Zwei Scans bei 90° Servo-Unterschied könnten die Gegenprüfung des Turmwinkels ersetzen.
+- **Nachteile:** Er ist deutlich grösser, braucht rundum freie Sicht und reicht nur bis
+  12 m. Für zwei Actors bräuchte es zwei Stück.
+- **Risiko:** Der LD06 war rundum scannend gegen die RasenKarte mehrdeutig. Ob die grössere
+  Reichweite des C1 das behebt, ist nicht getestet.
+- **Fester C1:** Fällt er weg, fehlt den Radaren die laufende Weltreferenz für Kalibrierung
+  und Health-Check. Das wäre vorher zu lösen.
 
 ### Betriebsarten
 Die Pose wird nur bei der Initialisierung gebraucht. Der ESP32 des Aktors schaltet deshalb
@@ -1248,7 +1261,8 @@ Abstand. So lange bliebe der Aktor nicht wach, die Grenze dient nur dem Zählen.
   Eine neue Nummer bedeutet heute `deviceCount` und Neuflashen aller Geräte.
 - Paketformat und Signaturverfahren festlegen.
 - Turm-Lidar: LP40B oder ein anderer Sensor, Ersatz für die Gegenprüfung durch den LD06,
-  Stromverbrauch und Dauer des Schwenks.
+  Stromverbrauch und Dauer des Schwenks. Die C1-Variante ist optional und wird erst später
+  allenfalls getestet.
 
 ### Nicht Teil dieses Abschnitts
 Die konkrete Umsetzung, die Bauteilwahl und die Firmware werden erst festgelegt, wenn die
