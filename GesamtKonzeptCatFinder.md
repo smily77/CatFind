@@ -1130,6 +1130,18 @@ braucht es nur, wenn ein Actor ausser Funkreichweite steht.
   in 4 Wochen.
 - **MOSFETs statt Relais:** Servo, Laser, LP40B und Sprüh-Kit sind im Schlaf stromlos.
   Der Motor des Sprüh-Kits braucht eine Freilaufdiode.
+  - **Plusleitung schalten:** Servo und LP40B hängen über Datenleitungen am ESP32. Würde ihre
+    Masse getrennt, könnte der Strom über diese Leitungen fliessen.
+  - **Prototyp:** Vorhandene 2SJ175 (P-Kanal, 60 V, 10 A). Je Kanal ein BC547 als Treiber,
+    10 kΩ vom GPIO zur Basis, rund 100 kΩ von der Basis nach Masse und 100 kΩ vom Gate
+    nach Akku-Plus. Ein 3,3-V-Pin allein kann den 2SJ175 nicht ausschalten.
+  - **Schaltung:** Sie ist ein Prinzip und noch nicht aufgebaut oder geprüft.
+  - **Spannungsabfall:** Bei angenommenen 2 A fallen am 2SJ175 grob 0,4 V ab. Ob das fürs
+    Kit reicht, zeigt die Strommessung.
+  - **Nicht geeignet:** IRF840 (braucht 10 V am Gate, 0,85 Ω) und IRF520-Module (ebenfalls
+    rund 10 V am Gate). Fertige Module schalten meist die Masse und passen deshalb nicht für
+    Servo und LP40B.
+  - **Serie:** Für einen späteren Serienaufbau kommt ein kleinerer, modernerer Typ infrage.
 - **Servo:** Nach dem Einschalten zuerst die Ist-Position lesen, erst dann das Drehmoment
   aktivieren.
 - **Wasser:** Es kommt aus einem Tank auf dem Aktor und wird mit dem Bambu Lab Electric
