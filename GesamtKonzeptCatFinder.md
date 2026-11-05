@@ -1120,7 +1120,8 @@ braucht es nur, wenn ein Actor ausser Funkreichweite steht.
 
 ### Aktor-Hardware
 - **Bestückung:** ESP32, RFM95, Servo ST3020 für den Turm, Ziel-Laser, Sprüh-Kit
-  (Bambu Lab Electric Water Spray Kit 01, Modell B-ZC004) und LP40B für die Pose.
+  (Bambu Lab Electric Water Spray Kit 01, Modell B-ZC004), LP40B für die Pose und ADXL362
+  als Bewegungssensor.
 - **ESP32 im Light Sleep statt Tiefschlaf:** ca. 0,8 mA, Wecken in 1–3 ms, RAM mit Karte
   und Pose bleibt erhalten. Tiefschlaf spart in 4 Wochen nur rund 1,6 Wh und kostet
   200–500 ms Start.
@@ -1151,6 +1152,15 @@ Ein Schwenk dauert rund 35 s und passt nicht zum Sofort-Einsatz. Die Pose bleibt
 gespeichert, was die heutige Regel «keine NVS-Pose nach dem Boot» für diesen Aktor ablöst.
 Ein Beschleunigungssensor erklärt sie für ungültig, sobald der Aktor bewegt wird. Danach
 wird nicht geschossen, bis ein neuer Schwenk gelungen ist.
+
+**Bewegungssensor: ADXL362.** Er überwacht selbständig mit rund 0,3 µA und weckt den ESP32
+per Interrupt-Pin. Über SPI teilt er sich den Bus mit dem RFM95. Ein ADXL335 eignet sich
+nicht, weil er rund 350 µA braucht und keine Schwelle und keinen Interrupt hat.
+- **Eigene Bewegung:** Während eines Einsatzes blendet der ESP32 das Rütteln von Servo und
+  Sprüh-Kit aus. Danach vergleicht er die Schwerkraftrichtung mit dem Wert von vorher.
+- **Wind und Stösse:** Die Schwelle wird am Aufbau eingestellt.
+- **Ohne Strom:** Der Sensor überwacht dann nicht. Nach jedem Einschalten gilt die
+  gespeicherte Pose deshalb als ungültig.
 
 **Mögliche Variante: Lidar C1 statt LP40B (noch nicht entschieden).** Der C1 ist ausser als
 Pose-Referenz für die Radare kaum noch nötig und könnte auf dem Turm sitzen.
