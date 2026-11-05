@@ -1031,10 +1031,10 @@ Folgeschritten festgelegt.
 
 ## Aufgabe: Next-Gen-Aktor mit Akkubetrieb (Entwurf)
 
-**Status 2026-11-04: Entwurf, noch nicht zur Umsetzung freigegeben.** Dieser Abschnitt
+**Status 2026-11-05: Entwurf, noch nicht zur Umsetzung freigegeben.** Dieser Abschnitt
 hält den Stand der Überlegungen fest und wird weiter ausgearbeitet. Alle Stromwerte sind
 Rechen- oder Schätzwerte aus Datenblättern und Forenmessungen. Am Aufbau ist noch nichts
-gemessen.
+gemessen. Die Einsatzzahlen stammen dagegen aus dem `actor_log`.
 
 ### Grobkonzept
 Die heutigen Aktoren hängen per WLAN am Bus und halten mit Akku nur wenige Stunden.
@@ -1164,15 +1164,37 @@ Ein schlafender Aktor hört weder `fireInhibit` noch die Scharf/Sicher-Befehle. 
 |---|---|---|
 | ESP32 Light Sleep | 0,8 mA bei 3,3 V | 1,8 Wh |
 | CC1101 | 0,4 mA | 0,9 Wh |
-| Einsätze | 10 pro Tag, je 30 s bei 5 W | 11,7 Wh |
-| **Summe** | ohne Wandlerverluste und Selbstentladung | **ca. 14,5 Wh** |
+| Einsätze | 6 pro Tag, je 30 s bei 5 W | 7,0 Wh |
+| **Summe** | ohne Wandlerverluste und Selbstentladung | **ca. 9,7 Wh** |
 
 Den grössten Einfluss haben die Wachzeiten, nicht das Lauschen. Das Sprüh-Kit ist in den
-5 W noch nicht enthalten und kann das Budget deutlich verändern.
+5 W noch nicht enthalten und kann das Budget deutlich verändern. Vom angenommenen Akku mit
+60 Wh bleiben rund 50 Wh für Kit, Wandlerverluste, Selbstentladung und Reserve.
+
+### Einsätze laut `actor_log` (31.10.–5.11.2026)
+Als Einsatz zählt hier eine Folge von `catDetected` und Schüssen mit weniger als 120 s
+Abstand. So lange bliebe der Aktor nicht wach, die Grenze dient nur dem Zählen.
+
+| Grösse | Wert |
+|---|---|
+| Einsätze pro Tag | 5–6 (4 volle Tage, 1.–4.11.) |
+| `catDetected` pro Tag | 6–11 |
+| Dauer vom ersten bis zum letzten Ereignis | Median 7 s, Mittel 20 s, Maximum 85 s (17 Einsätze) |
+| Schüsse pro Einsatz | Mittel 2,7, Maximum 11 (17 Einsätze) |
+| Schüsse pro Tag | 26 und 16 (volle Tage 1.–2.11.) |
+
+- Die Werte zu Dauer und Schüssen stammen nur vom 31.10. bis 2.11., denn seit dem 3.11.
+  gab es keine Schüsse mehr. Für die Wachzeit bleiben also 17 Einsätze als Grundlage.
+- Die 30 s Wachzeit bleiben als Annahme tauglich: 20 s im Mittel plus rund 10 s Nachlauf.
+- Die Daten umfassen nur wenige Tage im November. Andere Jahreszeiten können abweichen.
+- In den Zahlen stecken auch Fehlauslösungen, denn wecken würden sie den Aktor ebenso.
+- Für 28 Tage ergibt das grob 400–700 Schüsse. Das ist die Grundlage für die Tankgrösse,
+  sobald das Wasser pro Schuss gemessen ist.
 
 ### Offene Punkte
 - Heutigen Verbrauch von PA2 je Komponente messen.
-- `catDetected` pro Tag aus `actor_log` auswerten, die 10 Einsätze sind nur geschätzt.
+- `actor_log` im Sommer erneut auswerten, die heutigen Einsatzzahlen stammen nur aus dem
+  November.
 - Prototyp mit zwei CC1101 und nacktem ESP32: Ruhestrom, Weckzeit, Paketverlust im Garten.
 - Zulässige Sendezeit und Leistung im 868-MHz-Band für die Schweiz prüfen.
 - Akku: 2S bestätigen, Laden, Verhalten bei Kälte, Solarzelle ja oder nein.
