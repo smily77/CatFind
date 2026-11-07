@@ -1,4 +1,4 @@
-# NoShotZone v18  crc=0x5612fe20  units=mm  frame=world
+# NoShotZone v19  crc=0xaf0de014  units=mm  frame=world
 203,646
 211,1291
 995,1312
@@ -28,5 +28,7 @@
 7965,693
 4458,675
 4431,761
-4298,768
-4244,681
+4288,759
+4212,1216
+3345,1234
+3218,677
