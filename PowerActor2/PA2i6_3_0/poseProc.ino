@@ -71,10 +71,14 @@ static void handClear(PoseHand& h) {
   sendUdpTextln(String("PowerActor2: ") + h.name + "-Pose geloescht (Traeger ohne Pose)");
 }
 
-// Kontrolle in 0,5 s ansetzen (bei Uebergabe: neu senden, falls er abweicht)
+// Leise Pruefung nach einem (vermuteten) Neustart: nach seiner Pose fragen und erst bei
+// Abweichung neu uebergeben. Meist hat er sie noch (nur HBs im WLAN verloren) - dann
+// keine Meldung und keine gruene Uebergabe-Anzeige am LD06-Ring.
 static void handRecheck(PoseHand& h) {
-  h.handed = true; h.ok = false; h.tries = 0; h.gotValid = false;
-  h.checkAt = millis() + 500;
+  h.handed = true; h.ok = false; h.tries = 0; h.gotValid = false; h.quiet = true;
+  handWant(h);
+  if (h.ip) unicastMsg(poseRequest, nullptr, 0, h.ip);
+  h.checkAt = millis() + HAND_QUIET_MS;
 }
 
 // Vom Bus: HB (IP) und Pose (Kontrolle der Uebergabe) der mitgefuehrten Sensoren
@@ -227,11 +231,16 @@ static void readLd06() {
 
 // Sensor bekommt seine Pose vom Traeger: Ort = Drehachse + offMm in 0-Grad-Richtung,
 // Richtung = Traeger + rotDeg (Kalibrierung), gleiche Kommandos wie die manuelle VPS-Pose.
-static void sendHandPose(PoseHand& h) {
-  if (!h.ip || !myPose.validWorldPose) return;
+static void handWant(PoseHand& h) {    // Soll-Pose des mitgefuehrten Sensors
   float a = myPose.heading * 2.0f * PI / 4096.0f;
   h.wantX = myPose.worldX - (int32_t)lroundf(h.offMm * sinf(a));
   h.wantY = myPose.worldY + (int32_t)lroundf(h.offMm * cosf(a));
+}
+
+static void sendHandPose(PoseHand& h) {
+  if (!h.ip || !myPose.validWorldPose) return;
+  h.quiet = false;
+  handWant(h);
   float hd = wrap360f(myPose.heading * 360.0f / 4096.0f + h.rotDeg);
   int32_t hu = (int32_t)lroundf(hd * 4096.0f / 360.0f) % 4096;
   sendCmd(h.ip, cmdManualPoseX, h.wantX);       delay(30);
@@ -286,7 +295,7 @@ static void carrierDisplayTick() {
   } else {
     bool pending = false, failed = false;
     for (auto& h : hand) {
-      if (!h.handed || h.ok) continue;
+      if (!h.handed || h.ok || h.quiet) continue;   // leise Pruefung: keine Anzeige
       if (h.checkAt) pending = true; else failed = true;
     }
     st = pending ? csHandOver : csDone;
@@ -315,6 +324,12 @@ void poseTick() {
     h.checkAt = 0;
     bool ok = h.gotValid && abs(h.gotX - h.wantX) < 30 && abs(h.gotY - h.wantY) < 30;
     h.ok = ok;
+    if (h.quiet) {                     // leise Pruefung: passt -> still, sonst neu uebergeben
+      h.quiet = false;
+      if (!ok) { sendUdpTextln(String("PowerActor2: ") + h.name + " hat die Pose nicht mehr - neu uebergeben");
+                 sendHandPose(h); }
+      continue;
+    }
     if (ok) sendUdpTextln(String("PowerActor2: ") + h.name + "-Pose uebergeben");
     else if (++h.tries < HAND_TRIES) sendHandPose(h);          // evtl. noch blockiert
     else sendUdpTextln(String("PowerActor2: ") + h.name + "-Pose-Uebergabe FEHLGESCHLAGEN");

@@ -86,7 +86,10 @@
 #define LD06_WAIT_IP_MS      15000  // LD06 noch nicht gehoert -> so lange warten, dann ohne
 #define HAND_TRIES           10     // Pose-Uebergabe an LD06/Compact Dome: Versuche ...
 #define HAND_CHECK_MS        5000   // ... in diesem Abstand (LD06-Eigenlokalisierung blockiert ~20 s)
-#define HAND_REBOOT_MS       30000  // so lange kein HB = Geraet war weg (Neustart/Speisung aus)
+#define HAND_REBOOT_MS       90000  // so lange kein HB = Geraet war weg (Neustart/Speisung aus).
+                                    // 2026-11-08: 30 s loesten im WLAN ab und zu aus (HB alle 10 s,
+                                    // Pakete gehen verloren) -> gruene Uebergabe am LD06-Ring
+#define HAND_QUIET_MS        2000   // leise Pruefung: so lange auf seinen poseReport warten
 // Compact Dome im Traeger (calibration.json, Drehung outdoor 2026-10-31 gemessen):
 // 18,5 cm vor der Achse in 0-Grad-Richtung, Radar-y = Traeger-y, ungespiegelt
 #define CS_SWEEP_MS          200    // Traeger-Anzeige am LD06-Ring: Schwenk-Richtung so oft
@@ -113,6 +116,8 @@ struct PoseHand {
   unsigned long checkAt;               // Kontrolle der Uebergabe faellig (0 = keine)
   bool     handed;                     // hat seine Pose vom Traeger bekommen
   bool     ok;                         // ... und bestaetigt
+  bool     quiet;                      // leise Pruefung laeuft (erst nachsehen, nur bei
+                                       // Abweichung neu senden - dann mit Anzeige)
 };
 #define LD06_MIN_QUALITY     150
 #define LD06_MIN_MM          400
