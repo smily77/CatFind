@@ -70,12 +70,13 @@ der Geräte per /ingest ("poses", aus poseReport). Daraus baut catmodel.
 build_coverage_geo die Abdeckungs-Sektoren — nach dem Versetzen eines Sensors
 stimmt der Bereich sofort wieder. Fallback ohne Posen: empirische Abdeckung.
 """
-import contextlib, math, os, re, time, json, base64, sqlite3, threading, hashlib, traceback, urllib.request, urllib.error, zoneinfo
+import contextlib, math, os, re, time, json, base64, sqlite3, threading, hashlib, traceback, urllib.request, urllib.error, urllib.parse, zoneinfo
 from datetime import datetime
 from collections import deque, OrderedDict
 from flask import Flask, request, jsonify, send_from_directory, Response
 import catmodel
 import visitor
+import incidents
 
 MAX_EVENTS   = int(os.environ.get("MAX_EVENTS", "20000"))
 HB_WINDOW_S  = int(os.environ.get("HB_WINDOW_S", "180"))    # "aktiv" = HB in den letzten 3 min
@@ -511,6 +512,14 @@ def init_db():
     _db.execute("""CREATE TABLE IF NOT EXISTS visitor_events(
         t REAL, sender INT, sensor INT, wx INT, wy INT, x INT, y INT, speed INT)""")
     _db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_t ON visitor_events(t)")
+    # Incident-Tracer (incidents.py): Kot-Verdacht aus dem Sitz-Profil. Bewusst
+    # eigene Tabelle (nicht track_marks): ueberlebt jeden Track-Neuaufbau, traegt
+    # die Rueckmeldung des Users (fb: found|notfound|unknown, fx/fy = echter Fundort).
+    _db.execute("""CREATE TABLE IF NOT EXISTS incidents(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, t_sit0 REAL, t_sit1 REAL,
+        x INT, y INT, data TEXT, fb TEXT DEFAULT '', fx INT, fy INT, note TEXT DEFAULT '',
+        pushed INT DEFAULT 0, created REAL, updated REAL)""")
+    _db.execute("CREATE INDEX IF NOT EXISTS idx_incidents_t ON incidents(t_sit0)")
     _db.commit()
     for sid, t, temp, press in _db.execute(
             "SELECT sender,MAX(t),temp,press FROM env GROUP BY sender").fetchall():
@@ -1954,6 +1963,10 @@ def _analyzer_loop():
             _person_mark()
         except Exception:                                        # noqa: BLE001
             traceback.print_exc()
+        try:
+            more = _incident_step() or more
+        except Exception:                                        # noqa: BLE001
+            traceback.print_exc()
         time.sleep(0.3 if more else 5.0)
 
 
@@ -2036,6 +2049,190 @@ def _person_mark():
     if marked:
         _sysmsg("KIVision-Person: Track %s als Person markiert"
                 % ", ".join("Nr %s" % i for i in marked))
+
+
+# ------------------------------------------------- Incident-Tracer: Kot-Verdacht
+# Prueft die FERTIGEN Tracks des Analysierers fortlaufend auf das Sitz-Profil
+# (incidents.py) und legt Treffer in der Tabelle incidents ab. Liest Track fuer
+# Track in Haeppchen (2026-11-08: eine Rechnung ueber alle Tracks auf einmal hat
+# den VPS in den Speichermangel getrieben). Nach einem Track-Neuaufbau (ana_sig)
+# wird ab "since" neu geprueft; bestehende Verdachte samt Rueckmeldung bleiben
+# und werden per incidents.same_incident wiedererkannt.
+PUSHINGBOX_DEVID = os.environ.get("PUSHINGBOX_CATASSUMED", "")
+INC_CHUNK = 2000
+
+
+def _inc_cfg():
+    with _db_lock:
+        raw = _meta_get("inc_cfg")
+    try:
+        cfg = json.loads(raw) if raw else {}
+    except Exception:                                        # noqa: BLE001
+        cfg = {}
+    return incidents.merged_cfg(cfg)
+
+
+def _inc_fetch(t_from, t_to, limit):
+    with _reading() as db:
+        rows = db.execute(
+            "SELECT t.id,t.key,t.t0,t.t1,t.data,m.mark FROM tracks t "
+            "LEFT JOIN track_marks m ON m.key=t.key "
+            "WHERE t.t0>=? AND t.t0<=? ORDER BY t.t0 LIMIT ?",
+            (t_from, t_to, limit)).fetchall()
+    out = []
+    for rid, key, t0, t1, data, mark in rows:
+        try:
+            pts = json.loads(data).get("pts") or []
+        except Exception:                                    # noqa: BLE001
+            pts = []
+        out.append({"id": rid, "key": key, "t0": t0, "t1": t1, "pts": pts,
+                    "mark": mark or ""})
+    return out
+
+
+def _pushingbox(inc):
+    """CatAssumed-Szenario bei PushingBox ausloesen (-> Prowl aufs Handy).
+    Zusatzwerte als $zeit$ $ort$ $dauer$ $nr$ $track$ im Szenario verwendbar."""
+    if not PUSHINGBOX_DEVID:
+        _sysmsg("Kot-Verdacht: kein PUSHINGBOX_CATASSUMED gesetzt, keine Nachricht")
+        return False
+    q = {"devid": PUSHINGBOX_DEVID}
+    q.update(incidents.push_text(inc))
+    url = "http://api.pushingbox.com/pushingbox?" + urllib.parse.urlencode(q)
+    try:
+        with urllib.request.urlopen(url, timeout=15) as r:
+            ok = 200 <= r.status < 300
+    except Exception as e:                                   # noqa: BLE001
+        _sysmsg("Kot-Verdacht: PushingBox-Fehler %s" % type(e).__name__)
+        return False
+    _sysmsg("Kot-Verdacht Nr %s: Nachricht %s" % (inc.get("id"), "gesendet" if ok else "abgelehnt"))
+    return ok
+
+
+def _incident_save(hit):
+    """Treffer einfuegen oder bestehenden Verdacht aktualisieren. -> neue id|None"""
+    now = time.time()
+    data = json.dumps(hit, separators=(",", ":"))
+    with _db_lock:
+        rows = _db.execute(
+            "SELECT id,t_sit0,t_sit1,x,y FROM incidents WHERE kind='kot' "
+            "AND t_sit0<=? AND t_sit1>=?", (hit["t_sit1"] + 5, hit["t_sit0"] - 5)).fetchall()
+        for rid, a, b, x, y in rows:
+            if incidents.same_incident(hit, {"t_sit0": a, "t_sit1": b, "x": x, "y": y}):
+                _db.execute("UPDATE incidents SET t_sit0=?,t_sit1=?,x=?,y=?,data=?,updated=? "
+                            "WHERE id=?", (hit["t_sit0"], hit["t_sit1"], hit["x"], hit["y"],
+                                           data, now, rid))
+                _db.commit()
+                return None
+        cur = _db.execute(
+            "INSERT INTO incidents(kind,t_sit0,t_sit1,x,y,data,created,updated) "
+            "VALUES('kot',?,?,?,?,?,?,?)",
+            (hit["t_sit0"], hit["t_sit1"], hit["x"], hit["y"], data, now, now))
+        _db.commit()
+        return cur.lastrowid
+
+
+def _incident_step():
+    """Ein Haeppchen der Kot-Pruefung. True = es wartet noch mehr."""
+    cfg = _inc_cfg()
+    if not cfg["enabled"]:
+        return False
+    with _db_lock:
+        sig = str(_meta_get("ana_sig"))        # als Text vergleichen (meta speichert Text)
+        cur = _meta_get("inc_done_t")
+        if _meta_get("inc_sig") != sig or cur is None:
+            cur = incidents.since_epoch(cfg)
+            _meta_set("inc_sig", sig)
+            _meta_set("inc_done_t", repr(cur))
+            _db.commit()
+        cur = max(float(cur), incidents.since_epoch(cfg))
+        mow = _db.execute("SELECT t0,t1 FROM labels WHERE label='Mäher'").fetchall()
+    horizon = _ana_state.get("done_t")
+    if horizon is None or horizon <= cur or _ana_state.get("backlog"):
+        return False                       # erst wenn der Analysierer aufgeholt hat
+    hits, new_cur, more = incidents.scan_step(_inc_fetch, cur, horizon, cfg,
+                                              mower_labels=mow, limit=INC_CHUNK)
+    for h in hits:
+        rid = _incident_save(h)
+        if rid is None:
+            continue
+        h["id"] = rid
+        txt = incidents.push_text(h)
+        _sysmsg("Kot-Verdacht Nr %d: %s, %s, sitzt %s" % (rid, txt["zeit"], txt["ort"], txt["dauer"]))
+        if cfg["push"] and h["t_sit1"] > time.time() - cfg["push_max_age_s"]:
+            if _pushingbox(h):
+                with _db_lock:
+                    _db.execute("UPDATE incidents SET pushed=1 WHERE id=?", (rid,))
+                    _db.commit()
+    with _db_lock:
+        _meta_set("inc_done_t", repr(new_cur))
+        _db.commit()
+    return more
+
+
+def _incident_rows():
+    with _reading() as db:
+        rows = db.execute("SELECT id,kind,t_sit0,t_sit1,x,y,data,fb,fx,fy,note,pushed "
+                          "FROM incidents ORDER BY t_sit0 DESC").fetchall()
+    out = []
+    for rid, kind, a, b, x, y, data, fb, fx, fy, note, pushed in rows:
+        d = json.loads(data or "{}")
+        d.update(id=rid, kind=kind, t_sit0=a, t_sit1=b, x=x, y=y, fb=fb or "",
+                 fx=fx, fy=fy, note=note or "", pushed=bool(pushed))
+        out.append(d)
+    return out
+
+
+@app.get("/incidents")
+def incidents_list():
+    return jsonify(incidents=_incident_rows(), cfg=_inc_cfg(),
+                   push_ready=bool(PUSHINGBOX_DEVID))
+
+
+@app.post("/incident_fb")
+def incident_fb():
+    # Rueckmeldung: fb found|notfound|unknown|"" ; fx/fy = echter Fundort (oder null)
+    d = request.get_json(force=True, silent=True) or {}
+    fb = str(d.get("fb", ""))
+    if fb not in ("", "found", "notfound", "unknown"):
+        return jsonify(error="fb ungueltig"), 400
+    sets, args = ["fb=?", "updated=?"], [fb, time.time()]
+    if "fx" in d:
+        fx, fy = d.get("fx"), d.get("fy")
+        sets += ["fx=?", "fy=?"]
+        args += [None if fx is None else int(fx), None if fy is None else int(fy)]
+    if "note" in d:
+        sets.append("note=?")
+        args.append(str(d["note"])[:200])
+    with _db_lock:
+        _db.execute("UPDATE incidents SET " + ",".join(sets) + " WHERE id=?",
+                    args + [int(d.get("id", -1))])
+        _db.commit()
+    return jsonify(ok=True)
+
+
+@app.post("/incident_cfg")
+def incident_cfg():
+    # Profil-Einstellungen aendern (nur bekannte Schluessel); "rescan": true prueft
+    # ab "since" neu (bestehende Verdachte + Rueckmeldungen bleiben).
+    d = request.get_json(force=True, silent=True) or {}
+    cfg = dict(_inc_cfg())
+    for k, v in (d.get("cfg") or {}).items():
+        if k in incidents.DEFAULT_CFG:
+            cfg[k] = v
+    with _db_lock:
+        _meta_set("inc_cfg", json.dumps(cfg))
+        if d.get("rescan"):
+            _db.execute("DELETE FROM meta WHERE k='inc_done_t'")
+        _db.commit()
+    return jsonify(ok=True, cfg=incidents.merged_cfg(cfg))
+
+
+@app.post("/incident_push_test")
+def incident_push_test():
+    # Probe-Nachricht ueber dasselbe CatAssumed-Szenario
+    fake = {"id": "Test", "t_sit0": time.time(), "sit_s": 0, "x": 0, "y": 0, "tracks": []}
+    return jsonify(ok=_pushingbox(fake), configured=bool(PUSHINGBOX_DEVID))
 
 
 # ------------------------------------------------- Tracks servieren (aus der DB)

@@ -47,7 +47,11 @@ const ANA = {
   editSel: null,        // {ring, idx} markierter Punkt (Ziehen/Löschen)
   editDirty: false,     // Arbeitskopie wurde veraendert (Rueckfrage beim Abbrechen)
   editPollTimer: null,  // Poll auf /noshot|/rasenmap, bis der Manager die Karte übernommen hat
+  incs: [],             // /incidents: Kot-Verdachte (Incident-Tracer), neueste zuerst
+  incSel: null,         // angeklickter Verdacht (id)
+  incPick: null,        // id: nächster Klick in die Karte setzt den echten Fundort
 };
+const INC_COLOR = "#c98a3c";   // Kot-Verdacht auf der Karte
 const SEL_COLOR = "#ffd23b";   // Hervorhebung des angeklickten Tracks
 
 function devInfo(sid){
@@ -169,6 +173,7 @@ async function anaFetchWindowOnce(){
   } else ANA.model = null;
   try{ ANA.labels = (await anaJson(`/alabels?${q}`)).labels; }catch(e){ ANA.labels = []; }
   try{ ANA.acts = (await anaJson(`/actlog?${q}`)).acts; }catch(e){ ANA.acts = []; }
+  await anaLoadIncidents();
   renderSensors(); renderTracks(); renderLabels(); drawAnaMap(); drawTimeline(); renderWinInfo();
   // Analysierer noch am Nachrechnen (Backlog)? -> in 5 s automatisch nachladen
   clearTimeout(ANA.behindTimer);
@@ -623,6 +628,31 @@ function drawAnaMap(){
     ctx.font = "bold 11px system-ui";
     ctx.fillText("Nr " + (selTr.id ?? "neu"), X(p0[1]) + 9, Y(p0[2]) - 8);
   }
+  // Kot-Verdachte (alle, unabhängig vom Zeitfenster): Ring am Sitzort, Kreuz =
+  // von Hand gesetzter echter Fundort (gestrichelt verbunden)
+  for(const inc of (ANA.incs||[])){
+    const hot = ANA.incSel === inc.id;
+    if(inc.fb === "notfound" && !hot) ctx.globalAlpha = 0.35;
+    ctx.strokeStyle = INC_COLOR; ctx.lineWidth = hot ? 3 : 2;
+    ctx.beginPath(); ctx.arc(X(inc.x), Y(inc.y), hot ? 11 : 8, 0, 7); ctx.stroke();
+    ctx.fillStyle = inc.fb === "found" ? "#e33" : INC_COLOR;
+    ctx.beginPath(); ctx.arc(X(inc.x), Y(inc.y), 3, 0, 7); ctx.fill();
+    ctx.font = (hot ? "bold " : "") + "11px system-ui";
+    ctx.fillText("Kot? " + inc.id, X(inc.x) + 12, Y(inc.y) + 4);
+    if(inc.fx != null && inc.fy != null){
+      ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.moveTo(X(inc.x), Y(inc.y)); ctx.lineTo(X(inc.fx), Y(inc.fy)); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.strokeStyle = "#e33"; ctx.lineWidth = 2.5;
+      const fx = X(inc.fx), fy = Y(inc.fy);
+      ctx.beginPath(); ctx.moveTo(fx-6,fy-6); ctx.lineTo(fx+6,fy+6); ctx.moveTo(fx+6,fy-6); ctx.lineTo(fx-6,fy+6); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+  if(ANA.incPick != null){
+    ctx.fillStyle = INC_COLOR; ctx.font = "bold 12px system-ui";
+    ctx.fillText("Klick in die Karte = echter Fundort von Kot? " + ANA.incPick + "  (Esc = abbrechen)", 8, 16);
+  }
   // Massstab
   ctx.fillStyle = "#778"; ctx.font = "11px system-ui";
   ctx.fillText((step/1000) + " m Raster", 8, H-8);
@@ -726,6 +756,11 @@ function mapBind(){
     // wie ein Klick in der Trackliste, nur ohne Recentern (man schaut ja schon hin).
     // Klick ins Leere = Auswahl aufheben. Die Liste scrollt zum gewählten Track,
     // dort lassen sich dann Bewertung/Details wie gewohnt bedienen.
+    else if(drag && !moved && !ANA.editType && lastPos && ANA.incPick != null){
+      const T = mapTransform(cv);
+      anaIncFb(ANA.incPick, {fx: Math.round(T.invX(lastPos.x)), fy: Math.round(T.invY(lastPos.y))});
+      ANA.incPick = null;
+    }
     else if(drag && !moved && !ANA.editType && lastPos){
       const hit = anaMapHitTrack(mapTransform(cv), lastPos.x, lastPos.y);
       ANA.selKey = (hit && ANA.selKey !== hit.key) ? hit.key : null;
@@ -747,6 +782,7 @@ function mapBind(){
   }, {passive:false});
   cv.addEventListener("dblclick", ()=>{ if(!ANA.editType){ anaFit(); drawAnaMap(); } });
   window.addEventListener("keydown", e=>{
+    if(e.key==="Escape" && ANA.incPick != null){ ANA.incPick = null; renderIncidents(); drawAnaMap(); return; }
     if(!ANA.editType) return;
     // Esc = Notausgang zurueck in den Normalmodus (dieselbe Wirkung wie "Abbrechen").
     if(e.key==="Escape"){ e.preventDefault(); anaMapEditDiscard(); return; }
@@ -1149,6 +1185,72 @@ function renderTracks(){
 }
 
 // alle Labels der ganzen Aufnahme (zeitfensterunabhängig) für die Verwaltung laden
+// ------------------------------------------------------- Kot-Verdacht (Incident-Tracer)
+// Der VPS prüft die fertigen Tracks auf das Sitz-Profil (incidents.py) und meldet
+// Verdachte per PushingBox aufs Handy. Hier: Liste + Karte + Rückmeldung.
+const INC_FB = [["found","gefunden"],["notfound","nichts gefunden"],["unknown","nicht prüfbar"]];
+async function anaLoadIncidents(){
+  try{
+    const r = await anaJson("/incidents");
+    ANA.incs = r.incidents || []; ANA.incPushReady = r.push_ready;
+  }catch(e){ ANA.incs = ANA.incs || []; }
+  renderIncidents();
+}
+async function anaIncFb(id, body){
+  const inc = ANA.incs.find(i=>i.id===id); if(!inc) return;
+  const b = Object.assign({id, fb: inc.fb}, body);
+  try{
+    await anaJson("/incident_fb",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+    Object.assign(inc, body);
+  }catch(e){ alert("Rückmeldung fehlgeschlagen: " + e.message); }
+  renderIncidents(); drawAnaMap();
+}
+function anaIncGo(inc){
+  // Fenster um die Sitzphase legen, ersten Track wählen, Karte auf den Sitzort
+  ANA.incSel = inc.id; ANA.follow = false;
+  const chk = anaEl("anaFollowChk"); if(chk) chk.checked = false;
+  ANA.win = {t0: inc.t0 - 30, t1: inc.t1 + 30};
+  ANA.selKey = (inc.tracks && inc.tracks[0]) ? inc.tracks[0].key : null;
+  if(ANA.view){ ANA.view.cx = inc.x; ANA.view.cy = inc.y; }
+  anaScheduleFetch(); renderIncidents(); drawAnaMap();
+}
+function renderIncidents(){
+  const el = anaEl("anaInc"); if(!el) return;
+  const list = ANA.incs || [];
+  const warn = ANA.incPushReady === false
+    ? `<div class="hint" style="color:#c93">Handy-Nachricht nicht eingerichtet (PUSHINGBOX_CATASSUMED)</div>` : "";
+  el.innerHTML = warn + (list.map(inc=>{
+    const fbTxt = (INC_FB.find(f=>f[0]===inc.fb)||[])[1];
+    const trs = (inc.tracks||[]).map(t=>t.id).join(", ");
+    return `<div class="anaInc fb-${inc.fb||'none'}${ANA.incSel===inc.id?' sel':''}" data-id="${inc.id}">
+      <b>Kot? ${inc.id}</b> · ${fmtDT(inc.t_sit0)} · ${(inc.x/1000).toFixed(1)} / ${(inc.y/1000).toFixed(1)} m
+      <small>sitzt ${Math.round(inc.sit_s)} s · Streuung ${inc.sdx}/${inc.sdy} mm · ${inc.rate}/s · Lücke ${inc.maxgap} s · Track ${trs}${inc.pushed?' · 📱':''}${fbTxt?' · <b>'+fbTxt+'</b>':''}</small>
+      <div class="mkRow">${INC_FB.map(([k,l])=>`<button class="mk${inc.fb===k?' on':''}" data-fb="${k}">${l}</button>`).join("")}
+        <button class="mk${ANA.incPick===inc.id?' pick':''}" data-pick="1" title="Danach in die Karte klicken: dort lag der Kot wirklich">Fundort…</button>
+        ${inc.fx!=null?'<button class="mk" data-unpick="1" title="Gesetzten Fundort entfernen">Fundort ✕</button>':''}</div>
+    </div>`;
+  }).join("") || "<div class='hint'>— keine Verdachte —</div>");
+  el.querySelectorAll(".anaInc").forEach(row=>{
+    const id = +row.dataset.id, inc = list.find(i=>i.id===id);
+    row.onclick = ()=>anaIncGo(inc);
+    row.querySelectorAll("button[data-fb]").forEach(b=>b.onclick = ev=>{
+      ev.stopPropagation();
+      anaIncFb(id, {fb: inc.fb===b.dataset.fb ? "" : b.dataset.fb});
+    });
+    const pk = row.querySelector("button[data-pick]");
+    if(pk) pk.onclick = ev=>{ ev.stopPropagation(); ANA.incPick = (ANA.incPick===id) ? null : id; renderIncidents(); drawAnaMap(); };
+    const up = row.querySelector("button[data-unpick]");
+    if(up) up.onclick = ev=>{ ev.stopPropagation(); anaIncFb(id, {fx:null, fy:null}); };
+  });
+}
+async function anaIncPushTest(){
+  try{
+    const r = await anaJson("/incident_push_test",{method:"POST"});
+    alert(r.ok ? "Test-Nachricht an PushingBox gesendet" :
+          (r.configured ? "PushingBox hat abgelehnt / nicht erreichbar" : "PUSHINGBOX_CATASSUMED ist auf dem VPS nicht gesetzt"));
+  }catch(e){ alert("Fehler: " + e.message); }
+}
+
 async function anaLoadAllLabels(){
   try{ ANA.allLabels = (await anaJson("/alabels?all=1")).labels; }
   catch(e){ ANA.allLabels = []; }
@@ -1298,6 +1400,7 @@ async function anaShow(){
     anaEl("anaBValid").onclick = anaValidate;
     anaEl("anaBDev").onclick = anaDevReload;
     anaEl("anaBLabel").onclick = anaAddLabel;
+    anaEl("anaIncPush").onclick = ev=>{ ev.stopPropagation(); anaIncPushTest(); };
     anaEl("anaLblAll").onchange = async ()=>{
       if(anaEl("anaLblAll").checked) await anaLoadAllLabels();
       renderLabels();

@@ -20,6 +20,9 @@ services:
       # Wert kommt aus .env (siehe .env.example daneben) - NIE hier direkt
       # eintragen, sonst landet der Token im Git-Verlauf.
       GITHUB_MAP_TOKEN: "${GITHUB_MAP_TOKEN:-}"
+      # PushingBox-Device des Szenarios "CatAssumed" (-> Prowl aufs Handy) fuer
+      # den Kot-Verdacht (incidents.py). Wert NUR in der .env, nie hier.
+      PUSHINGBOX_CATASSUMED: "${PUSHINGBOX_CATASSUMED:-}"
       DB_PATH: "/data/catfinder.db"
       PARAMS_PATH: "/data/model_params.json"
       # Pfad, unter dem die Weboberflaeche liegt; der Wurzelpfad liefert 404.
