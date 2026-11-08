@@ -95,6 +95,24 @@
   .covItem.off { opacity:.5; cursor:default; }
   #covMsg { color:#9ab; line-height:1.35; margin:8px 0; min-height:1em; }
   #vis { height:100%; display:flex; min-height:0; }
+  /* Tab Zielmodell (target.js) */
+  #tgt { height:100%; display:flex; min-height:0; }
+  #tgtLeft { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #tgtMapWrap { flex:1 1 62%; position:relative; min-height:200px; }
+  #tgtMap { position:absolute; inset:0; width:100%; height:100%; cursor:grab; touch-action:none; }
+  #tgtList { flex:1 1 38%; overflow:auto; border-top:1px solid #333; font-size:12px; }
+  .tgtRow { padding:3px 8px; border-bottom:1px solid #1e1e24; cursor:pointer; color:#aab; }
+  .tgtRow.fired { color:#f08a8a; }
+  .tgtRow.sel { background:#3a3413; border-left:3px solid #ffd23b; }
+  .tgtRow small { display:block; color:#667; }
+  #tgtSide { width:340px; min-width:340px; border-left:1px solid #333; overflow:auto; padding:10px; font-size:12px; background:#121218; }
+  #tgtSide h3 { margin:10px 0 6px; font-size:13px; }
+  #tgtSide label { display:block; margin-top:5px; color:#99a; }
+  #tgtSide input[type=number] { width:90px; }
+  #tgtBlocks { width:100%; height:54px; font-family:monospace; font-size:11px; }
+  .tgtTab { border-collapse:collapse; width:100%; }
+  .tgtTab th, .tgtTab td { border-bottom:1px solid #26262d; padding:2px 4px; text-align:right; }
+  .tgtTab th:first-child, .tgtTab td:first-child { text-align:left; }
   #visLeft { flex:1; display:flex; flex-direction:column; min-width:0; }
   #visMapWrap { flex:1 1 62%; position:relative; min-height:200px; }
   #visMap { position:absolute; inset:0; width:100%; height:100%; cursor:grab; touch-action:none; }
@@ -197,6 +215,7 @@
   <button class="tab" data-v="cov">Coverage</button>
   <button class="tab" data-v="pics">Bilder</button>
   <button class="tab" data-v="vis">Besucher</button>
+  <button class="tab" data-v="tgt">Zielmodell</button>
   <button class="tab" data-v="ctrl">Steuerung</button>
   <button id="reset">Karten zurücksetzen</button>
 </header>
@@ -257,6 +276,40 @@
         <button class="act" style="background:#7a2230" id="manClear">Bestehende Pose löschen</button>
         <button class="tab" id="manReload">Daten neu laden</button>
         <div class="manHelp" id="manInfo"></div>
+      </div>
+    </div>
+    <div id="tgt" style="display:none">
+      <div id="tgtLeft">
+        <div id="tgtMapWrap"><canvas id="tgtMap" title="Ziehen = verschieben · Rad = zoomen · Doppelklick = einpassen · Klick = Sitzplatz wählen"></canvas></div>
+        <div id="tgtList"></div>
+      </div>
+      <div id="tgtSide">
+        <h3 style="margin-top:0">Zielmodell „Sitzende Katze"</h3>
+        <div class="manHelp">Zweites, unabhängiges Modell neben dem Normalmodell: meldet nur Tiere, die sich <b>hinsetzen</b> — ausserhalb des Katzenkorridors nach der Sitzdauer, im Korridor erst nach langer Zeit. Läuft im CatIdent (<b>targetDetected</b>, heute im Schattenbetrieb: kein Aktor hört darauf) und hier als Nachbau über die aufgezeichneten Meldungen. Rot = hätte geschossen, Raute = echtes targetDetected des CatIdent, oranger Punkt = catDetected (Normalmodell), brauner Ring = Kot-Verdacht. Doppelklick in der Liste öffnet die Stelle im Analyse-Tab.</div>
+        <label>Zeitraum</label>
+        <select id="tgtRange"><option value="1">letzter Tag</option><option value="3">3 Tage</option><option value="7" selected>7 Tage</option><option value="30">30 Tage</option><option value="0">alles (ab 16.10.)</option></select>
+        <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="tgtOnlyFired" checked> nur Auslösungen zeigen</label>
+        <button class="tab" id="tgtReload">neu laden</button>
+        <div class="hint" id="tgtInfo" style="padding:6px 0"></div>
+        <h3>Vergleich je Tag</h3>
+        <div id="tgtDays"></div>
+        <h3>Katzenkorridor</h3>
+        <div class="manHelp">Gelernt aus allen von Hand als Katze bewerteten Tracks: Zellen (0,5 m), durch die mindestens der gewählte Anteil der Tracks läuft. Mehr Bewertungen = besserer Korridor — einfach neu lernen.</div>
+        <label>Schwelle (% der Katzen-Tracks)</label>
+        <input type="number" id="tgtThr" value="8" min="1" max="50" step="1">
+        <button class="act" id="tgtLearn">Korridor neu lernen</button>
+        <button class="act" id="tgtEditBtn">✏️ Korridor von Hand bearbeiten</button>
+        <span id="tgtEditTools" style="display:none">
+          <button class="act" id="tgtEditSave" style="background:#1f8a3b">✅ Korridor speichern</button>
+          <button class="act" id="tgtEditDiscard" style="background:#444">Verwerfen (Esc)</button>
+        </span>
+        <h3>Parameter</h3>
+        <div id="tgtParams"></div>
+        <label>Sperrstellen (JSON: x, y, r in mm)</label>
+        <textarea id="tgtBlocks" spellcheck="false"></textarea>
+        <button class="act" id="tgtParamSave">Parameter übernehmen</button>
+        <button class="tab" id="tgtParamDef">Standardwerte</button>
+        <div class="manHelp">Nach dem Übernehmen rechnet der Nachbau alles ab 16.10. neu (wenige Sekunden). Der CatIdent holt die Werte beim Neustart oder mit der Aktion „Parameter laden“ (Steuerung).</div>
       </div>
     </div>
     <div id="vis" style="display:none">
@@ -433,14 +486,15 @@ const CMD_REBOOT=30;   // Fernwartung: Geraet neu starten (jedes Geraet, ueber M
 function setView(v,b){
   view=v;
   document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active", x===b));
-  const isList=v==="list", isCtrl=v==="ctrl", isAna=v==="ana", isPics=v==="pics", isManual=v==="manual", isCov=v==="cov", isVis=v==="vis",
-        isMap=!isList&&!isCtrl&&!isAna&&!isPics&&!isManual&&!isCov&&!isVis;
+  const isList=v==="list", isCtrl=v==="ctrl", isAna=v==="ana", isPics=v==="pics", isManual=v==="manual", isCov=v==="cov", isVis=v==="vis", isTgt=v==="tgt",
+        isMap=!isList&&!isCtrl&&!isAna&&!isPics&&!isManual&&!isCov&&!isVis&&!isTgt;
   document.getElementById("list").style.display   = isList?"block":"none";
   document.getElementById("ctrl").style.display   = isCtrl?"block":"none";
   document.getElementById("ana").style.display    = isAna?"flex":"none";
   document.getElementById("manual").style.display = isManual?"flex":"none";
   document.getElementById("cov").style.display    = isCov?"flex":"none";
   document.getElementById("vis").style.display    = isVis?"flex":"none";
+  document.getElementById("tgt").style.display    = isTgt?"flex":"none";
   document.getElementById("pics").style.display   = isPics?"block":"none";
   document.getElementById("cv").style.display     = isMap?"block":"none";
   document.getElementById("legend").style.display = isMap?"block":"none";
@@ -451,6 +505,7 @@ function setView(v,b){
   if(isManual) manShow();
   if(isCov) covShow();
   if(isVis) visShow();
+  if(isTgt) tgtShow();
   if(isPics) loadPics();
 }
 
@@ -854,5 +909,6 @@ async function tick(){
 <script src="static/analysis.js"></script>
 <script src="static/coverage.js"></script>
 <script src="static/visitor.js"></script>
+<script src="static/target.js"></script>
 </body>
 </html>

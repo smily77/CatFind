@@ -180,6 +180,12 @@ stationDefinitions device[deviceCount] = {
                              // steht so nirgends im Repo und ein Ersatzgeraet lernt sie selbst.
 #define vpsReport       21   // Antwort des Managers (vpsPayload, ipVPS aus seiner Credentials.h), Unicast
                              // an den Fragenden. Der Empfaenger speichert sie dauerhaft.
+#define targetDetected  22   // Zielmodell "Sitzende Katze" (CatIdent, sitModel.ino): ein Tier SITZT
+                             // ausserhalb des Katzenkorridors (bzw. lange darin) - catDetectedPayload
+                             // (score = Sitzdauer s, flags catDetFlagStationary [+Corridor], trackMs =
+                             // Sitzdauer ms, netMm = Ankunftsweg mm), DOPPELT gesendet wie catDetected.
+                             // Bewusst KEIN catDetected: nur Aktoren mit Zielmodus reagieren darauf.
+#define targetTracked   23   // Nachfuehrung eines ausgeloesten Sitzplatzes (catDetectedPayload, ~2/s)
 
 // Karten-Typen (fuer mapRequest/mapInfo/mapChunk)
 #define mapNoShot   1   // Schusszonen-/No-Shot-Karte (innerhalb = Feuern erlaubt)
@@ -263,6 +269,7 @@ struct __attribute__((packed)) markerHbPayload {
 // noch im Erfassungsbereich ist, nicht erst nach Track-Ende.
 #define catDetFlagStationary 0x01   // Katze sitzt gerade (koten? Ziel nicht verlieren)
 #define catDetFlagFusion     0x02   // mehrere Sensoren sehen dasselbe Objekt
+#define catDetFlagCorridor   0x04   // targetDetected: Sitzplatz liegt IM Katzenkorridor
 struct __attribute__((packed)) catDetectedPayload {
   int32_t  worldX;      // Welt-Position der Katze bei Ausloesung (mm)
   int32_t  worldY;

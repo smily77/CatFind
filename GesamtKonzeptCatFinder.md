@@ -1436,11 +1436,27 @@ heute `catTrack.ino` ↔ `catmodel.py`.
 4. Schalter im Aktor, zuerst ohne Wasser (zielen, nicht feuern).
 5. Scharf mit Wasser am neuen Standort.
 
-### Offene Punkte
-- Gerät: A (eigenes Gerät) oder B (Modul im CatIdent).
-- Sitzen im Korridor: nie schiessen oder erst nach langer Sitzzeit?
-- Fuchs: sitzt kaum, schnüffelt lange; eigene Regel oder weiter Normalmodell?
-- Lauernde Katzen ausserhalb des Korridors werden ebenfalls nass. Ist das gewollt?
+### Entscheidungen (2026-11-08)
+- **Variante B:** Modul `CatIdentifier/CatId6_3_0/sitModel.ino` (+ `sitModelDef.h`) im CatIdent.
+- Im Korridor wird nach langer Sitzzeit geschossen (`sit_corr_s`, Start 90 s).
+- Fuchs: weiter mit dem Normalmodell.
+- Korridor: aus den Erfahrungsdaten (alle als Katze bewerteten Tracks) gelernt, jederzeit neu
+  lernbar und von Hand bearbeitbar.
+
+### Umsetzungsstand (2026-11-08)
+- Stufe 1–3 umgesetzt: VPS-Nachbau `VPS/dashboard/sitmodel.py`, Tab „Zielmodell", Korridor
+  (Kartentyp hier als Rasterzellen über `/sit_corridor.csv`, im CatIdent im LittleFS gecacht,
+  statt über den Manager-Kartenweg), CatIdent im **Schattenbetrieb** (`targetDetected` 22 /
+  `targetTracked` 23, kein Aktor hört darauf), Manager reicht `targetDetected` als actor_log
+  `tgt` an den VPS.
+- Gegenüber dem Entwurf nach den Daten ergänzt: Schwerpunkt/Streuung gleitend (`sit_tau_s`,
+  sonst verdirbt der Anlauf die Streuung), Ankunft gegen den aktuellen Schwerpunkt, Mindest-
+  streuung je Achse (eingefrorene Radarziele) und **Höchstrate** 7/s (sitzende Katze meldet
+  dünn), nur HLK-Radare.
+- Rückblick 16.10.–08.11.: beide Kotfälle lösen aus (81320 nach 21 s, 83472 nach 30 s, je
+  20–30 s bevor die Katze aufstand), dazu 7 weitere Auslösungen und ein Block von 13 am 16.10.
+  14–15 Uhr (vermutlich Mäher/Gartenarbeit).
+- Offen: Stufe 4 (Schalter im Aktor), Stufe 5 (Wasser).
 
 ### Nicht Teil dieses Abschnitts
 Die konkrete Firmware, die Parameterwerte und die Tab-Gestaltung werden erst festgelegt,

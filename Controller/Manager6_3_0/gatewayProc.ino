@@ -57,6 +57,7 @@ static GwEnv gwEnv[GW_MAX_ENV]; static int gwEnvN = 0;
 // kind: 'd' = catDetected (a score, b flags, c trackMs, d netMm),
 //       'i' = fireInhibit (a reason, b holdMs, c score),
 //       'h' = catHit      (a Servo, b Distanz mm, c LP40B mm, 0 = keine Messung).
+//       't' = targetDetected (Zielmodell; a Sitzdauer s, b flags, c Sitzdauer ms, d Ankunft mm).
 #define GW_MAX_ACTS 16
 struct GwAct { char kind; uint8_t sender, wv; int32_t wx, wy, a, b, c, d; uint32_t ms; };
 static GwAct gwActs[GW_MAX_ACTS]; static int gwActN = 0;

@@ -9,6 +9,7 @@ COPY dashboard.py .
 COPY catmodel.py .
 COPY visitor.py .
 COPY incidents.py .
+COPY sitmodel.py .
 COPY static ./static
 
 ENV PORT=80

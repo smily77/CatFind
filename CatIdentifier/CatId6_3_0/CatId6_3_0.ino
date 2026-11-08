@@ -17,6 +17,7 @@
 #include <xComDef6_3.h>
 #include "hwDef.h"
 #include "catTrackDef.h"
+#include "sitModelDef.h"               // Zielmodell "Sitzende Katze" (sitModel.ino, eigenstaendig)
 
 #define DEBUG true
 
@@ -108,10 +109,13 @@ void setup() {
   bool fresh  = ctFetchParams();     // VPS erreichbar -> aktuelle Parameter holen+cachen
   bool covCached = ctLoadCoverageFile(COVERAGE_PATH);
   bool covFresh  = ctFetchCoverage();
+  sitLoadCache();                    // Zielmodell: Cache, dann frisch vom VPS
+  bool sitFresh = sitFetch();
   sendUdpTextln(String("CatIdent bereit, Parameter: ") +
                 (fresh ? "vom VPS" : (cached ? "aus Cache" : "Defaults")) +
                 ", Coverage: " + (covFresh ? "vom VPS" : (covCached ? "aus Cache" : "Sektoren")) +
                 " (" + String(ctCoverageCount()) + " Polygone)");
+  sendUdpTextln(sitSummary() + (sitFresh ? " (vom VPS)" : " (aus Cache/Defaults)"));
   sendSettingsReport();
   timer = millis();
 }
@@ -151,10 +155,12 @@ void handleCommand(const xMsg& m) {
   if (cmd.cmd == cmdReloadParams) {  // Aktion: Modell-Parameter neu vom VPS laden
     bool ok = ctFetchParams();
     bool covOk = ctFetchCoverage();
+    bool sitOk = sitFetch();
     sendUdpTextln((ok ? "CatIdent: Parameter neu geladen (" + ctParamSummary() + ")"
                       : "CatIdent: Parameter-Reload FEHLGESCHLAGEN") +
                   String(covOk ? ", Coverage neu geladen (" + String(ctCoverageCount()) + " Polygone)"
                                : ", Coverage nicht neu geladen"));
+    sendUdpTextln(sitSummary() + (sitOk ? " (neu geladen)" : " (Laden FEHLGESCHLAGEN)"));
   }
 }
 
@@ -189,6 +195,9 @@ void handleBusMsg(const xMsg& m) {
     // insideNoShot() faellt ohne geladene Karte offen: alles durchlassen).
     if (!insideNoShot(obs.worldX, obs.worldY)) return;
     if (ctInQuietWindow()) return;     // NoShot-Zeit (Maeherfenster): Modell pausiert
+    // Zielmodell (sitModel.ino) bekommt dieselben gefilterten Meldungen - nur echte
+    // catObserved (keine Kamera-Spuren), es filtert selbst auf HLK-Radare.
+    if (m.header.msgCode == catObserved) sitFeed(m.header.sender, obs.worldX, obs.worldY);
     ctFeed(m.header.sender, obs.worldX, obs.worldY);
   }
   else if (m.header.msgCode == poseReport && m.header.sender != ID) {

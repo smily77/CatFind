@@ -185,6 +185,23 @@ void loop() {
         }
       }
     }
+    else if (mcMsg.header.msgCode == targetDetected) {
+      // Zielmodell "Sitzende Katze" (CatIdent sitModel.ino): nur an den VPS (actor_log
+      // kind 'tgt', Tab Zielmodell), kein Blinken. Doppelt gesendet -> Duplikat-Filter.
+      catDetectedPayload td;
+      if (getPayload(mcMsg, td)) {
+        static catDetectedPayload lastTd; static unsigned long lastTdMs = 0;
+        bool dup = (millis() - lastTdMs < 1500) && memcmp(&lastTd, &td, sizeof(td)) == 0;
+        lastTd = td; lastTdMs = millis();
+        if (!dup) {
+          gwAddAct('t', mcMsg.header.sender, 1, td.worldX, td.worldY,
+                   td.score, td.flags, (int32_t)td.trackMs, td.netMm);
+          gwAddDebug("TargetDetected #" + String(mcMsg.header.sender) + " sitzt " +
+                     String(td.score) + "s x=" + String(td.worldX) + " y=" + String(td.worldY) +
+                     ((td.flags & catDetFlagCorridor) ? " Korridor" : ""));
+        }
+      }
+    }
     else if (mcMsg.header.msgCode == fireInhibit) {
       fireInhibitPayload fi;                                             // Gateway: Feuersperre (Aktor-Kette)
       if (getPayload(mcMsg, fi))

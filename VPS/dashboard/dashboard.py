@@ -77,6 +77,7 @@ from flask import Flask, request, jsonify, send_from_directory, Response
 import catmodel
 import visitor
 import incidents
+import sitmodel
 
 MAX_EVENTS   = int(os.environ.get("MAX_EVENTS", "20000"))
 HB_WINDOW_S  = int(os.environ.get("HB_WINDOW_S", "180"))    # "aktiv" = HB in den letzten 3 min
@@ -131,6 +132,8 @@ DEVICE_ROUTES = {
     ("GET",  "/aparams.csv"),           # CatIdent  catTrack.ino:119
     ("GET",  "/coverage_export.csv"),   # CatIdent  catTrack.ino:245
     ("GET",  "/visitor_device.cfg"),    # Besucherlicht config.ino cfgFetch
+    ("GET",  "/sitparams.csv"),         # CatIdent  sitModel.ino sitFetch
+    ("GET",  "/sit_corridor.csv"),      # CatIdent  sitModel.ino sitFetch
 }
 
 
@@ -520,6 +523,12 @@ def init_db():
         x INT, y INT, data TEXT, fb TEXT DEFAULT '', fx INT, fy INT, note TEXT DEFAULT '',
         pushed INT DEFAULT 0, created REAL, updated REAL)""")
     _db.execute("CREATE INDEX IF NOT EXISTS idx_incidents_t ON incidents(t_sit0)")
+    # Zielmodell "Sitzende Katze" (sitmodel.py): Ergebnis des VPS-Nachbaus. Abgeleitete
+    # Daten - werden bei jeder Parameter-/Korridor-Aenderung komplett neu gerechnet.
+    _db.execute("""CREATE TABLE IF NOT EXISTS sit_events(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, t_first REAL, t_fire REAL, t_end REAL,
+        sender INT, x INT, y INT, sit_s REAL, fired INT, reason TEXT, data TEXT)""")
+    _db.execute("CREATE INDEX IF NOT EXISTS idx_sit_t ON sit_events(t_first)")
     _db.commit()
     for sid, t, temp, press in _db.execute(
             "SELECT sender,MAX(t),temp,press FROM env GROUP BY sender").fetchall():
@@ -715,7 +724,7 @@ def ingest():
             env_rows.append((now, sid, temp, press))
         act_rows = []
         for a in data.get("acts", []):
-            k = {"d": "det", "i": "inh", "h": "hit"}.get(str(a.get("k", "")))
+            k = {"d": "det", "i": "inh", "h": "hit", "t": "tgt"}.get(str(a.get("k", "")))
             if not k:
                 continue
             act_rows.append((ev_time(a), int(a.get("sender", -1)), k,
@@ -1967,6 +1976,10 @@ def _analyzer_loop():
             more = _incident_step() or more
         except Exception:                                        # noqa: BLE001
             traceback.print_exc()
+        try:
+            more = _sit_step() or more
+        except Exception:                                        # noqa: BLE001
+            traceback.print_exc()
         time.sleep(0.3 if more else 5.0)
 
 
@@ -2233,6 +2246,274 @@ def incident_push_test():
     # Probe-Nachricht ueber dasselbe CatAssumed-Szenario
     fake = {"id": "Test", "t_sit0": time.time(), "sit_s": 0, "x": 0, "y": 0, "tracks": []}
     return jsonify(ok=_pushingbox(fake), configured=bool(PUSHINGBOX_DEVID))
+
+
+# ------------------------------------------------- Zielmodell "Sitzende Katze"
+# VPS-Nachbau (sitmodel.py) des CatIdent-Moduls sitModel.ino, Konzept im
+# GesamtKonzept (Abschnitt "Zielmodell Sitzende Katze"). Laeuft fortlaufend ueber
+# die Rohmeldungen (events), mit denselben Vorfiltern wie im CatIdent: nur HLK-
+# Radare, nur innerhalb der No-Shot-Karte, nicht in der NoShot-Zeit (quiet_t0/t1).
+# Ergebnis: Tabelle sit_events (Ausloesungen + laengere Sitzplaetze mit Grund).
+# Parameter, Sperrstellen und Korridor liegen in meta (sit_params, sit_blocks,
+# corridor) und gehen als /sitparams.csv bzw. /sit_corridor.csv an den CatIdent.
+SIT_SINCE = 1792101600.0          # 2026-10-16 00:00 Lokalzeit: davor Aufbauzeit
+SIT_CHUNK = 20000
+SIT_HOLD_S = 10.0                 # juengste Meldungen zurueckhalten (Manager-Flush)
+SIT_DEFAULT_BLOCKS = [{"x": 7200, "y": 10800, "r": 700,
+                       "note": "Radar-Haltestelle hinten (37-s-Halte)"}]
+_sit_lock = threading.Lock()
+_sit_state = {"model": None, "sig": None, "rows": {}}
+
+
+def _meta_json(k, default):
+    with _db_lock:
+        raw = _meta_get(k)
+    try:
+        return json.loads(raw) if raw else default
+    except Exception:                                        # noqa: BLE001
+        return default
+
+
+def _sit_params():
+    return sitmodel.merged_sit(_meta_json("sit_params", {}))
+
+
+def _sit_blocks():
+    return _meta_json("sit_blocks", SIT_DEFAULT_BLOCKS)
+
+
+def _corridor_learn(thr=0.08, cell_mm=500):
+    """Korridor aus den als Katze bewerteten Tracks lernen (Erfahrungsdaten)."""
+    with _reading() as db:
+        rows = db.execute("SELECT t.data FROM tracks t JOIN track_marks m ON m.key=t.key "
+                          "WHERE m.mark='cat'").fetchall()
+    tracks = []
+    for (d,) in rows:
+        try:
+            tracks.append(json.loads(d).get("pts") or [])
+        except Exception:                                    # noqa: BLE001
+            pass
+    cor = sitmodel.learn_corridor(tracks, cell_mm, thr)
+    cor.update(learned=time.time(), source="gelernt")
+    return cor
+
+
+def _corridor():
+    cor = _meta_json("corridor", None)
+    if not cor:
+        cor = _corridor_learn()
+        with _db_lock:
+            _meta_set("corridor", json.dumps(cor))
+            _db.commit()
+        _sysmsg("Zielmodell: Korridor aus %d Katzen-Tracks gelernt (%d Zellen)"
+                % (cor["n_tracks"], len(cor["cells"])))
+    return cor
+
+
+def _sit_sig():
+    p = catmodel.merged_params(load_params())
+    return hashlib.md5(json.dumps([_sit_params(), _sit_blocks(), _corridor()["cells"],
+                                   p["quiet_t0_min"], p["quiet_t1_min"]],
+                                  sort_keys=True).encode()).hexdigest()
+
+
+def _quiet(t, p):
+    a, b = int(p["quiet_t0_min"]), int(p["quiet_t1_min"])
+    if a == b:
+        return False
+    m = _local_minute_of_day(t)
+    return (a <= m < b) if a < b else (m >= a or m < b)
+
+
+def _sit_save(kind, info):
+    """fire: neue Zeile; end: Zeile abschliessen (oder neu, wenn lang genug)."""
+    rows = _sit_state["rows"]
+    uid = info["uid"]
+    data = json.dumps(info, separators=(",", ":"))
+    with _db_lock:
+        if kind == "fire":
+            cur = _db.execute(
+                "INSERT INTO sit_events(t_first,t_fire,t_end,sender,x,y,sit_s,fired,reason,data) "
+                "VALUES(?,?,?,?,?,?,?,1,'',?)",
+                (info["t_first"], info["t"], info["t_last"], info["sender"], info["x"],
+                 info["y"], info["sit_s"], data))
+            rows[uid] = cur.lastrowid
+        elif uid in rows:
+            # Merkmale vom Ausloese-Zeitpunkt behalten, nur Ende/Dauer nachtragen
+            _db.execute("UPDATE sit_events SET t_end=?,sit_s=? WHERE id=?",
+                        (info["t_last"], info["sit_s"], rows.pop(uid)))
+        elif info["sit_s"] >= _sit_state["model"].p["log_s"]:
+            _db.execute(
+                "INSERT INTO sit_events(t_first,t_fire,t_end,sender,x,y,sit_s,fired,reason,data) "
+                "VALUES(?,NULL,?,?,?,?,?,0,?,?)",
+                (info["t_first"], info["t_last"], info["sender"], info["x"], info["y"],
+                 info["sit_s"], info.get("reason", ""), data))
+
+
+def _sit_step():
+    """Ein Haeppchen des Zielmodell-Nachbaus. True = es wartet noch mehr."""
+    sp = _sit_params()
+    if not sp["sit_enabled"]:
+        return False
+    sig = _sit_sig()
+    with _sit_lock:
+        with _db_lock:
+            if _meta_get("sit_sig") != sig:
+                _db.execute("DELETE FROM sit_events")
+                _meta_set("sit_sig", sig)
+                _meta_set("sit_done_t", repr(SIT_SINCE))
+                _db.commit()
+                _sit_state.update(model=None, rows={})
+                print("Zielmodell: Parameter/Korridor geaendert - rechne ab 16.10. neu", flush=True)
+            cur = float(_meta_get("sit_done_t") or SIT_SINCE)
+        if _sit_state["model"] is None:
+            cor = _corridor()
+            _sit_state["model"] = sitmodel.SitModel(
+                sp, sitmodel.Corridor(cor["cell_mm"], cor["cells"]), _sit_blocks())
+            _sit_state["rows"] = {}
+        model = _sit_state["model"]
+        hi = time.time() - SIT_HOLD_S
+        with _reading() as db:
+            rows = db.execute("SELECT t,sender,wx,wy FROM events WHERE wv=1 AND t>? AND t<=? "
+                              "ORDER BY t LIMIT ?", (cur, hi, SIT_CHUNK)).fetchall()
+        if not rows:
+            return False
+        p = catmodel.merged_params(load_params())
+        devices = load_devices()
+        hlk = {int(k) for k, d in devices.items() if (d or {}).get("type") == "HLK"}
+        rings = map_mirror_rings("noshot")
+        for t, snd, x, y in rows:
+            if sp["sit_hlk_only"] and snd not in hlk:
+                continue
+            if rings and not any(catmodel.point_in_poly(x, y, r) for r in rings):
+                continue
+            if _quiet(t, p):
+                continue
+            for kind, info in model.feed(t, snd, x, y):
+                if kind in ("fire", "end"):
+                    _sit_save(kind, info)
+                    if kind == "fire" and t > time.time() - 600:
+                        _sysmsg("Zielmodell (VPS-Nachbau): sitzt %.0f s bei %.1f / %.1f m%s"
+                                % (info["sit_s"], info["x"] / 1000.0, info["y"] / 1000.0,
+                                   " (Korridor)" if info["in_corr"] else ""))
+        with _db_lock:
+            _meta_set("sit_done_t", repr(rows[-1][0]))
+            _db.commit()
+        return len(rows) >= SIT_CHUNK
+
+
+@app.get("/sit")
+def sit_view():
+    # Tab "Zielmodell": Ereignisse des Nachbaus + echte targetDetected des CatIdent
+    # (actor_log 'tgt') + catDetected (Normalmodell) + Kot-Verdachte im Zeitraum.
+    t1 = float(request.args.get("t1", time.time()))
+    t0 = float(request.args.get("t0", t1 - 7 * 86400))
+    with _reading() as db:
+        ev = db.execute("SELECT id,t_first,t_fire,t_end,sender,x,y,sit_s,fired,reason,data "
+                        "FROM sit_events WHERE t_end>=? AND t_first<=? ORDER BY t_first",
+                        (t0, t1)).fetchall()
+        acts = db.execute("SELECT t,sender,kind,wx,wy,a,b,c,d FROM actor_log "
+                          "WHERE kind IN ('det','tgt','hit') AND t>=? AND t<=? ORDER BY t",
+                          (t0, t1)).fetchall()
+    out = []
+    for rid, a, f, e, snd, x, y, sit_s, fired, reason, data in ev:
+        d = json.loads(data or "{}")
+        out.append({"id": rid, "t_first": a, "t_fire": f, "t_end": e, "sender": snd, "x": x,
+                    "y": y, "sit_s": sit_s, "fired": bool(fired), "reason": reason or "",
+                    "sdx": d.get("sdx"), "sdy": d.get("sdy"), "rate": d.get("rate"),
+                    "maxgap": d.get("maxgap"), "arrive_mm": d.get("arrive_mm"),
+                    "in_corr": d.get("in_corr"), "frz": d.get("frz")})
+    with _db_lock:
+        done = _meta_get("sit_done_t")
+    return jsonify(events=out,
+                   acts=[{"t": r[0], "sender": r[1], "kind": r[2], "wx": r[3], "wy": r[4],
+                          "a": r[5], "b": r[6], "c": r[7], "d": r[8]} for r in acts],
+                   incidents=[i for i in _incident_rows() if t0 <= i["t_sit0"] <= t1],
+                   params=_sit_params(), defaults=sitmodel.DEFAULT_SIT, blocks=_sit_blocks(),
+                   corridor=_corridor(), done_t=float(done) if done else None,
+                   noshot=map_mirror_rings("noshot"))
+
+
+@app.post("/sit_cfg")
+def sit_cfg():
+    # {params:{...}} und/oder {blocks:[{x,y,r,note}]} -> Nachbau rechnet neu
+    d = request.get_json(force=True, silent=True) or {}
+    with _db_lock:
+        if "params" in d:
+            cur = _meta_json_unlocked("sit_params", {})
+            for k, v in (d.get("params") or {}).items():
+                if k in sitmodel.DEFAULT_SIT:
+                    cur[k] = float(v)
+            _meta_set("sit_params", json.dumps(cur))
+        if "blocks" in d:
+            bl = []
+            for b in d.get("blocks") or []:
+                try:
+                    bl.append({"x": int(b["x"]), "y": int(b["y"]), "r": int(b["r"]),
+                               "note": str(b.get("note", ""))[:60]})
+                except (KeyError, TypeError, ValueError):
+                    continue
+            _meta_set("sit_blocks", json.dumps(bl))
+        if d.get("reset"):
+            _db.execute("DELETE FROM meta WHERE k='sit_params'")
+        _db.commit()
+    return jsonify(ok=True, params=_sit_params(), blocks=_sit_blocks())
+
+
+def _meta_json_unlocked(k, default):
+    raw = _meta_get(k)
+    try:
+        return json.loads(raw) if raw else default
+    except Exception:                                        # noqa: BLE001
+        return default
+
+
+@app.post("/corridor_learn")
+def corridor_learn():
+    d = request.get_json(force=True, silent=True) or {}
+    thr = max(0.01, min(0.5, float(d.get("thr", 0.08))))
+    cor = _corridor_learn(thr)
+    if d.get("save", True):
+        with _db_lock:
+            _meta_set("corridor", json.dumps(cor))
+            _db.commit()
+        _sysmsg("Zielmodell: Korridor neu gelernt (%d Zellen, Schwelle %d %%)"
+                % (len(cor["cells"]), round(thr * 100)))
+    return jsonify(ok=True, corridor=cor)
+
+
+@app.post("/corridor_set")
+def corridor_set():
+    # von Hand bearbeitete Zellen speichern (Dichte des letzten Lernens bleibt fuer die Anzeige)
+    d = request.get_json(force=True, silent=True) or {}
+    cor = _corridor()
+    try:
+        cells = sorted({(int(a), int(b)) for a, b in d.get("cells") or []})
+    except (TypeError, ValueError):
+        return jsonify(error="cells ungueltig"), 400
+    cor.update(cells=[list(c) for c in cells], source="bearbeitet", edited=time.time())
+    with _db_lock:
+        _meta_set("corridor", json.dumps(cor))
+        _db.commit()
+    return jsonify(ok=True, n=len(cells))
+
+
+@app.get("/sitparams.csv")
+def sitparams_csv():
+    # CatIdent (sitModel.ino) holt sie beim Boot und mit "Parameter laden"; im LittleFS gecacht.
+    p = _sit_params()
+    lines = ["# Zielmodell Sitzende Katze (sitmodel.DEFAULT_SIT + Overrides)"]
+    lines += ["%s=%g" % (k, v) for k, v in sorted(p.items())]
+    lines += ["block=%d,%d,%d" % (b["x"], b["y"], b["r"]) for b in _sit_blocks()]
+    return Response("\n".join(lines) + "\n", mimetype="text/plain; charset=utf-8")
+
+
+@app.get("/sit_corridor.csv")
+def sit_corridor_csv():
+    # Katzenkorridor als Rasterzellen: "cell_mm=500" + je Zeile "ix,iy"
+    cor = _corridor()
+    lines = ["cell_mm=%d" % cor["cell_mm"]] + ["%d,%d" % (a, b) for a, b in cor["cells"]]
+    return Response("\n".join(lines) + "\n", mimetype="text/plain; charset=utf-8")
 
 
 # ------------------------------------------------- Tracks servieren (aus der DB)
