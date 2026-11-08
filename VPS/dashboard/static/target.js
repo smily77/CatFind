@@ -10,7 +10,7 @@
 "use strict";
 
 const TGT = {
-  data: null, days: 7, view: null, sel: null, edit: null, onlyFired: true,
+  data: null, days: 7, view: null, sel: null, edit: null, onlyFired: true, showFox: false,
   drag: null, moved: false, timer: null,
 };
 const TGT_PARAMS = [
@@ -34,7 +34,7 @@ const TGT_PARAMS = [
   ["sit_enabled", "Nachbau aktiv (1/0)"],
 ];
 const TGT_COL = {fire:"#f43b3b", place:"#8a8f98", dev:"#e64ce6", det:"#e6a23c", inc:"#c98a3c",
-                 corr:"#2ecc71", block:"#9aa"};
+                 corr:"#2ecc71", block:"#9aa", cat:"#5dade2", fox:"#e67e22"};
 
 function tgtEl(id){ return document.getElementById(id); }
 
@@ -102,10 +102,18 @@ function tgtDraw(){
     ctx.strokeStyle = TGT_COL.inc; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(X(i.x), Y(i.y), 10, 0, 7); ctx.stroke();
   }
-  // catDetected (Normalmodell) klein, targetDetected (Gerät) als Raute
+  // von Hand bewertete Tracks des Zeitraums: Katze (blau), Fuchs (orange, zuschaltbar)
+  for(const t of (d.tracks || [])){
+    if(t.mark === "insect" && !TGT.showFox) continue;
+    ctx.strokeStyle = t.mark === "cat" ? TGT_COL.cat : TGT_COL.fox;
+    ctx.globalAlpha = 0.55; ctx.lineWidth = 1.2;
+    ctx.beginPath(); t.pts.forEach(([x,y],i)=> i ? ctx.lineTo(X(x),Y(y)) : ctx.moveTo(X(x),Y(y)));
+    ctx.stroke(); ctx.globalAlpha = 1;
+  }
+  // catDetected nur, wenn es zu einem als Katze bewerteten Track gehört; targetDetected (Gerät) als Raute
   for(const a of (d.acts || [])){
-    if(a.kind === "det"){ ctx.fillStyle = TGT_COL.det; ctx.globalAlpha = 0.6;
-      ctx.beginPath(); ctx.arc(X(a.wx), Y(a.wy), 2.5, 0, 7); ctx.fill(); ctx.globalAlpha = 1; }
+    if(a.kind === "det" && a.track){ ctx.fillStyle = TGT_COL.det;
+      ctx.beginPath(); ctx.arc(X(a.wx), Y(a.wy), 3, 0, 7); ctx.fill(); }
     if(a.kind === "tgt"){ const x = X(a.wx), y = Y(a.wy); ctx.fillStyle = TGT_COL.dev;
       ctx.beginPath(); ctx.moveTo(x, y-8); ctx.lineTo(x+8, y); ctx.lineTo(x, y+8); ctx.lineTo(x-8, y); ctx.closePath(); ctx.fill(); }
   }
@@ -119,7 +127,7 @@ function tgtDraw(){
     ctx.beginPath(); ctx.arc(X(e.x), Y(e.y), hot?8:6, 0, 7); ctx.stroke();
   }
   ctx.fillStyle = "#778"; ctx.font = "11px system-ui";
-  ctx.fillText(TGT.edit ? "Korridor bearbeiten: Klick schaltet eine 0,5-m-Zelle um" : "1 m Raster · blau = Dichte der Katzen-Tracks · grün = Korridor", 8, H-8);
+  ctx.fillText(TGT.edit ? "Korridor bearbeiten: Klick schaltet eine 0,5-m-Zelle um" : "1 m Raster · Zellen blau = Dichte aller Katzen-Tracks · grün = Korridor · Linien = bewertete Tracks im Zeitraum", 8, H-8);
 }
 
 function tgtRenderInfo(){
@@ -127,8 +135,12 @@ function tgtRenderInfo(){
   const cor = d.corridor || {};
   const fired = d.events.filter(e=>e.fired).length;
   const dev = d.acts.filter(a=>a.kind==="tgt").length;
-  el.innerHTML = `Nachbau gerechnet bis ${d.done_t ? fmtDT(d.done_t) : "…"} · ${fired} Auslösungen · ` +
-    `${dev} echte targetDetected (CatIdent)<br>Korridor: ${cor.cells?.length||0} Zellen, ` +
+  const both = d.events.filter(e=>e.fired && e.dev_match).length;
+  const devOnly = d.acts.filter(a=>a.kind==="tgt" && !a.vps_match).length;
+  const nCat = d.tracks.filter(t=>t.mark==="cat").length, nFox = d.tracks.filter(t=>t.mark==="insect").length;
+  el.innerHTML = `Nachbau gerechnet bis ${d.done_t ? fmtDT(d.done_t) : "…"} · ${fired} Auslösungen (VPS) · ` +
+    `${dev} echte targetDetected (CatIdent)<br>Abgleich: ${both} beide · ${fired-both} nur VPS · ${devOnly} nur Gerät` +
+    `<br>Bewertete Tracks im Zeitraum: ${nCat} Katze · ${nFox} Fuchs<br>Korridor: ${cor.cells?.length||0} Zellen, ` +
     `${escapeHtml(cor.source||"")}${cor.n_tracks ? ` aus ${cor.n_tracks} Katzen-Tracks (Schwelle ${Math.round((cor.thr||0)*100)} %)` : ""}`;
 }
 
@@ -136,7 +148,7 @@ function tgtRenderList(){
   const el = tgtEl("tgtList"), d = TGT.data; if(!el || !d) return;
   const evs = d.events.filter(e=>!TGT.onlyFired || e.fired).slice().reverse().slice(0, 300);
   el.innerHTML = evs.map(e=>`<div class="tgtRow${e.fired?' fired':''}${TGT.sel===e.id?' sel':''}" data-id="${e.id}">
-      <b>${e.fired ? "🎯 hätte geschossen" : "– nicht"}</b> · ${fmtDT(e.fired ? e.t_fire : e.t_first)} · #${e.sender} ·
+      <b>${e.fired ? "🎯 hätte geschossen" : "– nicht"}</b>${e.fired ? (e.dev_match ? " · Gerät ✓" : " · Gerät ✗") : ""} · ${fmtDT(e.fired ? e.t_fire : e.t_first)} · #${e.sender} ·
       ${(e.x/1000).toFixed(1)} / ${(e.y/1000).toFixed(1)} m${e.in_corr?' · Korridor':''}
       <small>sitzt ${Math.round(e.sit_s)} s · Streuung ${e.sdx}/${e.sdy} mm · ${e.rate}/s · Lücke ${e.maxgap} s · Ankunft ${((e.arrive_mm||0)/1000).toFixed(1)} m${e.reason?' · <i>'+escapeHtml(e.reason)+'</i>':''}</small>
     </div>`).join("") || "<div class='hint'>— keine Sitzplätze im Zeitraum —</div>";
@@ -155,13 +167,14 @@ function tgtDayKey(t){ const d = new Date(t*1000); return `${d.getFullYear()}-${
 function tgtRenderDays(){
   const el = tgtEl("tgtDays"), d = TGT.data; if(!el || !d) return;
   const days = {};
-  const get = k => days[k] || (days[k] = {det:0, hit:0, fire:0, dev:0, inc:0});
-  for(const a of d.acts){ if(a.kind==="det") get(tgtDayKey(a.t)).det++; if(a.kind==="hit") get(tgtDayKey(a.t)).hit++; if(a.kind==="tgt") get(tgtDayKey(a.t)).dev++; }
+  const get = k => days[k] || (days[k] = {det:0, detCat:0, hit:0, fire:0, dev:0, both:0, inc:0});
+  for(const e of d.events) if(e.fired && e.dev_match) get(tgtDayKey(e.t_fire)).both++;
+  for(const a of d.acts){ if(a.kind==="det"){ get(tgtDayKey(a.t)).det++; if(a.track) get(tgtDayKey(a.t)).detCat++; } if(a.kind==="hit") get(tgtDayKey(a.t)).hit++; if(a.kind==="tgt") get(tgtDayKey(a.t)).dev++; }
   for(const e of d.events) if(e.fired) get(tgtDayKey(e.t_fire)).fire++;
   for(const i of d.incidents) get(tgtDayKey(i.t_sit0)).inc++;
   const keys = Object.keys(days).sort().reverse();
-  el.innerHTML = `<table class="tgtTab"><tr><th>Tag</th><th title="catDetected des Normalmodells (CatIdent)">Normal</th><th title="Schüsse der Aktoren">Schüsse</th><th title="Auslösungen des VPS-Nachbaus">Ziel (VPS)</th><th title="targetDetected des CatIdent (Schattenbetrieb)">Ziel (Gerät)</th><th title="Kot-Verdachte">Kot?</th></tr>` +
-    keys.map(k=>{ const v = days[k]; return `<tr><td>${k.slice(5)}</td><td>${v.det}</td><td>${v.hit}</td><td>${v.fire}</td><td>${v.dev}</td><td>${v.inc}</td></tr>`; }).join("") + "</table>";
+  el.innerHTML = `<table class="tgtTab"><tr><th>Tag</th><th title="catDetected des Normalmodells (CatIdent), davon zu einem als Katze bewerteten Track">Normal (Katze)</th><th title="Schüsse der Aktoren">Schüsse</th><th title="Auslösungen des VPS-Nachbaus">Ziel VPS</th><th title="targetDetected des CatIdent (Schattenbetrieb)">Ziel Gerät</th><th title="VPS-Auslösung mit passendem targetDetected (±15 s, ≤1,5 m)">beide</th><th title="Kot-Verdachte">Kot?</th></tr>` +
+    keys.map(k=>{ const v = days[k]; return `<tr><td>${k.slice(5)}</td><td>${v.det} (${v.detCat})</td><td>${v.hit}</td><td>${v.fire}</td><td>${v.dev}</td><td>${v.both}</td><td>${v.inc}</td></tr>`; }).join("") + "</table>";
 }
 
 function tgtRenderParams(){
@@ -237,6 +250,7 @@ function tgtBind(){
   tgtEl("tgtDays").addEventListener("click", ()=>{});
   tgtEl("tgtRange").onchange = e=>{ TGT.days = +e.target.value; tgtLoad(); };
   tgtEl("tgtOnlyFired").onchange = e=>{ TGT.onlyFired = e.target.checked; tgtRenderList(); tgtDraw(); };
+  tgtEl("tgtShowFox").onchange = e=>{ TGT.showFox = e.target.checked; tgtDraw(); };
   tgtEl("tgtReload").onclick = tgtLoad;
   tgtEl("tgtParamSave").onclick = tgtSaveParams;
   tgtEl("tgtParamDef").onclick = async ()=>{

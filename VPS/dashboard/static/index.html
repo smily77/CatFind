@@ -285,10 +285,11 @@
       </div>
       <div id="tgtSide">
         <h3 style="margin-top:0">Zielmodell „Sitzende Katze"</h3>
-        <div class="manHelp">Zweites, unabhängiges Modell neben dem Normalmodell: meldet nur Tiere, die sich <b>hinsetzen</b> — ausserhalb des Katzenkorridors nach der Sitzdauer, im Korridor erst nach langer Zeit. Läuft im CatIdent (<b>targetDetected</b>, heute im Schattenbetrieb: kein Aktor hört darauf) und hier als Nachbau über die aufgezeichneten Meldungen. Rot = hätte geschossen, Raute = echtes targetDetected des CatIdent, oranger Punkt = catDetected (Normalmodell), brauner Ring = Kot-Verdacht. Doppelklick in der Liste öffnet die Stelle im Analyse-Tab.</div>
+        <div class="manHelp">Zweites, unabhängiges Modell neben dem Normalmodell: meldet nur Tiere, die sich <b>hinsetzen</b> — ausserhalb des Katzenkorridors nach der Sitzdauer, im Korridor erst nach langer Zeit. Läuft im CatIdent (<b>targetDetected</b>, heute im Schattenbetrieb: kein Aktor hört darauf) und hier als Nachbau über die aufgezeichneten Meldungen. Rot = hätte geschossen, Raute = echtes targetDetected des CatIdent, blaue Linien = von Hand als Katze bewertete Tracks im Zeitraum, oranger Punkt = catDetected (Normalmodell) eines solchen Tracks, brauner Ring = Kot-Verdacht. Doppelklick in der Liste öffnet die Stelle im Analyse-Tab.</div>
         <label>Zeitraum</label>
         <select id="tgtRange"><option value="1">letzter Tag</option><option value="3">3 Tage</option><option value="7" selected>7 Tage</option><option value="30">30 Tage</option><option value="0">alles (ab 16.10.)</option></select>
         <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="tgtOnlyFired" checked> nur Auslösungen zeigen</label>
+        <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="tgtShowFox"> Fuchs-Tracks zeigen</label>
         <button class="tab" id="tgtReload">neu laden</button>
         <div class="hint" id="tgtInfo" style="padding:6px 0"></div>
         <h3>Vergleich je Tag</h3>

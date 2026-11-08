@@ -2402,10 +2402,25 @@ def _sit_step():
         return len(rows) >= SIT_CHUNK
 
 
+SIT_MATCH_S = 15.0       # Abgleich Geraet <-> VPS-Nachbau: Zeitfenster ...
+SIT_MATCH_MM = 1500      # ... und Abstand
+
+
+def _thin(pts, n=80):
+    """Punktliste fuer die Karte ausduennen (Anfang/Ende behalten)."""
+    if len(pts) <= n:
+        return [[p[1], p[2]] for p in pts]
+    step = (len(pts) - 1) / (n - 1)
+    return [[pts[round(i * step)][1], pts[round(i * step)][2]] for i in range(n)]
+
+
 @app.get("/sit")
 def sit_view():
     # Tab "Zielmodell": Ereignisse des Nachbaus + echte targetDetected des CatIdent
-    # (actor_log 'tgt') + catDetected (Normalmodell) + Kot-Verdachte im Zeitraum.
+    # (actor_log 'tgt') + von Hand bewertete Tracks (Katze/Fuchs) samt den catDetected,
+    # die zu einem als Katze bewerteten Track gehoeren + Kot-Verdachte im Zeitraum.
+    # Ungefilterte catDetected waeren ueberall (Personen, Maeher) - daran laesst sich
+    # kein Korridor ablesen.
     t1 = float(request.args.get("t1", time.time()))
     t0 = float(request.args.get("t0", t1 - 7 * 86400))
     with _reading() as db:
@@ -2415,6 +2430,9 @@ def sit_view():
         acts = db.execute("SELECT t,sender,kind,wx,wy,a,b,c,d FROM actor_log "
                           "WHERE kind IN ('det','tgt','hit') AND t>=? AND t<=? ORDER BY t",
                           (t0, t1)).fetchall()
+        trs = db.execute("SELECT t.id,t.key,t.t0,t.t1,t.data,m.mark FROM tracks t "
+                         "JOIN track_marks m ON m.key=t.key WHERE m.mark IN ('cat','insect') "
+                         "AND t.t1>=? AND t.t0<=? ORDER BY t.t0", (t0, t1)).fetchall()
     out = []
     for rid, a, f, e, snd, x, y, sit_s, fired, reason, data in ev:
         d = json.loads(data or "{}")
@@ -2423,11 +2441,44 @@ def sit_view():
                     "sdx": d.get("sdx"), "sdy": d.get("sdy"), "rate": d.get("rate"),
                     "maxgap": d.get("maxgap"), "arrive_mm": d.get("arrive_mm"),
                     "in_corr": d.get("in_corr"), "frz": d.get("frz")})
+    tracks = []
+    for rid, key, a, b, data, mark in trs:
+        try:
+            pts = json.loads(data).get("pts") or []
+        except Exception:                                    # noqa: BLE001
+            pts = []
+        if len(pts) >= 2:
+            tracks.append({"id": rid, "key": key, "t0": a, "t1": b, "mark": mark,
+                           "pts_full": pts, "pts": _thin(pts)})
+    acts_out = [{"t": r[0], "sender": r[1], "kind": r[2], "wx": r[3], "wy": r[4],
+                 "a": r[5], "b": r[6], "c": r[7], "d": r[8]} for r in acts]
+    # catDetected einem als Katze bewerteten Track zuordnen (Zeit + Ort)
+    cats = [t for t in tracks if t["mark"] == "cat"]
+    for a_ in acts_out:
+        if a_["kind"] != "det":
+            continue
+        for t in cats:
+            if not (t["t0"] - 2 <= a_["t"] <= t["t1"] + 5):
+                continue
+            if any(math.hypot(q[1] - a_["wx"], q[2] - a_["wy"]) <= 1500 for q in t["pts_full"]):
+                a_["track"] = t["id"]
+                break
+    for t in tracks:
+        t.pop("pts_full")
+    # Abgleich echtes targetDetected (Geraet) <-> Ausloesung des VPS-Nachbaus
+    tgts = [a_ for a_ in acts_out if a_["kind"] == "tgt"]
+    for e in out:
+        if not e["fired"]:
+            continue
+        for a_ in tgts:
+            if (abs(a_["t"] - e["t_fire"]) <= SIT_MATCH_S and
+                    math.hypot(a_["wx"] - e["x"], a_["wy"] - e["y"]) <= SIT_MATCH_MM):
+                e["dev_match"] = True
+                a_["vps_match"] = e["id"]
+                break
     with _db_lock:
         done = _meta_get("sit_done_t")
-    return jsonify(events=out,
-                   acts=[{"t": r[0], "sender": r[1], "kind": r[2], "wx": r[3], "wy": r[4],
-                          "a": r[5], "b": r[6], "c": r[7], "d": r[8]} for r in acts],
+    return jsonify(events=out, acts=acts_out, tracks=tracks,
                    incidents=[i for i in _incident_rows() if t0 <= i["t_sit0"] <= t1],
                    params=_sit_params(), defaults=sitmodel.DEFAULT_SIT, blocks=_sit_blocks(),
                    corridor=_corridor(), done_t=float(done) if done else None,
