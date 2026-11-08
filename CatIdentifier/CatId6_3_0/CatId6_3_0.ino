@@ -126,6 +126,7 @@ void loop() {
   if (ucDataReceived) { ucDataReceived = false; handleCommand(lastUcMsg); }
   if (mcDataReceived) { mcDataReceived = false; handleBusMsg(lastMcMsg); }
   ctTick();                          // abgelaufene Tracks/Sturm-Slots aufraeumen
+  sitTick();                         // Zielmodell: Nachfuehrung ausgeloester Sitzplaetze
   serviceNoShotMap();                // Erstbezug + stuendliches Fangnetz (hwProc.ino)
   // Fensterwechsel der NoShot-Zeit einmalig melden (Debug-Sichtbarkeit im VPS)
   static bool quietWas = false;

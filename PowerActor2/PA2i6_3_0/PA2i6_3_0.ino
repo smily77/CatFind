@@ -141,6 +141,16 @@ void handleBusMsg(const xMsg& m) {
       if (getPayload(m, cd)) onCatTracked(cd);
       break;
     }
+    case targetDetected: {           // Zielmodell "Sitzende Katze" (Cat Identifier sitModel)
+      catDetectedPayload cd;
+      if (getPayload(m, cd)) onTargetDetected(cd);
+      break;
+    }
+    case targetTracked: {
+      catDetectedPayload cd;
+      if (getPayload(m, cd)) onTargetTracked(cd);
+      break;
+    }
     case catObserved: {              // nur fuer den Laser-Folgemodus (stgLaserFollow)
       posPayload p;
       if (getPayload(m, p) && p.worldValid) onCatObserved(p.worldX, p.worldY);

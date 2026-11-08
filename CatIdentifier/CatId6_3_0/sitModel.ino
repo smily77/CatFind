@@ -18,6 +18,8 @@
 
 #define SIT_PARAMS_PATH "/sitparams.csv"
 #define SIT_CORR_PATH   "/sitcorr.csv"
+#define SIT_TRACK_HOLD_S 6.0            // Nachfuehrung haelt so lange ueber Radarluecken (PA2
+                                        // verliert einen Track nach 2,5 s ohne Nachfuehrung)
 
 static SitParams SP;
 static SitCand   sitC[SIT_MAX_CAND];
@@ -287,20 +289,28 @@ void sitFeed(uint8_t sender, int32_t x, int32_t y) {
     c.lx = x; c.ly = y;
   }
   SitCand& c = sitC[best];
-  // 5. ausloesen, 6. nachfuehren
-  if (!c.fired) {
-    if (sitReady(c)) {
-      c.fired = true; c.tFire = c.tTrack = t;
-      c.inCorr = sitInCorr(sitCx(c), sitCy(c));
-      sitAnnounce(c);
-    }
-  } else if (!c.done) {
-    if (t - c.tFire > SP.track_max_s) c.done = true;
-    else if (t - c.tTrack >= SP.track_period_s) {
-      c.tTrack = t;
-      catDetectedPayload cd;
-      sitPayload(c, cd);
-      broadcastMsg(targetTracked, cd);
-    }
+  // 5. ausloesen (6. Nachfuehrung in sitTick)
+  if (!c.fired && sitReady(c)) {
+    c.fired = true; c.tFire = c.tTrack = t;
+    c.inCorr = sitInCorr(sitCx(c), sitCy(c));
+    sitAnnounce(c);
+  }
+}
+
+// 6. Nachfuehrung ausgeloester Plaetze (aus loop): alle track_period_s, auch wenn das Radar
+// die sitzende Katze gerade verloren hat - aber hoechstens SIT_TRACK_HOLD_S nach der letzten
+// Meldung und bis track_max_s nach dem Ausloesen. Gleiche Sperren wie catTracked.
+void sitTick() {
+  if (!SP.enabled || !deviceActive() || ctInQuietWindow()) return;
+  double t = ctNow();
+  for (int i = 0; i < SIT_MAX_CAND; i++) {
+    SitCand& c = sitC[i];
+    if (!c.used || !c.fired || c.done) continue;
+    if (t - c.tFire > SP.track_max_s) { c.done = true; continue; }
+    if (t - c.tLast > SIT_TRACK_HOLD_S || t - c.tTrack < SP.track_period_s) continue;
+    c.tTrack = t;
+    catDetectedPayload cd;
+    sitPayload(c, cd);
+    broadcastMsg(targetTracked, cd);
   }
 }

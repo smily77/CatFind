@@ -129,7 +129,17 @@ struct PoseHand {
 // persistiert). stgLaserFollow = Test: Laser folgt jedem catObserved (Default AUS, nicht
 // persistiert). stgAutoCalib = Traegerpose automatisch suchen (beim Start + alle 5 min ohne
 // Pose; AUS z.B. drinnen, "Kalibrieren" geht trotzdem), Default AN, persistiert.
-#define STG_SUPPORTED ((1u<<stgLidarMotor)|(1u<<stgRadarPower)|(1u<<stgLaserFollow)|(1u<<stgAutoCalib))
+// Zielquelle (Konzept "Zielmodell Sitzende Katze"): Dreifach-Schalter aus zwei Bits, die der
+// PA2 sonst nicht nutzt (STG_COUNT ist voll; Bits sind je Geraetetyp belegt):
+//   stgTgtModel AUS             = Normal: nur catDetected/catTracked (Normalmodell)
+//   stgTgtModel AN, stgTgtOnly AUS = Beide
+//   stgTgtModel AN, stgTgtOnly AN  = Ziel: nur targetDetected/targetTracked (Zielmodell)
+// Default Normal, persistiert (ueberdauert Neustart/Stromausfall).
+#define stgTgtModel stgCamAi            // Bit 6 (CatCam: Kamera-KI)
+#define stgTgtOnly  stgRadarFullRasen   // Bit 7 (Radar: volle RasenKarte)
+#define STG_SUPPORTED ((1u<<stgLidarMotor)|(1u<<stgRadarPower)|(1u<<stgLaserFollow)|(1u<<stgAutoCalib)|\
+                       (1u<<stgTgtModel)|(1u<<stgTgtOnly))
 #define STG_DEFAULT   ((1u<<stgLidarMotor)|(1u<<stgRadarPower)|(1u<<stgAutoCalib))
-#define STG_PERSIST   ((1u<<stgLidarMotor)|(1u<<stgRadarPower)|(1u<<stgAutoCalib))
+#define STG_PERSIST   ((1u<<stgLidarMotor)|(1u<<stgRadarPower)|(1u<<stgAutoCalib)|\
+                       (1u<<stgTgtModel)|(1u<<stgTgtOnly))
 #define STG_ACTIONS   (1u<<actCalibrate)   // "Kalibrieren" = Traegerpose neu bestimmen

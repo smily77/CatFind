@@ -19,6 +19,14 @@ uint16_t aimServo = SERVO_CENTER;
 float    aimDist = 0;
 String   lastReason = "";
 uint8_t  shots = 0;
+bool     engTarget = false;            // laufende Verfolgung stammt vom Zielmodell (targetDetected)
+
+// Zielquelle (Schalter stgTgtModel/stgTgtOnly, siehe hwDef.h)
+static bool useNormal() { return !(settingOn(stgTgtModel) && settingOn(stgTgtOnly)); }
+static bool useTarget() { return settingOn(stgTgtModel); }
+String tgtSourceStr() {
+  return !settingOn(stgTgtModel) ? "Normal" : (settingOn(stgTgtOnly) ? "Ziel" : "Beide");
+}
 
 // Eingefrorene Position: liefert der Identifier laenger als FROZEN_MS bitgenau denselben Punkt
 // (Radar haengt, 2026-11-01/02 16 Schuss ins Leere), zaehlt das nicht mehr als Nachfuehrung -
@@ -96,7 +104,11 @@ static String atStr(int32_t x, int32_t y) {
 
 // Bestaetigte Katze (catDetected) oder Nachfuehrung (catTracked): Position uebernehmen,
 // bei Bedarf die Verfolgung starten.
-static void trackUpdate(const catDetectedPayload& cd, bool detected) {
+static void trackUpdate(const catDetectedPayload& cd, bool detected, bool target) {
+  if (target ? !useTarget() : !useNormal()) return;   // Zielquelle passt nicht
+  // eine laufende Verfolgung wechselt nicht die Quelle (sonst springt im Modus "Beide"
+  // das Ziel zwischen laufender und sitzender Katze)
+  if (engState != ENG_IDLE && engTarget != target) return;
   if (poseBusy()) {                   // Turm schwenkt fuer die Traegerpose
     if (detected) sendUdpTextln("PowerActor2: Katze bei " + atStr(cd.worldX, cd.worldY) +
                                 ", Traegerpose-Suche laeuft");
@@ -107,7 +119,9 @@ static void trackUpdate(const catDetectedPayload& cd, bool detected) {
                                 (inhibited() ? ", Feuersperre" : ", gesichert"));
     return;
   }
-  if (cd.worldX == rxX && cd.worldY == rxY) {
+  // Eingefroren-Pruefung nur fuer das Normalmodell: das Zielmodell liefert den Schwerpunkt
+  // einer SITZENDEN Katze (darf gleich bleiben) und verwirft eingefrorene Radarziele selbst.
+  if (!target && cd.worldX == rxX && cd.worldY == rxY) {
     if (millis() - rxSince > FROZEN_MS) {
       if (!rxFrozenNoted) {
         rxFrozenNoted = true;
@@ -115,7 +129,7 @@ static void trackUpdate(const catDetectedPayload& cd, bool detected) {
       }
       return;                         // keine Nachfuehrung -> Track verloren
     }
-  } else {
+  } else if (!target) {
     rxX = cd.worldX; rxY = cd.worldY; rxSince = millis(); rxFrozenNoted = false;
   }
   tgtX = cd.worldX; tgtY = cd.worldY;
@@ -126,8 +140,10 @@ static void trackUpdate(const catDetectedPayload& cd, bool detected) {
   engageStart = aimStart = millis();
   lastReason = "";
   shots = 0;
+  engTarget = target;
   lidarStart();                       // misst waehrend der Verfolgung mit (Protokoll)
-  sendUdpTextln("PowerActor2: verfolge Katze ab " + atStr(tgtX, tgtY));
+  sendUdpTextln(target ? "PowerActor2: verfolge sitzendes Tier (Zielmodell) ab " + atStr(tgtX, tgtY)
+                       : "PowerActor2: verfolge Katze ab " + atStr(tgtX, tgtY));
 }
 
 void onCatDetected(const catDetectedPayload& cd) {
@@ -135,10 +151,20 @@ void onCatDetected(const catDetectedPayload& cd) {
   static unsigned long lastMs = 0;
   bool dup = millis() - lastMs < CATDET_DUP_MS && memcmp(&last, &cd, sizeof cd) == 0;
   last = cd; lastMs = millis();
-  if (!dup) trackUpdate(cd, true);
+  if (!dup) trackUpdate(cd, true, false);
 }
 
-void onCatTracked(const catDetectedPayload& cd) { trackUpdate(cd, false); }
+void onCatTracked(const catDetectedPayload& cd) { trackUpdate(cd, false, false); }
+
+void onTargetDetected(const catDetectedPayload& cd) {
+  static catDetectedPayload last;
+  static unsigned long lastMs = 0;
+  bool dup = millis() - lastMs < CATDET_DUP_MS && memcmp(&last, &cd, sizeof cd) == 0;
+  last = cd; lastMs = millis();
+  if (!dup) trackUpdate(cd, true, true);
+}
+
+void onTargetTracked(const catDetectedPayload& cd) { trackUpdate(cd, false, true); }
 
 // Laser-Folgemodus: nur ohne laufende Verfolgung, nur scharf, ohne Sperre, mit Pose
 // und nur in der No-Shot-Karte. Reichweite/Veranda gelten fuer den Laser nicht.

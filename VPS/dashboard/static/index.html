@@ -477,6 +477,10 @@ const STG=["HB-Anzeige","Cat-Anzeige","Auto Pose kopieren","Auto-Kalibrierung / 
 // Je zwei Bits bilden EINEN Schalter AUS/EIN/AUTO (AUS: Light 0 | EIN: Light 1, Auto 0 | AUTO: beide 1)
 const TRI=[
   {l:9,  a:10, name:"IR-Scheinwerfer", tip:"AUS = immer aus · EIN = nachts an (LDR) · AUTO = nachts an, nur wenn ein Sensor catObserved meldet (60 s)"},
+  // PowerActor2 (#4): Zielquelle - Bits 6/7 sind beim PA2 so belegt (STG_COUNT voll, Bits je
+  // Geraetetyp), darum nur fuer diese Geraete. Normal = Normalmodell (catDetected), Beide,
+  // Ziel = nur Zielmodell "Sitzende Katze" (targetDetected).
+  {l:6, a:7, ids:[4], name:"Zielquelle", labels:["Normal","Beide","Ziel"], tip:"Normal = nur catDetected (Normalmodell) · Beide = catDetected und targetDetected · Ziel = nur targetDetected (Zielmodell Sitzende Katze, Tab Zielmodell)"},
   {l:11, a:12, name:"Front-Licht (weiss)", tip:"Dome: beide Pixel weiss, volle Helligkeit · EIN = dauernd · AUTO = 60 s nach eigener catObserved · leuchtet nur, wenn HB- und Cat-Anzeige AUS sind"},
 ];
 const ACT=[{l:"Pose kopieren",cmd:21,info:0},{l:"Kalibrieren",cmd:18,info:45000},{l:"Pose löschen",cmd:19,info:0},{l:"Parameter laden",cmd:22,info:0},{l:"Foto jetzt",cmd:23,info:0}];
@@ -715,10 +719,11 @@ function renderCtrl(settings,force){
     h+=`<div class="card"><h3>${s.name} <small style="color:#666">#${id}${s.ip?` .${s.ip}`:""} · ${Math.round(s.age)}s</small></h3>`;
     const triBits=new Set();
     for(const t of TRI) if(sup&(1<<t.l)){
+      if(t.ids && !t.ids.includes(+id)) continue;   // Bit-Paar bei diesem Geraet anders belegt
       triBits.add(t.l); triBits.add(t.a);
       const mode=!(val&(1<<t.l))?"AUS":((val&(1<<t.a))?"AUTO":"EIN");
       h+=`<div class="srow"><span title="${t.tip}">${t.name}</span><span class="seg" style="flex:none">`+
-         ["AUS","EIN","AUTO"].map(m=>`<button class="sw ${m===mode?'sel':''}" onclick="setTri(${id},${t.l},${t.a},'${m}')">${m}</button>`).join("")+`</span></div>`;
+         ["AUS","EIN","AUTO"].map((m,k)=>`<button class="sw ${m===mode?'sel':''}" onclick="setTri(${id},${t.l},${t.a},'${m}')">${t.labels?t.labels[k]:m}</button>`).join("")+`</span></div>`;
     }
     const e=lastEnv[id];
     if(e){

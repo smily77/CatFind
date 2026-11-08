@@ -1456,7 +1456,12 @@ heute `catTrack.ino` ↔ `catmodel.py`.
 - Rückblick 16.10.–08.11.: beide Kotfälle lösen aus (81320 nach 21 s, 83472 nach 30 s, je
   20–30 s bevor die Katze aufstand), dazu 7 weitere Auslösungen und ein Block von 13 am 16.10.
   14–15 Uhr (vermutlich Mäher/Gartenarbeit).
-- Offen: Stufe 4 (Schalter im Aktor), Stufe 5 (Wasser).
+- Stufe 4 umgesetzt (2026-11-08): PA2-Schalter **Zielquelle Normal / Beide / Ziel** (Bits 6/7,
+  persistiert, Default Normal; Steuerungs-Tab). Eine laufende Verfolgung wechselt die Quelle
+  nicht; für das Zielmodell entfällt die Eingefroren-Prüfung des PA2. Der CatIdent führt einen
+  ausgelösten Sitzplatz bis 6 s nach der letzten Radarmeldung weiter nach (`sitTick`), damit der
+  PA2 die Katze bei Radarlücken nicht verliert.
+- Offen: Stufe 5 (Wasser, neuer Standort).
 
 ### Nicht Teil dieses Abschnitts
 Die konkrete Firmware, die Parameterwerte und die Tab-Gestaltung werden erst festgelegt,

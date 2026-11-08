@@ -373,6 +373,8 @@ constexpr uint16_t mapChunkBytes = 48;   // 7 (Meta) + 48 = 55 <= maxPayloadLen 
                             // PowerActor2: Speisung des LD06 (Relais GPIO26)          [persistiert]
 #define stgCatDetLed    5   // catDetected-Anzeige an/aus (Manager: rotes Blinken beim EMPFANG) [persistiert]
 #define stgCamAi        6   // CatCam: KI-Erkennung (Katze -> catObserved+Foto) an/aus       [persistiert]
+                            // PowerActor2: Zielquelle "Zielmodell an" (mit Bit 7 "nur Zielmodell":
+                            // AUS = Normal, 6 = Beide, 6+7 = Ziel), siehe PA2 hwDef.h [persistiert]
 #define stgRadarFullRasen 7 // HLK-Radar: meldet volle RasenKarte statt NoShot-gefiltert
                             // (mehr Randdaten fuers NoShot-Editieren, aber mehr Bus-/VPS-
                             // Traffic) - Default AUS (NoShot-gefiltert), NICHT persistiert:
