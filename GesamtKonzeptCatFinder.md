@@ -1331,3 +1331,117 @@ Abstand. So lange bliebe der Aktor nicht wach, die Grenze dient nur dem Zählen.
 ### Nicht Teil dieses Abschnitts
 Die konkrete Umsetzung, die Bauteilwahl und die Firmware werden erst festgelegt, wenn die
 offenen Punkte geklärt sind.
+
+## Aufgabe: Zielmodell „Sitzende Katze" (Entwurf, Stand 2026-11-08)
+
+Nicht zur Umsetzung freigegeben. Grundlage: Kot-Verdacht (Incident-Tracer Stufe 1,
+`VPS/dashboard/incidents.py`) und die Auswertung der Kotfälle 16.10. und 07.11.
+
+### Ausgangslage
+- Viele Katzen laufen regelmässig über den Rasen und koten nicht. Sie sollen in Ruhe
+  gelassen werden; nass werden soll nur, wer sich zum Koten hinsetzt.
+- Es gibt einen deutlichen **Katzenkorridor**: Die 329 als Katze bewerteten Tracks laufen
+  zum grossen Teil auf einer Spur bei x ≈ 7,5–8,0 m von hinten (y 10,5) bis vorne (y 1,5).
+- Beide sicheren Kotplätze (6,2/9,8 und 7,0/9,4) liegen **1–1,5 m neben** dem Korridor.
+  Ankunft und Sitzen waren ausserhalb; 83472 ist nach dem Koten im Korridor davongerannt.
+- Der Korridor allein trennt nicht: 40–50 % der normalen Katzen-Tracks liegen ebenfalls
+  überwiegend ausserhalb. **Das Sitzen trennt stark:** Seit 16.10. gab es genau zwei
+  Sitzphasen nach dem Kot-Profil, beide waren Kotfälle.
+- Reichweite ist kein Thema: Der PA wird für den Betrieb mit Wasser ohnehin neu platziert.
+
+### Grundidee
+Zwei Modelle laufen **parallel und unabhängig**:
+- **Normalmodell:** der heutige CatIdent (`catTrack.ino`), bleibt unverändert.
+- **Zielmodell:** meldet nur Tiere, die sich ausserhalb des Korridors hinsetzen.
+
+Ein **Schalter im Aktor** legt fest, auf welches Modell er hört. Beide Modelle rechnen
+immer; so lässt sich jederzeit vergleichen, und Umschalten ändert keine Erkennung.
+
+### Sitzmodell
+Arbeitet mit **Sitzplätzen** statt Tracks. Die Tracks des CatIdent reissen nach 1,5 s
+Lücke ab, 83472 hatte aber 17,5 s Lücke mitten im Sitzen.
+- Jede Radarmeldung fällt in einen Sitzplatz-Kandidaten (Kreis 0,6 m) oder eröffnet einen
+  neuen. Der Kandidat sammelt Anwesenheitszeit, verzeiht Lücken bis ca. 25 s, danach verfällt er.
+- **Auslösung**, wenn alles erfüllt ist:
+  - vorher Ankunft gesehen (mind. 0,5 m Bewegung zum Platz hin),
+  - sitzt mindestens T s mit Streuung ≤ 150 mm und mind. 1 Meldung/s,
+  - keine Sperrstelle, keine Mäherzeit, keine Personen-Sperre (fireInhibit),
+  - **Korridor-Regel:** ausserhalb T = 15–20 s (Startwert), innerhalb nie oder nur mit
+    deutlich längerem T (offen).
+- Danach fortlaufende Zielposition, bis sich das Tier mehr als 1 m entfernt.
+- Live ist das Weggehen noch nicht bekannt; das Abgang-Kriterium der nachträglichen
+  Prüfung entfällt.
+- Zeitbudget: Die Katzen sassen 38–56 s; Auslösung nach ~20 s lässt 20–35 s zum Zielen.
+- Offen: eingefrorene Radarziele (bitgenau gleiche Punkte > 30 s). Auch echtes Sitzen
+  erzeugte 99 gleiche Punkte am Stück, deshalb in der Testphase nur mitschreiben.
+
+### Katzenkorridore
+- **Lernen** auf dem VPS aus den als Katze bewerteten Tracks: Zellen (0,5 m), durch die
+  mind. x % der Tracks laufen, als Polygon.
+- **Bearbeiten** von Hand wie Noshot- und Rasenkarte.
+- **Verteilen** als neuer Kartentyp `korridor` über den bestehenden Kartenweg
+  (VPS-Editor → Manager → Gerät). Das Gerät speichert ihn dauerhaft; der laufende Betrieb
+  braucht weder Manager noch VPS.
+
+### Wo läuft das Zielmodell?
+
+| Option | Vorteil | Nachteil |
+|---|---|---|
+| A: eigenes Gerät „Target Identifier" (z. B. XIAO S3, neue Busnummer) | völlig unabhängig, eigener Funkempfang, eigener Ausfall | ein Gerät mehr, neue Busnummer = `deviceCount` + alle neu flashen |
+| B: zweites Modul in der CatIdent-Firmware | keine neue Hardware | gemeinsamer Absturz/OTA, Code muss streng getrennt bleiben |
+| C: KIVision-Pi | Python, gleicher Code wie VPS, Kamera als Zweitmeinung | WLAN schwach, Multicast heute nur per Manager-Weiterleitung |
+| D: VPS | einfach | verstösst gegen „keine zentrale Abhängigkeit" |
+
+Zusätzlich in jedem Fall ein **Python-Nachbau auf dem VPS** für die Auswertung, wie
+heute `catTrack.ino` ↔ `catmodel.py`.
+
+**Rechenkapazität für Variante B** (Messung 2026-11-08, Kompilat `CatId6_3_0` für XIAO ESP32-S3):
+- Programmspeicher 1,13 MB von 3,34 MB (33 %).
+- Globale Variablen 78,6 kB von 320 kB, **249 kB frei**; die 8 MB PSRAM des XIAO S3 sind
+  ungenutzt.
+- Normalmodell heute: 10 Tracks à ca. 0,9 kB (Ring 48 Punkte) ≈ 9 kB, Sturm-Slots ≈ 4 kB.
+- Zielmodell zusätzlich (Schätzung): 16 Sitzplatz-Kandidaten ≈ 2 kB, Korridor-Polygone
+  wie die Erfassungs-Polygone ≈ 2 kB, also **< 5 kB**.
+- Rechenzeit: Pro Radarmeldung ein Vergleich mit wenigen Kandidaten plus ein
+  Punkt-in-Polygon-Test. Bei einigen Dutzend Meldungen/s ist das auf 240 MHz weit unter 1 %
+  Last.
+- **Fazit:** Rechenleistung und Speicher reichen für beide Modelle locker. Das Risiko von B
+  ist nicht die Leistung, sondern die Kopplung: ein Fehler, Absturz oder OTA trifft beide
+  Modelle, und beide hängen am selben WLAN-Empfang.
+- Wenn B: Zielmodell in eigener Datei (`sitModel.ino`) mit eigenem Zustand, eigenen
+  Parametern und eigenen Meldungen; gemeinsam nur der Empfang der `catObserved` und das
+  Senden. Ein späterer Umzug auf ein eigenes Gerät (A) ist dann nur noch Kopieren.
+
+### Meldungen und Schalter
+- Neue Meldungsarten `targetDetected` / `targetTracked`. Bewusst nicht `catDetected`, sonst
+  feuern alte Aktoren ohne Absenderfilter darauf (gleiche Lehre wie bei `visionObserved`).
+- **Schalter im Aktor** als dauerhafte Einstellung über den Settings-Weg (Steuerungs-Tab,
+  Display, Button): `normal` / `ziel` / `beide`. Jeder Aktor kann anders eingestellt sein;
+  funktioniert ohne VPS. Feuersperre und Button bleiben unverändert wirksam.
+
+### Neuer Tab „Zielmodell" (VPS)
+- Karte: Korridor (Dichte + Polygon), Sperrstellen, Sitzplätze mit Entscheidung
+  („hätte geschossen ab …" / „nicht, weil …").
+- Zeitleiste: Sitz-Kandidaten, Auslösungen Zielmodell und Normalmodell nebeneinander,
+  echte Schüsse.
+- Liste der Sitz-Ereignisse mit Merkmalen, verknüpft mit Kot-Verdacht und Rückmeldung.
+- Tagesvergleich: Schüsse Normalmodell vs. Zielmodell, davon Kotfälle.
+- Bedienung: Korridor lernen/bearbeiten, Parameter, Schalterstellung je Aktor.
+
+### Einführung in Stufen
+1. VPS-Nachbau und Tab: nur auswerten, auf die bisherigen Daten anwenden, Schwellen festlegen.
+2. Korridor-Karte: lernen, bearbeiten, verteilen.
+3. Zielmodell auf dem Gerät im **Schattenbetrieb**: sendet `targetDetected`, kein Aktor
+   hört darauf; live mit dem Nachbau vergleichen.
+4. Schalter im Aktor, zuerst ohne Wasser (zielen, nicht feuern).
+5. Scharf mit Wasser am neuen Standort.
+
+### Offene Punkte
+- Gerät: A (eigenes Gerät) oder B (Modul im CatIdent).
+- Sitzen im Korridor: nie schiessen oder erst nach langer Sitzzeit?
+- Fuchs: sitzt kaum, schnüffelt lange; eigene Regel oder weiter Normalmodell?
+- Lauernde Katzen ausserhalb des Korridors werden ebenfalls nass. Ist das gewollt?
+
+### Nicht Teil dieses Abschnitts
+Die konkrete Firmware, die Parameterwerte und die Tab-Gestaltung werden erst festgelegt,
+wenn die offenen Punkte geklärt sind.
