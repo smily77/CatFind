@@ -16,6 +16,13 @@
 # Radar-Bild. Deshalb fragt der Pi selbst alle STEP s beim Manager an (legt den
 # Eintrag dort an) und kuendigt sich allen an (frischt bestehende auf, z.B. PC).
 # Braucht iputils-arping.
+#
+# 2026-11-08: Die Verbindung ist fest an den WLAN-Repeater D-Link DIR-505 (192.168.0.146,
+# BSSID C8:BE:19:5E:8E:74) gebunden: -49 statt -69 dBm, 52/72 statt 1/5,5 Mbit/s, und ueber
+# den Repeater kommt sogar Multicast an. Faellt der Repeater aus, fand der Pi mit der Bindung
+# NIE wieder ins Netz. Darum hebt der erste Neuanstoss (3 min weg) die Bindung auf - der Pi
+# nimmt dann wieder irgendeinen "Rohan"-Zugangspunkt. Neu binden von Hand:
+#   sudo nmcli con modify preconfigured 802-11-wireless.bssid C8:BE:19:5E:8E:74
 
 CON=preconfigured
 STEP=30
@@ -41,6 +48,11 @@ while true; do
             exit 0
         elif [ $((down % KICK_S)) -eq 0 ]; then
             echo "WLAN seit ${down} s weg -> nmcli con up $CON"
+            bssid=$(nmcli -g 802-11-wireless.bssid con show "$CON" 2>/dev/null)
+            if [ -n "$bssid" ]; then
+                echo "Bindung an $bssid (Repeater?) aufgehoben"
+                nmcli con modify "$CON" 802-11-wireless.bssid ""
+            fi
             nmcli radio wifi on
             timeout 60 nmcli con up "$CON" || echo "nmcli con up fehlgeschlagen"
         fi
