@@ -1,7 +1,7 @@
-# PA1_1 – Ausbau Drehturm (Konzept, Stand 2026-11-09)
+# PA1_1 – Ausbau Drehturm (Konzept, Stand 2026-11-10)
 
-Status: **Überlegungen, nichts entschieden oder gebaut.** Gesprächsstand vom 2026-11-09
-(Vorarbeit 2026-11-03). Strom über die Induktivkopplung wird später betrachtet. Annahme
+Status: **Überlegungen, nichts entschieden oder gebaut.** Gesprächsstand vom 2026-11-10
+(Vorarbeit 2026-11-03 und 2026-11-09). Strom über die Induktivkopplung wird später betrachtet. Annahme
 bis dahin: Die Kopplung liefert genug Strom und 5 V.
 
 ## Ziel
@@ -26,9 +26,17 @@ Das **Wasserventil bleibt in der Basis.** Feuern geht nie über Funk.
   und kein deviceCount. Nach aussen bleibt PA1_1 ein einziges Gerät, und der Bus wird nicht
   belastet.
 - **Kanal:** Die Basis muss für den Multicast-Bus im WLAN bleiben. ESP-NOW läuft deshalb
-  auf dem WLAN-Kanal des Access Points. Der Turm-ESP meldet sich ebenfalls im WLAN an.
-  Dann stimmt der Kanal automatisch, und er lässt sich per **OTA** flashen (der Turm dreht
-  sich, ein Kabel ist unpraktisch).
+  auf dem WLAN-Kanal des Access Points. Seit 2026-11-10 meldet sich der Turm **nicht** mehr
+  dauernd im WLAN an, weil er nach jedem Einschalten schnell bereit sein muss (siehe „Turm
+  abschaltbar“):
+  - Der Turm speichert den zuletzt gültigen Kanal im NVS. Er lernt ihn bei einer
+    OTA-Anmeldung oder aus einer Nachricht der Basis.
+  - Nach dem Booten sendet er sofort auf diesem Kanal. Kommt keine Antwort, probiert er die
+    Kanäle 1–13 durch (je ca. 20 ms, zusammen höchstens ca. 0,3 s).
+  - Der Kanal des Routers ändert sich praktisch nie, am besten stellt man ihn fest ein.
+- **OTA nur auf Befehl:** Die Basis schickt „OTA-Modus“, erst dann meldet sich der Turm im
+  WLAN an und lässt sich per OTA flashen (der Turm dreht sich, ein Kabel ist unpraktisch).
+  Das stört ESP-NOW nicht, weil beides auf dem gleichen Kanal läuft.
 - **Turm → Basis:** Das Lidar wird auf dem Turm ausgelesen und geprüft. Gesendet wird ein
   kompaktes Paket (Distanz mm, Stärke, Zähler, Zeitstempel), keine rohen UART-Bytes.
   Gebündelt etwa alle 20–50 ms, nur solange die Basis Messwerte anfordert (Zielen und
@@ -40,6 +48,59 @@ Das **Wasserventil bleibt in der Basis.** Feuern geht nie über Funk.
 - Die Datenmenge ist winzig (unter 1 kB/s), die Latenz von ESP-NOW liegt bei etwa 1–3 ms,
   und die Strecke ist nur Zentimeter lang.
 - Reserve (vom 2026-11-03): IR-UART (IrDA) durch die Achse, falls die Spulenmitte frei ist.
+
+### Bluetooth geprüft und verworfen (2026-11-10)
+
+- **BLE:** Die Basis müsste WLAN (für den Bus) und BLE zugleich betreiben. Der ESP32 hat nur
+  ein 2,4-GHz-Funkteil und teilt die Sendezeit zwischen beiden auf (Coexistence). Dadurch
+  schwankt die Latenz stärker, und auch der WLAN-Empfang leidet, besonders bei Multicast,
+  weil verpasste Multicast-Pakete nicht wiederholt werden. Das Verbindungsintervall liegt bei
+  mindestens 7,5 ms, üblich sind 15–50 ms. Dazu kommen der Verbindungsaufbau und
+  GATT-Dienste sowie zusätzlicher Speicher (NimBLE grob 100 kB Flash und 50 kB RAM).
+- **Bluetooth Classic (SPP):** Das ginge nur mit einem klassischen ESP32 auf dem Turm (z. B.
+  Stamp Pico), nicht mit C3 oder S3. Der Vorteil wäre, dass der Turm kein WLAN braucht und
+  die UART-Bytes nahezu 1:1 weiterreicht. Dagegen spricht:
+  - In der Basis teilen sich WLAN und Bluetooth Classic das Funkteil noch schlechter als
+    WLAN und BLE.
+  - Der Bluetooth-Stack (Bluedroid) ist gross, die OTA-Partition wird dann knapp.
+  - Die Latenz liegt eher bei 10–30 ms und schwankt.
+  - SPP ist ein Datenstrom ohne Paketgrenzen.
+  - **Ausschlaggebend ist die Anlaufzeit:** Bluedroid starten und die Verbindung aufbauen
+    dauert ca. 1,5–3 s, ESP-NOW braucht ca. 0,3–0,5 s. Weil der Turm abgeschaltet wird
+    (siehe unten), zählt das am meisten.
+
+## Turm abschaltbar (2026-11-10)
+
+Lidar, Laser und Pixel am Turm braucht es **nur** für die Pose, die Statusanzeige und das
+Schussprotokoll. Deshalb schaltet die Basis die **Speisung der Induktivübertragung über das
+Relais** ab, wenn der Turm nicht gebraucht wird. Dann misst auch das R50-C nicht dauernd
+(es selbst kann nicht in Standby, siehe unten).
+
+- **Einschalten bei `catObserved`**, nicht erst bei `catDetected`. Das gibt mehr Vorlauf.
+  Ausserdem bei Pose-Schwenk und Zielen.
+- **Nachlaufzeit:** `catObserved` kommt oft. Damit das Relais nicht flattert, bleibt der
+  Turm nach dem letzten `catObserved`/`catDetected` noch eine Weile an (z. B. 30–60 s, als
+  Parameter). Erst danach wird abgeschaltet.
+- Vor einem Schuss wartet die Basis auf das erste Lebenszeichen des Turms. Ist der Turm noch
+  nicht bereit, gibt es kein Lidar und kein Beweisbild, gefeuert wird trotzdem (Lidar und
+  Kamera sind nur Protokoll, siehe unten).
+- **Laser-Sicherheit:** Strom aus heisst Laser aus. Der Zeitablauf auf dem Turm („Laser an
+  für X ms“, Abschalten bei Funkausfall) bleibt für den eingeschalteten Zustand.
+- **Statusanzeige:** Der Pixel leuchtet nur, solange der Turm Strom hat. Soll ein Status
+  dauernd sichtbar sein, gehört er in die Basis.
+- **Relais:** Ein paar Dutzend Schaltungen am Tag sind unkritisch. Der Einschaltstrom der
+  Induktivübertragung muss noch geprüft werden.
+
+Geschätzte Zeit vom Einschalten des Relais bis zum ersten Lidar-Wert (nicht gemessen):
+
+| Schritt | ESP-NOW |
+|---|---|
+| Induktivübertragung bis 5 V stabil | ca. 10–50 ms |
+| ESP booten bis `setup()` | ca. 150–300 ms (mit Bootloader-Tuning weniger) |
+| WLAN-Treiber ohne Anmeldung starten | ca. 50–100 ms |
+| Verbindung | keine, sofort sendebereit (Kanal aus NVS) |
+| **Summe** | **ca. 0,3–0,5 s** |
+| R50-C bis zum ersten Frame | unbekannt, messen |
 
 ## Lidar R50-C: UART bleibt, kein I2C
 
@@ -58,9 +119,10 @@ Das **Wasserventil bleibt in der Basis.** Feuern geht nie über Funk.
     100 Hz) einstellen. Alles wird im Modul gespeichert und gilt erst nach einem Neustart.
     Befehle werden offenbar nur kurz nach dem Einschalten angenommen („boot window“).
   - Ob eine niedrigere Ausgabefrequenz auch das interne Messen bremst, ist nicht belegt.
-- **Entscheidung: damit leben.** Das Lidar misst dauernd, solange es Strom hat. Es wird
-  nicht ein- und ausgeschaltet.
-- Verworfene Alternativen: 5-V-Versorgung des Lidars per GPIO schalten, ein anderes Lidar
+- **Entscheidung: damit leben.** Das Lidar misst dauernd, solange es Strom hat. Es bekommt
+  keinen eigenen Schalter. Seit 2026-11-10 wird aber der **ganze Turm** über das Relais der
+  Induktivübertragung abgeschaltet (siehe „Turm abschaltbar“), damit ist auch das Lidar aus.
+- Verworfene Alternativen: 5-V-Versorgung nur des Lidars per GPIO schalten, ein anderes Lidar
   mit Trigger-Modus (z. B. Benewake TFmini-S, TF-Luna, TF02-Pro; nicht geprüft, geringere
   Reichweite).
 - Der **Ziellaser** ist davon nicht betroffen. Er hängt an einem eigenen GPIO
@@ -69,8 +131,19 @@ Das **Wasserventil bleibt in der Basis.** Feuern geht nie über Funk.
 ## Controller für den Turm
 
 - Die Rechenarbeit (UART, GPIO, WS2812, ESP-NOW) ist trivial. **Ohne Kamera** reichen ein
-  **ESP32-C3** (z. B. XIAO C3 mit externer Antenne, wenig Strom) oder ein **M5Stamp Pico**.
-  Ein ESP32-S3 ist dafür überdimensioniert.
+  **ESP32-C3** oder ein **M5Stamp Pico**. Ein ESP32-S3 ist dafür überdimensioniert.
+- Weil Bluetooth Classic verworfen ist, braucht es keinen klassischen ESP32 auf dem Turm.
+  Stand 2026-11-10 ist der **XIAO ESP32-C3** die erste Wahl:
+  - ESP-NOW zwischen C3 und dem klassischen ESP32 der Basis geht ohne Weiteres.
+  - USB-C ist eingebaut, das erste Flashen geht also ohne USB-Seriell-Adapter. Der Stamp
+    Pico hat keinen USB-Anschluss und braucht einen Adapter.
+  - Er hat eine externe U.FL-Antenne für die OTA-Anmeldung im WLAN. Für ESP-NOW über
+    wenige Zentimeter ist die Antenne egal.
+  - Er braucht wenig Strom und bietet genug Pins: Lidar-RX auf einem eigenen UART (`Serial`
+    läuft über USB), Laser-GPIO, WS2812 über RMT. Strapping-Pins (GPIO2, 8, 9) für Laser und
+    Pixel meiden.
+  - Der Stamp Pico bleibt als Ersatz möglich und bringt keinen Nachteil, solange kein
+    Bluetooth Classic gebraucht wird.
 - **Mit Kamera** wäre die **XIAO ESP32-S3 Sense** die erste Wahl, nicht die ESP32-CAM:
   - genug freie Pins (Lidar-RX, Laser, Pixel)
   - externe U.FL-Antenne (Bilder müssen per WLAN in den Garten hinaus)
@@ -114,7 +187,11 @@ Mögliche Abläufe:
 ## Offene Punkte
 
 - Welches Induktivmodul, und was liefert es auf der Turmseite (Spannung, Strom)?
-- Ob die Kamera kommt (falls ja, XIAO S3 Sense; sonst C3 oder Stamp Pico).
+- Ob die Kamera kommt (falls ja, XIAO S3 Sense; sonst XIAO C3, Ersatz Stamp Pico).
+- Anlaufzeit messen: Relais ein bis zum ersten gültigen Lidar-Frame bei der Basis
+  (Induktivübertragung, Boot, R50-C-Anlauf, Kanal aus NVS).
+- Nachlaufzeit nach `catObserved`/`catDetected` festlegen (Parameter, Vorschlag 30–60 s).
+- Einschaltstrom der Induktivübertragung (Relais, Netzteil).
 - Bewegt sich der Turm nur zum Zielen oder auch für einen Pose-Schwenk?
 - Test vor dem Bau: Ping-Pong-Sketches unter `PowerActor1_1/Development/` (Verlust und
   Latenz von ESP-NOW bei laufender Spule und laufendem Schrittmotor).
