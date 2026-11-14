@@ -57,6 +57,7 @@ Firmware hat dafür **Betriebsarten** (`EPF1_MODE_...` in `EPF1Config.h`, Code j
 | `EPF1Config.h` | Pins, Servo-IDs, Origins, Tilt-Typ, Betriebsart. Gemeinsam für Test und Firmware |
 | `EPF1_HwTest/` | Inbetriebnahme ohne WLAN: Servos, Servo-IDs, Pixel, I2C über den USB-Monitor |
 | `EPF1_6_3_0/` | Bus-Firmware (Gerät #23): Kern + `modeLidar.ino` (TOFSense-F, Rundumscan → VPS `/localize`) |
+| `EPF1_Stell/` | CYD28 mit Drehknopf (COM3): Turm drehen, „NULL HIER“ (2× tippen) setzt die Pan-0, „AUF 0“, „SCAN“. UDP 4330, findet EPF1 per Broadcast |
 | `Schema_EPF1.pdf` | Schaltplan (gespiegelter Scan) |
 
 ## Erste Inbetriebnahme

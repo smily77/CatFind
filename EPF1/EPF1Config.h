@@ -49,6 +49,30 @@
 // Grenzen aus MapDiscovery - am EPF1 nach dem ersten Test pruefen/anpassen
 #define PAN_LIMIT_DEG   170.0f
 #define TILT_LIMIT_DEG  30.0f
+// Physisches Pan-Fenster (Kabel!) in absoluten Servo-Ticks - unabhaengig davon, wohin
+// die 0 per "NULL HIER" verschoben wurde.
+#define PAN_PHYS_MIN    ((int)(panServoOrigin - PAN_LIMIT_DEG * PAN_TICKS_PER_DEG))
+#define PAN_PHYS_MAX    ((int)(panServoOrigin + PAN_LIMIT_DEG * PAN_TICKS_PER_DEG))
+
+// ── Stell-Protokoll (UDP, kein xCom) fuer das CYD-Bediengeraet EPF1_Stell ──────
+// Das CYD sendet an Broadcast oder die gelernte IP, EPF1 antwortet an den Absender.
+#define STELL_PORT      4330
+#define STELL_MAGIC     0xE1
+enum : uint8_t { ST_POLL = 0, ST_PAN = 1, ST_ZERO_HERE = 2, ST_GO_ZERO = 3, ST_SCAN = 4 };
+struct __attribute__((packed)) StellCmd   { uint8_t magic, type; uint16_t value; };   // ST_PAN: absolute Ticks
+struct __attribute__((packed)) StellState {
+  uint8_t  magic;
+  uint8_t  servoOk;       // Pan antwortet
+  uint16_t panGoal;       // absolute Ticks
+  uint16_t panPos;        // absolute Ticks (Ist)
+  uint16_t panOrigin;     // aktuelle 0 in Ticks
+  uint8_t  tempC;
+  uint8_t  busy;          // 1 = Scan laeuft
+  uint8_t  poseValid;
+  int32_t  poseX, poseY;  // mm
+  uint16_t poseHead;      // PA-Einheiten 0..4095
+  int8_t   poseMir;
+};
 
 // ── Slave-Port / Turmkabel "SIS" (GPIO7/8) ────────────────────────────────────
 // Fuer den Aufsatz: MapDiscovery betrieb hier den SEN0366 per UART (ESP-RX 7, ESP-TX 8).

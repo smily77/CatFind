@@ -21,6 +21,7 @@
 #include <xComDef6_3.h>
 #include "hwDef.h"
 #include <Wire.h>
+#include <WiFiUdp.h>
 #include <Preferences.h>
 #include <Adafruit_NeoPixel.h>
 #include <FeetechBus.h>
@@ -45,6 +46,9 @@ FeetechST3020 tilt(servoBus, tiltServoID);
 uint16_t panOrigin = panServoOrigin;    // Pan-0 in Ticks (NVS "epf1"/"panOrg")
 bool     hadNVSpose = false;
 unsigned long bootMs = 0, lastHBms = 0, hbBlinkUntil = 0;
+uint16_t panGoal = panServoOrigin;      // zuletzt befohlene Pan-Stellung (Ticks)
+bool     busy = false;                  // langer Ablauf (Scan) laeuft
+WiFiUDP  stellUdp;
 
 // ----------------------------------------------------------------- Hilfen
 void writelnComment(String comment) { if (DEBUG) Serial << comment << endl; }
@@ -58,10 +62,8 @@ void setPix(uint32_t rgb) {
 }
 uint32_t idleColor() { return myPose.validWorldPose ? 0x001000 : 0x100000; }
 
-uint16_t panDegToTicks(float deg) {
-  deg = constrain(deg, -PAN_LIMIT_DEG, PAN_LIMIT_DEG);
-  return (uint16_t)constrain((int32_t)lroundf(panOrigin + deg * PAN_TICKS_PER_DEG), 0, 4095);
-}
+uint16_t clampPan(int32_t ticks) { return (uint16_t)constrain(ticks, PAN_PHYS_MIN, PAN_PHYS_MAX); }
+uint16_t panDegToTicks(float deg) { return clampPan(lroundf(panOrigin + deg * PAN_TICKS_PER_DEG)); }
 float panTicksToDeg(uint16_t t) { return ((int32_t)t - (int32_t)panOrigin) / PAN_TICKS_PER_DEG; }
 uint16_t tiltDegToTicks(float deg) {
   deg = constrain(deg, -TILT_LIMIT_DEG, TILT_LIMIT_DEG);
@@ -75,10 +77,67 @@ void sendHB() {
   if (settingOn(stgHbLed)) hbBlinkUntil = millis() + HB_BLINK_MS;
 }
 
-// Waehrend langer Ablaeufe (Scan, HTTP) OTA + HB weiterbedienen
+void panTo(uint16_t ticks, uint16_t timeMs, uint16_t speed) {
+  panGoal = clampPan(ticks);
+  pan.moveTime(panGoal, timeMs, speed);
+}
+
+// ----------------------------------------------------------------- Stell-Protokoll (CYD)
+static void stellReply(IPAddress ip, uint16_t port) {
+  StellState s = {};
+  s.magic = STELL_MAGIC;
+  uint16_t pos = 0; uint8_t t = 0;
+  s.servoOk = pan.readPresentPosition(pos) ? 1 : 0;
+  pan.readCurrentTemperature(t);
+  s.panGoal = panGoal; s.panPos = pos; s.panOrigin = panOrigin; s.tempC = t;
+  s.busy = busy ? 1 : 0;
+  s.poseValid = myPose.validWorldPose ? 1 : 0;
+  s.poseX = myPose.worldX; s.poseY = myPose.worldY;
+  s.poseHead = (uint16_t)lroundf(myPose.heading) % 4096; s.poseMir = myPose.mirror;
+  stellUdp.beginPacket(ip, port);
+  stellUdp.write((const uint8_t*)&s, sizeof(s));
+  stellUdp.endPacket();
+}
+void zeroHere();
+void requestScan();
+static void stellPoll() {
+  int len = stellUdp.parsePacket();
+  if (len <= 0) return;
+  StellCmd c;
+  if (len != sizeof(c)) { stellUdp.flush(); return; }
+  stellUdp.read((uint8_t*)&c, sizeof(c));
+  if (c.magic != STELL_MAGIC) return;
+  if (!busy) {                                   // waehrend eines Scans nur Zustand melden
+    switch (c.type) {
+      case ST_PAN:       panTo(c.value, 0, 0); break;            // so schnell wie moeglich
+      case ST_ZERO_HERE: zeroHere(); break;
+      case ST_GO_ZERO:   panTo(panOrigin, 1500, 400); break;
+      case ST_SCAN:      requestScan(); break;
+      default: break;
+    }
+  }
+  stellReply(stellUdp.remoteIP(), stellUdp.remotePort());
+}
+
+// Aktuelle Ist-Stellung wird die neue 0 (gespeichert). Die Pose-Ausrichtung haengt an
+// der 0 -> eine vorhandene Pose stimmt danach nicht mehr und wird verworfen.
+void zeroHere() {
+  uint16_t pos = 0;
+  if (!pan.readPresentPosition(pos)) { say("NULL HIER: Pan antwortet nicht"); return; }
+  panOrigin = pos; panGoal = pos;
+  Preferences p; p.begin("epf1", false); p.putUShort("panOrg", panOrigin); p.end();
+  if (myPose.validWorldPose) {
+    clearPose(); myPose.validWorldPose = false; hadNVSpose = false; sendPoseReport();
+  }
+  setPix(idleColor());
+  say("Neue Pan-0: " + String(panOrigin) + " Ticks (gespeichert, Pose verworfen)");
+}
+
+// Waehrend langer Ablaeufe (Scan, HTTP) OTA + HB + CYD weiterbedienen
 void service() {
   ArduinoOTA.handle();
   if (millis() - lastHBms >= periodeForHB) sendHB();
+  stellPoll();
 }
 void waitMs(unsigned long ms) {
   unsigned long t0 = millis();
@@ -87,7 +146,7 @@ void waitMs(unsigned long ms) {
 
 // ----------------------------------------------------------------- Servos
 void goHome(uint16_t timeMs = 1500) {
-  pan.moveTime(panOrigin, timeMs, 400);
+  panTo(panOrigin, timeMs, 400);
   tilt.moveTime(tiltDegToTicks(0), timeMs, 400);
 }
 
@@ -143,7 +202,7 @@ static void handleDeviceCmd(const xMsg& m) {
       say("Pose geloescht");
       break;
     case cmdRichtung:
-      pan.moveTime(panDegToTicks(c.info / 10.0f), 1500, 400);
+      panTo(panDegToTicks(c.info / 10.0f), 1500, 400);
       say("Pan -> " + String(c.info / 10.0f, 1) + " Grad");
       break;
     case cmdAdjustAngle:
@@ -174,7 +233,7 @@ static void handleSerial() {
       }
       Serial << "Bus-Suche fertig" << endl;
     } break;
-    case 'a': pan.moveTime(panDegToTicks(arg), 1000, 400); Serial << "Pan -> " << arg << endl; break;
+    case 'a': panTo(panDegToTicks(arg), 1000, 400); Serial << "Pan -> " << arg << endl; break;
     case 't': tilt.moveTime(tiltDegToTicks(arg), 800, 400); Serial << "Tilt -> " << arg << endl; break;
     case '0': goHome(); Serial << "auf 0" << endl; break;
     case 'z': if (arg >= 0 && arg <= 4095) { panOrigin = (uint16_t)arg; saveOrigin(); goHome();
@@ -203,6 +262,7 @@ void setup() {
   initUnicast();
   initText2Udp();
   setUpOTA();
+  stellUdp.begin(STELL_PORT);
   initSettings();
   hadNVSpose = loadPose(myPose);
   myPose.validWorldPose = hadNVSpose;

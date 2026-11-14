@@ -121,18 +121,31 @@ static uint16_t tofMeasure(int n, uint16_t& statusOut) {
   return (uint16_t)v[k / 2];
 }
 
+void requestScan() { scanRequested = true; }
+
 static void doScanAndLocalize() {
+  busy = true;
+  doScan();
+  busy = false;
+}
+
+void doScan() {
   if (tofLink == TOF_NONE) findTof();
   if (tofLink == TOF_NONE) { say("Scan abgebrochen: kein TOFSense"); return; }
-  say("Rundumscan startet (Pan -" + String(SCAN_LIMIT_DEG) + "..+" + String(SCAN_LIMIT_DEG) + " Grad)");
+  say("Rundumscan startet (ganzes Pan-Fenster, Pan-0 = " + String(panOrigin) + " Ticks)");
   setPix(0x000020);
   memset(scanBins, 0, sizeof(scanBins));
   tilt.moveTime(tiltDegToTicks(0), 800, 400);
-  pan.moveTime(panDegToTicks(-SCAN_LIMIT_DEG - 5), 2500, 400);   // Anfahrt von einer Seite
+  // ganzes physisches Fenster in 1-Grad-Schritten, immer von unten angefahren
+  // (Getriebespiel einseitig); Bin = Ist-Winkel relativ zur 0
+  pan.moveTime(max(0, PAN_PHYS_MIN - (int)(5 * PAN_TICKS_PER_DEG)), 2500, 400);
   waitMs(2800);
   int nValid = 0, nStat[3] = {0, 0, 0};
-  for (int deg = -SCAN_LIMIT_DEG; deg <= SCAN_LIMIT_DEG; deg++) {
-    pan.moveTime(panDegToTicks(deg), SCAN_STEP_MS, 0);
+  const int nSteps = (int)((PAN_PHYS_MAX - PAN_PHYS_MIN) / PAN_TICKS_PER_DEG);
+  for (int k = 0; k <= nSteps; k++) {
+    uint16_t tk = clampPan(lroundf(PAN_PHYS_MIN + k * PAN_TICKS_PER_DEG));
+    int deg = (int)lroundf(panTicksToDeg(tk));
+    pan.moveTime(tk, SCAN_STEP_MS, 0);
     waitMs(SCAN_STEP_MS + SCAN_SETTLE_MS);
     uint16_t st;
     uint16_t d = tofMeasure(SCAN_SAMPLES, st);
@@ -141,7 +154,7 @@ static void doScanAndLocalize() {
     int bin = ((int)lroundf(a) % 360 + 360) % 360;
     if (d) { scanBins[bin] = d; nValid++; }
     nStat[st == TOF_VALID_STATUS ? 0 : (st == 0xFFFF ? 2 : 1)]++;
-    if ((deg + SCAN_LIMIT_DEG) % 60 == 0)
+    if (k % 60 == 0)
       Serial << "  " << deg << " Grad: " << d << " mm (Status " << st << ")" << endl;
   }
   goHome(2500);
