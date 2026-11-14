@@ -1298,6 +1298,9 @@ def _font(px):
         return ImageFont.load_default()
 
 
+MAX_DRAWN_TRACKS = 4      # mehr Bewegungsspuren -> keine einzeichnen
+
+
 def save_hit(frame, boxes, note, directory=None, keep=MAX_HITS, name_score=None,
              tracks=()):
     """Legt das Bild ab, in dem gerade etwas erkannt wurde - mit Rahmen drin.
@@ -1324,7 +1327,12 @@ def save_hit(frame, boxes, note, directory=None, keep=MAX_HITS, name_score=None,
     # Bewegungsspuren hellblau, mit etwas Abstand um den Fleck, damit die
     # Katze selbst sichtbar bleibt; darunter Nummer und was die KI dort sah.
     cyan = (80, 200, 255)
-    for tr in tracks:
+    # Mehr als MAX_DRAWN_TRACKS Spuren (z.B. Licht geht an, ganzes Bild 'bewegt' sich):
+    # dann gar keine zeichnen - sonst sieht man vor lauter Rahmen nichts mehr.
+    many = len(tracks) > MAX_DRAWN_TRACKS
+    if many:
+        note = ("%s  [%d Bewegungen nicht eingezeichnet]" % (note, len(tracks))).strip()
+    for tr in (() if many else tracks):
         pad = 0.006
         x0, y0 = (tr["x"] - pad) * width, (tr["y"] - pad) * height
         x1 = (tr["x"] + tr["w"] + pad) * width
