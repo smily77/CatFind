@@ -321,8 +321,8 @@ class CameraModel:
         if self._overlay is None:
             out = {}
             for name, poly in maps.items():
-                if poly:     # Rasen offen: Schlusslinie vorne ist nicht vermessen
-                    out[name] = self._project(poly if name == "rasen" else poly + poly[:1])
+                if poly:     # geschlossen: seit Rasenkarte v2 liegt die Vorderkante auf y = 0
+                    out[name] = self._project(poly + poly[:1])
             pts = [q for poly in maps.values() for q in poly]
             if pts:
                 x0 = math.floor(min(q[0] for q in pts) / GRID_MM) * GRID_MM

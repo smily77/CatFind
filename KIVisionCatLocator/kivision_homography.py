@@ -201,9 +201,9 @@ class Homography:
         if self._overlay is None:
             maps = {name: _read_poly(self.map_dir / (name + ".csv"))
                     for name in ("rasen", "noshot")}
-            # Rasen offen: die Schlusslinie vorne ist nicht vermessen
-            out = {name: self._project(poly if name == "rasen" else poly + poly[:1])
-                   for name, poly in maps.items() if poly}
+            # Seit Rasenkarte v2 (2026-11-14) liegt die Vorderkante auf der Nulllinie
+            # (Veranda-Kante) -> beide Karten geschlossen zeichnen
+            out = {name: self._project(poly + poly[:1]) for name, poly in maps.items() if poly}
             pts = [p for poly in maps.values() for p in poly]
             if pts:
                 x0 = math.floor(min(p[0] for p in pts) / GRID_MM) * GRID_MM
