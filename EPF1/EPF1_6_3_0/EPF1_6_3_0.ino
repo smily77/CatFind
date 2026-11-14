@@ -210,7 +210,11 @@ static void handleDeviceCmd(const xMsg& m) {
       break;
     case cmdRichtung:
       panTo(panDegToTicks(c.info / 10.0f), 1500, 400);
-      say("Pan -> " + String(c.info / 10.0f, 1) + " Grad");
+      {
+        float got = panTicksToDeg(panGoal), want = c.info / 10.0f;
+        say("Pan -> " + String(got, 1) + " Grad" +
+            (fabsf(got - want) > 0.5f ? " (Anschlag, gewuenscht " + String(want, 1) + ")" : String("")));
+      }
       break;
     case cmdAdjustAngle:
       if (c.info >= 0 && c.info <= 4095) {

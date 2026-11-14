@@ -91,7 +91,10 @@ bool receiveState() {
   udp.read((uint8_t *)&s, sizeof(s));
   if (s.magic != STELL_MAGIC) return false;
   epfIp = from;                                   // ab jetzt Unicast
-  if (!haveState) target = s.panGoal;             // beim ersten Kontakt Soll uebernehmen
+  // Soll von EPF1 uebernehmen (erster Kontakt und immer, wenn gerade nichts Neues zu senden ist):
+  // EPF1 begrenzt selbst (Kabelfenster, Betriebsart z.B. IR +/-85 Grad) -> die Anzeige
+  // bleibt dann am Anschlag stehen, statt weiterzuzaehlen.
+  if (!haveState || !targetDirty) target = s.panGoal;
   st = s;
   haveState = true;
   lastRx = millis();

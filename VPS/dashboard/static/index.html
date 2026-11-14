@@ -486,6 +486,8 @@ const TRI=[
 ];
 const ACT=[{l:"Pose kopieren",cmd:21,info:0},{l:"Kalibrieren",cmd:18,info:45000},{l:"Pose löschen",cmd:19,info:0},{l:"Parameter laden",cmd:22,info:0},{l:"Foto jetzt",cmd:23,info:0}];
 const CMD_SET_SETTING=20;
+const CMD_RICHTUNG=1;   // EPF1: Pan auf info/10 Grad relativ zur 0
+const _panDeg={};      // zuletzt am Schieber gesetzte Ausrichtung je Geraet (Anzeige)
 const CMD_REBOOT=30;   // Fernwartung: Geraet neu starten (jedes Geraet, ueber Manager-Bus)
 
 function setView(v,b){
@@ -738,6 +740,16 @@ function renderCtrl(settings,force){
       if(triBits.has(i)) continue;   // oben als Dreifach-Schalter
       const on=(val&(1<<i))!==0;
       h+=`<div class="srow"><span>${STG[i]}</span><button class="sw ${on?'on':'off'}" onclick="toggle(${id},${i},${on?0:1})">${on?'AN':'AUS'}</button></div>`;
+    }
+    // EPF1-Drehturm: Ausrichtung per cmdRichtung (info = Grad*10 relativ zur Pan-0).
+    // Die Firmware begrenzt selbst (Kabelfenster, Betriebsart IR +/-85 Grad).
+    if(+id===23){
+      const v=_panDeg[id]??0;
+      h+=`<div class="srow"><span title="Pan relativ zur 0 (0 = Richtung -X). Die Firmware begrenzt: Kabelfenster, IR-Strahler +/-85°">Ausrichtung <b id="pan${id}">${v}°</b></span>`+
+         `<input type="range" min="-180" max="180" step="1" value="${v}" style="flex:2"`+
+         ` oninput="_panDeg[${id}]=+this.value;document.getElementById('pan${id}').textContent=this.value+'°'"`+
+         ` onchange="postCmd(${id},CMD_RICHTUNG,+this.value*10)">`+
+         `<button class="sw" onclick="_panDeg[${id}]=0;postCmd(${id},CMD_RICHTUNG,0);renderCtrl(lastSettings,true)">0</button></div>`;
     }
     for(let i=0;i<ACT.length;i++) if(act&(1<<i))
       h+=`<button class="act" onclick="doAct(${id},${ACT[i].cmd},${ACT[i].info})">▶ ${ACT[i].l}</button>`;
