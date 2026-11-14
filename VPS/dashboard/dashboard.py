@@ -32,6 +32,8 @@ Endpunkte:
   GET  /env             Umweltwerte (envReport, heute Dome-C1/BMP180): aktuell + Verlauf
                         (?sender=21&hours=24); POST /env_request fragt alle sofort ab
   GET  /actlog?t0&t1    Aktor-Kette: catDetected / Feuersperren / Schuesse (actor_log)
+  POST /mower           Rasenmaeher: Dock-Zustand (KIVision) / maeht (Cat Identifier)
+  GET  /mowlog?t0&t1    Maeher-Abschnitte (mower_log) + aktueller Zustand
 
 Analyse (Aufgabe "VPS-Modellierung der Katzenerkennung", GesamtKonzeptCatFinder.md):
   Alle catObserved werden zusätzlich PERSISTENT in SQLite gespeichert (Docker-
@@ -129,6 +131,7 @@ DEVICE_ROUTES = {
     ("POST", "/mapsync"),               # Manager   gatewayProc.ino:239
     ("POST", "/photo"),                 # CatCam    CatCam6_3_0.ino:315
     ("POST", "/person"),                # KIVision  kivision_web.py _person_vps_run
+    ("POST", "/mower"),                 # KIVision  kivision_web.py _mower_run + CatIdent mowGuard.ino
     ("GET",  "/aparams.csv"),           # CatIdent  catTrack.ino:119
     ("GET",  "/coverage_export.csv"),   # CatIdent  catTrack.ino:245
     ("GET",  "/visitor_device.cfg"),    # Besucherlicht config.ino cfgFetch
@@ -509,6 +512,14 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, t REAL, t_end REAL, sender INT,
         kind TEXT, wv INT, wx INT, wy INT, a INT, b INT, c INT, d INT)""")
     _db.execute("CREATE INDEX IF NOT EXISTS idx_actor_t ON actor_log(t)")
+    # Rasenmaeher (2026-11-14): kind 'dock' = Dock-Zustand der Kamera (KIVision,
+    # state 0 ? / 1 im Dock / 2 leer), kind 'mow' = Cat Identifier haelt ihn fuer
+    # maehend (state 1 = Katzenerkennung pausiert, 0 = mow_pause aus). Je Zeile ein
+    # Abschnitt t..t_end; offen = t_end wird nachgezogen.
+    _db.execute("""CREATE TABLE IF NOT EXISTS mower_log(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, t REAL, t_end REAL, src INT,
+        kind TEXT, state INT, open INT, info TEXT)""")
+    _db.execute("CREATE INDEX IF NOT EXISTS idx_mower_t ON mower_log(t)")
     # Spin-off BurglerProtect: visitorObserved (Veranda, Welt X>0/Y<0, ausserhalb der
     # Filterkarte) - getrennt von events, damit Analyse/Tracks/Karten unberuehrt
     # bleiben; unabhaengig von der Aufnahme, nach VISITOR_KEEP_S automatisch weg.
@@ -1843,6 +1854,8 @@ def _model_sig():
     with _db_lock:
         mow = _db.execute("SELECT t0,t1 FROM labels WHERE label='Mäher' "
                           "ORDER BY t0").fetchall()
+    # Maeher-Erkennung (mow_*) wirkt nur im CatIdentifier, nicht auf die Analyse
+    p = {k: v for k, v in p.items() if not k.startswith("mow_")}
     return hashlib.md5(json.dumps([p, mow, catmodel.MODEL_VERSION],
                                   sort_keys=True).encode()).hexdigest()
 
@@ -1995,6 +2008,82 @@ PERSON_KEEP_S = 6 * 3600       # so lange warten Sichtungen auf ihren Track
 _persons = []                  # [{"t", "score", ("x", "y")}]
 _person_done = {}              # Track-key -> t1 (schon einmal markiert)
 _person_lock = threading.Lock()
+
+
+MOW_DOCK = {"unknown": 0, "home": 1, "away": 2}
+MOW_OPEN_MAX_S = 4 * 3600      # offene Maeh-Zeile ohne Abschluss (CatIdent-Neustart) kappen
+_mower_now = {}                # letzter Zustand je Quelle (Anzeige)
+
+
+def _mow_close(kind, t, info=None):
+    """offenen Abschnitt dieser Art abschliessen (unter _db_lock)."""
+    _db.execute("UPDATE mower_log SET t_end=max(t_end,?), open=0, info=coalesce(?,info) "
+                "WHERE kind=? AND open=1", (t, info, kind))
+
+
+@app.post("/mower")
+def mower_report():
+    """KIVision (JSON: status + changes) und Cat Identifier (?src=18&mowing=0/1&pause=,
+    Text = Grund) melden den Rasenmaeher."""
+    now = time.time()
+    if request.args.get("mowing") is not None:            # Cat Identifier
+        on = request.args.get("mowing") == "1"
+        pause = request.args.get("pause", "1") == "1"
+        why = request.get_data(as_text=True)[:200]
+        src = request.args.get("src", 18, type=int)
+        with _db_lock:
+            _mow_close("mow", now)
+            if on:
+                _db.execute("INSERT INTO mower_log(t,t_end,src,kind,state,open,info) "
+                            "VALUES(?,?,?,?,?,1,?)", (now, now, src, "mow", int(pause), why))
+            _db.commit()
+        _mower_now["mow"] = {"t": now, "mowing": on, "pause": pause, "why": why}
+        # Debug-Fenster: die Meldung kommt schon vom Cat Identifier selbst
+        print("Maeher %s (%s)" % ("MAEHT" if on else "maeht nicht mehr", why), flush=True)
+        return jsonify(ok=True)
+    d = request.get_json(force=True, silent=True) or {}
+    st = d.get("status") or {}
+    src = int(d.get("sender") or 20)
+    with _db_lock:
+        for ch in (d.get("changes") or [])[:50]:
+            try:
+                t = float(ch["t"])
+                state = MOW_DOCK.get(ch.get("state"), 0)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if abs(t - now) > 3600:
+                t = now
+            _mow_close("dock", t)
+            _db.execute("INSERT INTO mower_log(t,t_end,src,kind,state,open,info) "
+                        "VALUES(?,?,?,?,?,1,?)", (t, t, src, "dock", state,
+                                                  "KI %s%%" % ch.get("conf", 0)))
+            if state == 1:                                   # im Dock -> maeht sicher nicht
+                _mow_close("mow", t)
+        _db.execute("UPDATE mower_log SET t_end=? WHERE kind='dock' AND open=1", (now,))
+        _db.execute("UPDATE mower_log SET t_end=? WHERE kind='mow' AND open=1 AND t>?",
+                    (now, now - MOW_OPEN_MAX_S))
+        _db.commit()
+    _mower_now["dock"] = dict(st, t=now)
+    return jsonify(ok=True)
+
+
+@app.get("/mowlog")
+def mowlog():
+    """Maeher-Abschnitte im Zeitfenster + aktueller Zustand (Analyse-Tab)."""
+    now = time.time()
+    t0 = request.args.get("t0", now - 86400, type=float)
+    t1 = request.args.get("t1", now, type=float)
+    with _reading() as db:
+        rows = db.execute("SELECT t,t_end,src,kind,state,open,info FROM mower_log "
+                          "WHERE t<=? AND t_end>=? ORDER BY t LIMIT 5000", (t1, t0)).fetchall()
+    keys = ("t", "t_end", "src", "kind", "state", "open", "info")
+    out = []
+    for r in rows:
+        m = dict(zip(keys, r))
+        if m["kind"] == "mow" and m["open"]:
+            m["t_end"] = min(max(m["t_end"], m["t"]), m["t"] + MOW_OPEN_MAX_S)
+        out.append(m)
+    return jsonify(log=out, now=_mower_now)
 
 
 @app.post("/person")

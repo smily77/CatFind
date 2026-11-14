@@ -44,6 +44,9 @@ void ctSetDefaults() {
   CTP.cont_v_min_mm_s = 150; CTP.cont_v_max_mm_s = 3000; CTP.cont_near_mm = 800;
   CTP.cont_angle_deg = 60;
   CTP.quiet_t0_min = 900; CTP.quiet_t1_min = 990;   // NoShot-Zeit 15:00-16:30 lokal
+  CTP.mow_pause = 1; CTP.mow_p0_mm = 5000; CTP.mow_path_mm = 25000;
+  CTP.mow_window_s = 120; CTP.mow_depart_s = 180; CTP.mow_hold_s = 600;
+  CTP.mow_day_t0_min = 420; CTP.mow_day_t1_min = 1260;   // 07:00-21:00 lokal
 }
 
 // einen key=value-Eintrag anwenden (ms-Parameter werden hier in Sekunden gefuehrt)
@@ -100,6 +103,14 @@ static bool ctApplyParam(const String& k, float v) {
   else if (k == "cont_angle_deg")      CTP.cont_angle_deg = v;
   else if (k == "quiet_t0_min")        CTP.quiet_t0_min = (int)v;
   else if (k == "quiet_t1_min")        CTP.quiet_t1_min = (int)v;
+  else if (k == "mow_pause")           CTP.mow_pause = (int)v;
+  else if (k == "mow_p0_mm")           CTP.mow_p0_mm = v;
+  else if (k == "mow_path_mm")         CTP.mow_path_mm = v;
+  else if (k == "mow_window_ms")       CTP.mow_window_s = v / 1000.0f;
+  else if (k == "mow_depart_ms")       CTP.mow_depart_s = v / 1000.0f;
+  else if (k == "mow_hold_ms")         CTP.mow_hold_s = v / 1000.0f;
+  else if (k == "mow_day_t0_min")      CTP.mow_day_t0_min = (int)v;
+  else if (k == "mow_day_t1_min")      CTP.mow_day_t1_min = (int)v;
   else return false;                   // unbekannt (z.B. reine VPS-Parameter) - ok
   return true;
 }
@@ -163,7 +174,7 @@ String ctQuietStr() {
 String ctParamSummary() {
   return "confirm=" + String(CTP.confirm_score) + " maxPath=" +
          String((int)(CTP.max_path_mm / 1000)) + "m edge=" + String((int)CTP.edge_dist_mm) +
-         " ruhe=" + ctQuietStr();
+         " ruhe=" + ctQuietStr() + " " + mowSummary();
 }
 
 // NoShot-Zeit (Maeher-Ruhefenster, quiet_t0_min..quiet_t1_min in lokalen Minuten seit
@@ -668,7 +679,11 @@ void ctFeed(uint8_t sender, int32_t wx, int32_t wy) {
 
   // Punkt anhaengen
   float dx = wx - tr.xLast, dy = wy - tr.yLast;
-  if (tr.n > 0) tr.path += sqrtf(dx * dx + dy * dy);
+  if (tr.n > 0) {
+    float step = sqrtf(dx * dx + dy * dy);
+    tr.path += step;
+    mowNotePath(tr.path, step);                             // Maeher-Fahrspuren (mowGuard.ino)
+  }
   tr.tLast = t; tr.xLast = wx; tr.yLast = wy;
   tr.n++;
   tr.senderMask |= (1u << sender);

@@ -30,6 +30,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_from_
 from kivision_cammodel import CameraModel
 from kivision_homography import Homography, pairs as load_pairs, _read_poly, write_atomic
 from kivision_eyes import Eyes
+from kivision_mower import DockWatch
 from kivision_motion import Motion, cv2
 from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
@@ -1177,6 +1178,7 @@ class Detector:
                     self.result = result
                     self.error = ""
                 persons.feed(raw)
+                mower.feed(raw)
                 self._maybe_hit(frame, result)
                 self._maybe_witness(frame, raw, result["motion"])
                 if tracks:
@@ -1397,6 +1399,8 @@ camera = Camera(cfg)
 detector = Detector(camera, cfg)
 motion = Motion()
 eyes = Eyes()
+# Rasenmaeher im Dock? (kivision_mower.py) - Coral-Rahmen "car" im Dock-Kasten
+mower = DockWatch(lambda: cfg.get("mower"))
 detector.motion = motion
 detector.pump = FramePump(camera, motion)
 homography = Homography(HOMOGRAPHY_FILE, MAP_DIR)
@@ -1498,6 +1502,51 @@ def _person_vps_run():
             urllib.request.urlopen(req, timeout=15).read()
         except Exception as exc:                              # noqa: BLE001
             print("[web] VPS-Person: %s" % exc, flush=True)
+
+MOWER_EVERY = 2.0         # s, Dock-Zustand neu bestimmen
+MOWER_BUS_EVERY = 5.0     # s, mowerState auf den Bus (zusaetzlich sofort bei Wechsel)
+MOWER_VPS_EVERY = 60.0    # s, Zustand zum VPS (Wechsel sofort)
+
+
+def _mower_run():
+    """Dock-Zustand bestimmen, als mowerState auf den Bus (der Cat Identifier
+    entscheidet daraus + aus seinen langen Spuren, ob der Maeher maeht) und
+    zum VPS (Anzeige, Mähfahrten fuer die Coverage)."""
+    import urllib.request
+    bus_at = vps_at = meta_at = 0.0
+    lux = None
+    while True:
+        time.sleep(MOWER_EVERY)
+        now = time.monotonic()
+        if now - meta_at > 10:
+            lux = camera.metadata().get("Lux")
+            meta_at = now
+        # Nacht = IR-Nacht der Augensuche (bis 30 s alt) oder sehr dunkel; der
+        # Maeher maeht nachts nie (Igel). Ruhemodus: keine Aussage.
+        night = eyes.night or (lux is not None and lux < NIGHT_LUX)
+        changed = mower.update(night or not _bus_active[0], lux)
+        st = mower.status()
+        if changed:
+            print("[mower] Dock: %s (KI %d%%, Lux %s%s)" % (
+                st["state"], st["conf"], round(lux) if lux is not None else "-",
+                ", Nacht" if st["night"] else ""), flush=True)
+        if node and (changed or now - bus_at >= MOWER_BUS_EVERY):
+            bus_at = now
+            node.send_mower(st["state"], st["night"], st["lawn"], st["conf"],
+                            time.time() - st["since"])
+        if changed or now - vps_at >= MOWER_VPS_EVERY:
+            vps_at = now
+            body = json.dumps({"sender": node.id if node else 20, "status": st,
+                               "changes": mower.take_changes()}).encode()
+            try:
+                url = vps_url("/mower")
+                if url:
+                    req = urllib.request.Request(url, data=body,
+                                                 headers={"Content-Type": "application/json"})
+                    urllib.request.urlopen(req, timeout=15).read()
+            except Exception as exc:                          # noqa: BLE001
+                print("[web] VPS-Maeher: %s" % exc, flush=True)
+
 
 # -- Busgeraet (Phase 3) ------------------------------------------------------
 # Die KI laeuft nur, wenn sie eingeschaltet ist (detect.enabled, auch vom VPS
@@ -1978,6 +2027,7 @@ def api_state():
         "system": system_info(),
         "bus": node.status() if node else None,
         "person": persons.status(),
+        "mower": mower.status(),
         "meta": {
             "ExposureTime": meta.get("ExposureTime"),
             "AnalogueGain": round(meta.get("AnalogueGain") or 0, 2),
@@ -2347,12 +2397,12 @@ def _health_run():
         st = node.status() if node else {}
         det = detector.snapshot_state()
         print("[web] Lebenszeichen: bus tx %s rx %s (letztes vor %s s) hb %s vision %s | "
-              "radar %d, ki %s%s | augen %s | person-sperren %d | vps ok %d fehl %d%s | abstuerze %s"
+              "radar %d, ki %s%s | augen %s | maeher %s | person-sperren %d | vps ok %d fehl %d%s | abstuerze %s"
               % (st.get("tx"), st.get("rx"), st.get("rx_age"), st.get("hb_tx"),
                  st.get("vision_tx"), det.get("radar", 0),
                  "an" if det.get("running") else "aus",
                  (" (" + det["error"] + ")") if det.get("error") else "",
-                 "Nacht" if eyes.night else "Tag", persons.sent, _vps_stats["ok"], _vps_stats["fail"],
+                 "Nacht" if eyes.night else "Tag", mower.status()["state"], persons.sent, _vps_stats["ok"], _vps_stats["fail"],
                  (" (" + _vps_stats["err"] + ")") if _vps_stats["err"] else "",
                  _thread_crashes or "keine"), flush=True)
 
@@ -2360,6 +2410,7 @@ def _health_run():
 _forever(_vps_run)
 _forever(_vision_run)
 _forever(_person_vps_run)
+_forever(_mower_run)
 _forever(_eyes_run)
 _forever(_zone_run)
 _forever(_health_run)

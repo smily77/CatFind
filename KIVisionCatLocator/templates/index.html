@@ -587,13 +587,21 @@ function applyState(s, first) {
     // Personen-Sperre: solange aktiv, feuert kein Aktor (fireInhibit)
     const p = s.person || {};
     $('sBus').textContent = '#' + b.id + (b.active ? '' : ' Ruhemodus') + (quiet ? ' still' : ' ok')
-      + (p.active ? ' | Person ' + p.score + '% -> Feuer gesperrt' : '');
+      + (p.active ? ' | Person ' + p.score + '% -> Feuer gesperrt' : '')
+      + mowerText(s.mower);
     $('sBus').style.color = !b.active || quiet || p.active ? 'var(--warn)' : '';
     $('sBus').title = 'gesendet ' + b.tx + ', empfangen ' + b.rx + ', Geraete ' + b.peers
       + ', Feuersperren ' + (b.inhibit_tx || 0)
       + (b.last_cmd ? ' | letztes Kommando: ' + b.last_cmd : '');
     if (!first && b.ai !== detOn && Date.now() - detClickAt > 4000) { detOn = b.ai; setDetButton(); }
   }
+}
+
+// Rasenmaeher-Dock (kivision_mower.py): ob er MAEHT, entscheidet der Cat Identifier
+function mowerText(m) {
+  if (!m) return '';
+  const st = {home: 'im Dock', away: 'Dock leer', unknown: m.night ? 'Nacht' : '?'}[m.state] || m.state;
+  return ' | Maeher ' + st + (m.state === 'home' ? ' (' + m.conf + '%)' : '') + (m.lawn ? ', faehrt' : '');
 }
 
 // Nie zwei gleiche Abfragen gleichzeitig: auf schwacher Funkstrecke dauert

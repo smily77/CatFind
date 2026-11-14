@@ -20,6 +20,7 @@ CatFinder-Bus (siehe unten „Busgerät"). Homographie/Pose folgt in Phase 4.
 | `xcom.py` | xCom-6.3-Protokoll in Python, **zur Laufzeit aus `xComDef6_3.h` geparst** |
 | `kivision_bus.py` | das Busgerät: HB, settingsReport, poseReport, Kommandos |
 | `kivision_motion.py` | Bewegungserkennung (MOG2 + Spurverfolger) auf dem lores-Graubild |
+| `kivision_mower.py` | Rasenmäher im Dock? Coral-Rahmen `car` im Dock-Kasten (Bildanteile, `web_config` `mower.box`), stabil 60 s = im Dock, 20 s keiner = Dock leer, Nacht/Dämmerung (Lux < 150) = keine Aussage; als `mowerState` auf den Bus + `POST /mower` an den VPS |
 | `xComDef6_3.h` | wird beim Ausrollen aus `Controller/Manager6_3_0/` daneben kopiert |
 
 ## Busgerät (Phase 3)

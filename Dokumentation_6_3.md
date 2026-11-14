@@ -207,6 +207,7 @@ posPayload = 34, cmdPayload = 5, worldPosePayload = 13, settingsPayload = 6 Byte
 | `catDetected` | 13 | `catDetectedPayload` | Broadcast | Erkennungsmodell hat einen Track als **Katze bestätigt** (Ebene 2, Cat Identifier, Kap. 5.13) |
 | `envRequest` | 14 | — (kein Payload) | Broadcast/Unicast | "melde Temperatur/Luftdruck" — nur Geräte mit Umweltsensor (Dome-C1) antworten |
 | `envReport` | 15 | `envPayload` | Broadcast | Temperatur/Luftdruck (Antwort auf `envRequest` und jede Minute selbsttätig; Manager → VPS) |
+| `mowerState` | 24 | `mowerStatePayload` | Broadcast | KIVision: Rasenmäher im Dock / Dock leer / keine Aussage (+ Nacht, fährt auf dem Rasen), alle 5 s. Der Cat Identifier entscheidet daraus und aus seinen langen Spuren, ob der Mäher **mäht**, und pausiert dann die Katzenerkennung (`mow_pause`, `CatIdentifier/CatId6_3_0/mowGuard.ino`). Nicht im Dock heisst **nicht** mäht. |
 
 **posPayload** (34 Bytes) — Positionsmeldung. `x/y/radius/angle` sind **relativ**
 (sensor-/aktorlokal); `worldX/worldY` sind **Welt-Koordinaten** und nur gültig,

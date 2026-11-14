@@ -186,6 +186,11 @@ stationDefinitions device[deviceCount] = {
                              // Sitzdauer ms, netMm = Ankunftsweg mm), DOPPELT gesendet wie catDetected.
                              // Bewusst KEIN catDetected: nur Aktoren mit Zielmodus reagieren darauf.
 #define targetTracked   23   // Nachfuehrung eines ausgeloesten Sitzplatzes (catDetectedPayload, ~2/s)
+#define mowerState      24   // KIVision: steht der Rasenmaeher in seinem Dock? (mowerStatePayload,
+                             // Broadcast alle 5 s + bei Wechsel). Der Cat Identifier entscheidet
+                             // daraus + aus seinen eigenen langen Spuren, ob der Maeher MAEHT
+                             // (dann Katzenerkennung pausiert, Modell-Parameter mow_pause).
+                             // "nicht im Dock" heisst NICHT "maeht" (Winterquartier, steht woanders).
 
 // Karten-Typen (fuer mapRequest/mapInfo/mapChunk)
 #define mapNoShot   1   // Schusszonen-/No-Shot-Karte (innerhalb = Feuern erlaubt)
@@ -290,6 +295,19 @@ struct __attribute__((packed)) fireInhibitPayload {
   uint8_t  worldValid;  // 1 = worldX/worldY gueltig
   int32_t  worldX;      // Position der Person (mm)
   int32_t  worldY;
+};
+
+// mowerState: Dock-Zustand aus der Kamera (KIVision, Coral-KI erkennt den Maeher als "car").
+#define mowDockUnknown 0   // keine Aussage (Nacht, KI aus, Kamera gestoert)
+#define mowDockHome    1   // steht im Dock (stabil, seit home_s)
+#define mowDockAway    2   // Dock leer (seit away_s)
+#define mowFlagNight   0x01  // IR-Nacht: der Maeher maeht nachts nie (Igel) -> nie "maeht"
+#define mowFlagLawn    0x02  // Kamera sah den Maeher in den letzten 60 s fahrend auf dem Rasen
+struct __attribute__((packed)) mowerStatePayload {
+  uint8_t  dock;        // mowDock*
+  uint8_t  flags;       // mowFlag*
+  uint8_t  conf;        // beste KI-Sicherheit im Dock 0..100 (0 = nichts gesehen)
+  uint16_t sinceS;      // so lange gilt dock schon (s, gesaettigt)
 };
 
 // envReport: Umweltwerte eines Geraets (Antwort auf envRequest / periodische Annonce).

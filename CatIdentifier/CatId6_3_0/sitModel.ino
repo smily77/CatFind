@@ -223,6 +223,7 @@ static void sitPayload(const SitCand& c, catDetectedPayload& cd) {
 static void sitAnnounce(const SitCand& c) {
   catDetectedPayload cd;
   sitPayload(c, cd);
+  if (mowPaused()) return;             // Maeher maeht (mowGuard.ino)
   broadcastMsg(targetDetected, cd);    // doppelt (UDP-Verlustschutz, wie catDetected)
   delay(40);
   broadcastMsg(targetDetected, cd);
@@ -301,7 +302,7 @@ void sitFeed(uint8_t sender, int32_t x, int32_t y) {
 // die sitzende Katze gerade verloren hat - aber hoechstens SIT_TRACK_HOLD_S nach der letzten
 // Meldung und bis track_max_s nach dem Ausloesen. Gleiche Sperren wie catTracked.
 void sitTick() {
-  if (!SP.enabled || !deviceActive() || ctInQuietWindow()) return;
+  if (!SP.enabled || !deviceActive() || ctInQuietWindow() || mowPaused()) return;
   double t = ctNow();
   for (int i = 0; i < SIT_MAX_CAND; i++) {
     SitCand& c = sitC[i];

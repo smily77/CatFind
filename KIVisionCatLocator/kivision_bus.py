@@ -57,6 +57,7 @@ class BusNode:
         self.last_cmd = ""
         self.vision_tx = 0
         self.inhibit_tx = 0
+        self.mower_tx = 0
         self.hb_tx = 0
         self._last_det = {}     # (Absender, Code) -> (Zeit, Payload) fuer den Doppel-Filter
         self.started = time.time()
@@ -129,6 +130,19 @@ class BusNode:
             "fireInhibitPayload", reason=reason, holdMs=hold_ms,
             score=max(0, min(100, int(score))), worldValid=int(ok), worldX=wx, worldY=wy))
         self.inhibit_tx += 1
+
+    def send_mower(self, state, night, lawn, conf, since_s):
+        """Dock-Zustand des Rasenmaehers (mowerState, Broadcast). Entscheiden,
+        ob er maeht, tut der Cat Identifier."""
+        if not hasattr(self.x, "mowerState"):
+            return                      # alter Header ohne den Code
+        dock = {"home": self.x.mowDockHome, "away": self.x.mowDockAway}.get(
+            state, self.x.mowDockUnknown)
+        flags = (self.x.mowFlagNight if night else 0) | (self.x.mowFlagLawn if lawn else 0)
+        self.bus.broadcast(self.x.mowerState, self.x.pack(
+            "mowerStatePayload", dock=dock, flags=flags, conf=max(0, min(100, int(conf))),
+            sinceS=max(0, min(65535, int(since_s)))))
+        self.mower_tx += 1
 
     def request_vps(self):
         """VPS-Adresse beim Manager erfragen: Unicast (kommt auch bei schlechtem

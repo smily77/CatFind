@@ -127,6 +127,7 @@ void loop() {
   if (mcDataReceived) { mcDataReceived = false; handleBusMsg(lastMcMsg); }
   ctTick();                          // abgelaufene Tracks/Sturm-Slots aufraeumen
   sitTick();                         // Zielmodell: Nachfuehrung ausgeloester Sitzplaetze
+  mowTick();                         // maeht der Rasenmaeher? (mowGuard.ino)
   serviceNoShotMap();                // Erstbezug + stuendliches Fangnetz (hwProc.ino)
   // Fensterwechsel der NoShot-Zeit einmalig melden (Debug-Sichtbarkeit im VPS)
   static bool quietWas = false;
@@ -169,6 +170,11 @@ void handleCommand(const xMsg& m) {
 void handleBusMsg(const xMsg& m) {
   ctNoteSeen(m.header.sender);         // Lebenszeichen je Sensor (Randlogik: nur online)
   if (handleCommonMsg(m)) return;
+  if (m.header.msgCode == mowerState && m.header.sender != ID) {   // Dock-Zustand (KIVision)
+    mowerStatePayload mp;
+    if (getPayload(m, mp)) mowNoteMsg(mp);
+    return;
+  }
   if (m.header.msgCode == mapInfo) {   // Announce: Manager hat eine neue Karte angenommen
     if (mapAnnounceOutdated(m, mapNoShot, NOSHOT_PATH)) {
       noShotOK = false; noShotSynced = false; mapRecheckNow = true;
@@ -198,7 +204,10 @@ void handleBusMsg(const xMsg& m) {
     if (ctInQuietWindow()) return;     // NoShot-Zeit (Maeherfenster): Modell pausiert
     // Zielmodell (sitModel.ino) bekommt dieselben gefilterten Meldungen - nur echte
     // catObserved (keine Kamera-Spuren), es filtert selbst auf HLK-Radare.
-    if (m.header.msgCode == catObserved) sitFeed(m.header.sender, obs.worldX, obs.worldY);
+    // Maeht der Maeher, bekommt es nichts (er wuerde dort "sitzen"); das Katzenmodell
+    // dagegen schon - seine langen Spuren sind der Beweis, dass er noch maeht.
+    if (m.header.msgCode == catObserved && !mowPaused())
+      sitFeed(m.header.sender, obs.worldX, obs.worldY);
     ctFeed(m.header.sender, obs.worldX, obs.worldY);
   }
   else if (m.header.msgCode == poseReport && m.header.sender != ID) {
@@ -217,6 +226,11 @@ void announceCat(const catDetectedPayload& cd) {
   // Doppelte Absicherung zur Feed-Sperre in handleBusMsg: waehrend der NoShot-Zeit
   // darf unter keinen Umstaenden ein catDetected raus (Fehlschuss auf den Maeher).
   if (ctInQuietWindow()) return;
+  if (mowPaused()) {                   // Maeher maeht (mowGuard.ino): nur protokollieren
+    sendUdpTextln("CatDetected UNTERDRUECKT (Maeher maeht) score=" + String(cd.score) +
+                  " x=" + String(cd.worldX) + " y=" + String(cd.worldY));
+    return;
+  }
   broadcastMsg(catDetected, cd);
   delay(40);
   broadcastMsg(catDetected, cd);
@@ -234,6 +248,6 @@ void announceCat(const catDetectedPayload& cd) {
 // Nachfuehrung eines bestaetigten Tracks (catTracked, ~5/s): die Aktoren folgen damit
 // genau diesem Track. Einfach gesendet - die naechste kommt 0,2 s spaeter.
 void announceTrack(const catDetectedPayload& cd) {
-  if (!deviceActive() || ctInQuietWindow()) return;   // gleiche Sperren wie catDetected
+  if (!deviceActive() || ctInQuietWindow() || mowPaused()) return;   // gleiche Sperren wie catDetected
   broadcastMsg(catTracked, cd);
 }

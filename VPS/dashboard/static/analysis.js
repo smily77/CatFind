@@ -173,6 +173,7 @@ async function anaFetchWindowOnce(){
   } else ANA.model = null;
   try{ ANA.labels = (await anaJson(`/alabels?${q}`)).labels; }catch(e){ ANA.labels = []; }
   try{ ANA.acts = (await anaJson(`/actlog?${q}`)).acts; }catch(e){ ANA.acts = []; }
+  try{ ANA.mow = (await anaJson(`/mowlog?${q}`)).log; }catch(e){ ANA.mow = []; }
   await anaLoadIncidents();
   renderSensors(); renderTracks(); renderLabels(); drawAnaMap(); drawTimeline(); renderWinInfo();
   // Analysierer noch am Nachrechnen (Backlog)? -> in 5 s automatisch nachladen
@@ -351,6 +352,16 @@ function drawTimeline(){
     ctx.beginPath(); ctx.arc(x, densH-7, 4, 0, 7); ctx.fill();
     ctx.strokeStyle = "#fff8"; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.arc(x, densH-7, 4, 0, 7); ctx.stroke();
+  }
+  // Rasenmaeher (/mowlog): GRUENES Band = Cat Identifier haelt ihn fuer maehend
+  // (Katzenerkennung pausiert; heller = mow_pause aus), duenne Linie darunter =
+  // Dock laut Kamera (grau = im Dock, gelb = leer)
+  for(const m of (ANA.mow||[])){
+    const x0 = tlX(m.t, W), x1 = tlX(m.t_end, W);
+    if(x1 < 0 || x0 > W) continue;
+    const xa = Math.max(0,x0), w = Math.max(Math.min(W,x1)-xa, 2);
+    if(m.kind === "mow"){ ctx.fillStyle = m.state ? "#2ecc71cc" : "#2ecc7166"; ctx.fillRect(xa, 22, w, 4); }
+    else if(m.state){ ctx.fillStyle = m.state === 1 ? "#8899aa88" : "#f1c40fcc"; ctx.fillRect(xa, 27, w, 2); }
   }
   // Aktor-Kette (/actlog): BLAUES Band oben = Feuersperre, MAGENTA Raute = echtes
   // catDetected des Cat Identifiers, ORANGES Dreieck = Schuss eines Aktors
@@ -1125,7 +1136,8 @@ function renderTracks(){
       const acts = trackActs(t);
       const nDet = acts.filter(a=>a.kind==="det").length, nHit = acts.filter(a=>a.kind==="hit").length;
       const nInh = acts.filter(a=>a.kind==="inh").length;
-      const actChips = (nDet ? `<span class="flg" title="Cat Identifier hat catDetected gesendet">🔔</span>` : "") +
+      const mowing = (ANA.mow||[]).some(m=>m.kind==="mow" && m.t <= t.t1 && m.t_end >= t.t0);
+      const actChips = (mowing ? `<span class="flg" title="Mäher mäht laut Cat Identifier (Katzenerkennung pausiert)">🚜</span>` : "") + (nDet ? `<span class="flg" title="Cat Identifier hat catDetected gesendet">🔔</span>` : "") +
         (nInh ? `<span class="flg" title="Feuersperre aktiv">🚫</span>` : "") +
         (nHit ? `<span class="flg" title="${nHit} Schuss/Schüsse eines Aktors">🎯${nHit}</span>` : "");
       const glue = t.members

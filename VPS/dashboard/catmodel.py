@@ -97,6 +97,20 @@ DEFAULT_PARAMS = {
     # identische) Modell dort erkennen würde, und die Katze/Mäher-Trennung tunen kann.
     "quiet_t0_min": 900,            # 15:00 lokale Zeit (Mäherstart)
     "quiet_t1_min": 990,            # 16:30 (Mäher lädt spätestens dann wieder)
+    # --- Mäher-Erkennung (CatIdent mowGuard.ino, 2026-11-14): maeht er, pausiert die
+    # Katzenerkennung (mow_pause=1). "Maeht" braucht einen positiven Grund: Abfahrt aus
+    # dem Dock (KIVision mowerState) oder viel Weg aus langen Spuren / Kamera sieht ihn
+    # fahren. Nie bei "im Dock", nachts oder ausserhalb mow_day_t0..t1 (Igel).
+    # Nur der CatIdentifier wendet das an; die VPS-Analyse rechnet alles durch (die
+    # mow_*-Werte gehoeren deshalb nicht zur Modell-Signatur -> kein Track-Neuaufbau).
+    "mow_pause": 1,
+    "mow_p0_mm": 5000,              # ab diesem Spurweg zaehlt der Weg einer Spur als "lang"
+    "mow_path_mm": 25000,           # so viel Weg aus langen Spuren ...
+    "mow_window_ms": 120000,        # ... in diesem Fenster = Maeher faehrt
+    "mow_depart_ms": 180000,        # nach Abfahrt aus dem Dock so lange "maeht" ohne Spuren
+    "mow_hold_ms": 600000,          # so lange nach dem letzten Fahrbeweis gilt er noch als maehend
+    "mow_day_t0_min": 420,          # 07:00 lokal - nur in diesem Fenster kann er maehen
+    "mow_day_t1_min": 1260,         # 21:00
     # --- Erfassungsgrenzen (empirische Abdeckung)
     "edge_dist_mm": 900,            # "nahe am Rand" der Gesamtabdeckung
     # Geburt so nah VOR einem (online) Sensor ist kein Eintritt, sondern Nahfeld
