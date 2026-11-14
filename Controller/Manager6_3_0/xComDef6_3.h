@@ -87,6 +87,7 @@ struct stationDefinitions {
 #define KIVision 20   // KIVisionCatLocator: Raspberry Pi 4 + Coral, Weitwinkel-KI + Boden-Homographie (Python-xCom)
 #define DomeC1 21     // Dome-C1: HLK-Radar wie CompactDome + BMP180 (Temperatur/Luftdruck) + IR-Scheinwerfer-Sperre (GPIO18)
 #define Besucherlicht 22  // Spin-off BurglerProtect: M5 AtomS3, schaltet bei Besuchern auf der Veranda Hue-Licht (Scharf per Knopf/VPS)
+#define EPF1 23       // EPF1: Drehturm (Pan/Tilt Feetech) mit ESP32-C3, TOFSense-F-Lidar; Pose per Rundumscan + VPS /localize (DHCP)
 //Types
 #define MananagementDevice 1
 #define HLK 2
@@ -100,8 +101,9 @@ struct stationDefinitions {
 #define Kamera 10    // Vision-KI-Kamera: Fotos an den VPS, catObserved bei KI-Katzenerkennung
 #define VisionLocator 11  // Pi-Kamera mit Welt-Lokalisierung (Homographie): catObserved mit worldValid=1
 #define LightControl 12   // Lichtsteuerung (Besucherlicht): konsumiert visitorObserved, schaltet Hue im LAN
+#define Turret 13         // Drehturm (EPF1): traegt Lidar/Licht/Laser, eigene Welt-Pose per Scan; (noch) keine Detektion
 // Anzahl Eintraege in device[] - ueberall statt hartem "18"/"19" verwenden
-#define deviceCount 23
+#define deviceCount 24
 //  {MananagementDevice,180,0x01},
 stationDefinitions device[deviceCount] = {
   {MananagementDevice,180,0x01,groupNone, "Manager_Dev", 0,0,0},        //Manager
@@ -126,7 +128,8 @@ stationDefinitions device[deviceCount] = {
   {Kamera,185,0x06,groupNone, "Cat_Cam",    -31, 31, 8000},             //CatCam: XIAO Vision AI Camera (OV5647 62 Grad; feste IP .185), Fotos -> VPS
   {VisionLocator,186,0x07,groupNone, "KIVision", -50, 50, 15000},        //KIVisionCatLocator: Pi 4 + Coral (feste IP .186), Python-xCom (KIVisionCatLocator/xcom.py); Bereich nominell bis zur Homographie
   {HLK,0,0,groupNone,  "Dome-C1",      -60, 60, 7000},                  //DomeC1: HLK-Radar (Radar6_3_0, DomeC1Device, DHCP) + BMP180 + IR-Scheinwerfer
-  {LightControl,188,0x08,groupNone, "Besucherlicht", 0,0,0}            //Besucherlicht: M5 AtomS3 (feste IP .188), SpinOff/BurglerProtect/Firmware
+  {LightControl,188,0x08,groupNone, "Besucherlicht", 0,0,0},           //Besucherlicht: M5 AtomS3 (feste IP .188), SpinOff/BurglerProtect/Firmware
+  {Turret,0,0,groupNone, "EPF1", 0,0,0}                               //EPF1: Drehturm ESP32-C3 (DHCP), EPF1/EPF1_6_3_0; Reichweite 0 = noch kein Erfassungssektor
 };
 
 // call -> device[ident].type

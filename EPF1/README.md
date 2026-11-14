@@ -1,6 +1,6 @@
 # EPF1 – Drehturm-Plattform fürs CatFinder-Netz
 
-**Stand 2026-11-14: vorbereitet, noch nicht angeschlossen, noch nicht programmiert.**
+**Stand 2026-11-14: Bus-Firmware `EPF1_6_3_0` geschrieben (Geräte-ID 23, DHCP), noch nicht auf dem Turm.**
 
 EPF1 ist ein neues Gerät im CatFinder-Netz: ein **Drehturm** (Pan + Tilt), auf dem
 verschiedene Elemente montiert werden können, z. B. Lidar, Lichter oder Laser.
@@ -42,10 +42,8 @@ Schema: `Schema_EPF1.pdf`. Der Scan ist **gespiegelt** (Schrift spiegelverkehrt)
 | GE | Servo-Datenleitung |
 | OR | +12 V (Servo-Speisung, auf der C3-Platine nicht benutzt) |
 
-> **Vor dem Anschliessen prüfen:** Im MapDiscovery-Schema (Seite 5, „Turn Base
-> Compact“) sind die Farben anders belegt: GR = +12 V, BR = Servo, OR = SCL,
-> GE = SDA. Liegt +12 V auf SDA/SCL oder an der Servo-Datenleitung des C3, ist er
-> sofort kaputt.
+Die Farben gelten auch für den MapDiscovery-Turm. Die abweichenden Farben auf Seite 5
+des MapDiscovery-Schemas sind die internen Adern, nicht das Turmkabel.
 
 ## Servos
 
@@ -69,6 +67,7 @@ Schema: `Schema_EPF1.pdf`. Der Scan ist **gespiegelt** (Schrift spiegelverkehrt)
 |---|---|
 | `EPF1Config.h` | Pins, Servo-IDs, Origins, Tilt-Typ-Schalter. Gemeinsam für Test und Firmware |
 | `EPF1_HwTest/` | Inbetriebnahme ohne WLAN: Servos, Laser, AUX, Pixel, I2C über den USB-Monitor |
+| `EPF1_6_3_0/` | Bus-Firmware (Gerät #23): Turm auf 0, TOFSense-F, Rundumscan → VPS `/localize` → Welt-Pose |
 | `Schema_EPF1.pdf` | Schaltplan (gespiegelter Scan) |
 
 ## Erste Inbetriebnahme
@@ -88,18 +87,34 @@ Reihenfolge:
 4. `L/l`, `S/s`, `X/x`, `w r g b o`: einzelne Ausgänge prüfen.
 5. `i`: I2C-Scan, zeigt angeschlossene Turm-Erweiterungen.
 
-## Offen (mit dem User klären, bevor die Bus-Firmware entsteht)
+## Bus-Firmware EPF1_6_3_0
 
-1. **Bus-Identität:** Eigene Geräte-ID in `xComDef6_3.h`? Heute gilt
-   `deviceCount 23`. Eine neue ID verlangt deviceCount 24, und dann müssen alle
-   Geräte neu geflasht werden, die den Absender prüfen. Ältere Firmware verwirft
-   IDs ≥ deviceCount. Oder ersetzt EPF1 den LaserMarker (#15, .182), also dieselbe
-   C3-Platine?
-2. **Feste IP:** neu (z. B. .189), oder .182 übernehmen?
-3. **Aufgabe im Netz:** Was macht EPF1 zuerst? Zum Beispiel Licht/Laser auf
-   catTracked nachführen wie die PowerActors, Lidar-Scans oder Markieren für die
-   Kalibrierung. Welche Elemente kommen zuerst auf den Turm?
-4. **Welt-Pose:** gleiches Vorgehen wie bei den anderen Geräten (Pose-Kommandos
-   24–27, Manuelle Pose im VPS)?
-5. **Kabelfarben** gegen den realen Aufbau prüfen (siehe Warnung oben).
-6. Endlagen Pan/Tilt am realen Turm messen und in `EPF1Config.h` eintragen.
+- **Gerät #23 `EPF1`**, Typ `Turret`, DHCP, `deviceCount` 24. Der LaserMarker (#15)
+  bleibt ein eigenes Gerät und wird vom Turm nur gespeist.
+- Beim Start fährt der Turm **auf 0** (Pan-0 aus NVS, Default 2048 Ticks; Tilt 0).
+- **TOFSense-F an I2C** (Modul vorher per NAssistant auf IIC stellen), gesucht wird
+  0x08..0x17. Frame ab Register 0x20: system_time, dis (mm), dis_status,
+  signal_strength. Gültig = Status 0, Stärke > 0, 100..15000 mm.
+- **Pose:** 30 s nach dem Boot (und per Aktion „Kalibrieren“) Rundumscan Pan
+  −170..+170° in 1°-Schritten, je Schritt Median aus 2 neuen Messungen, Bin = Ist-Winkel.
+  Der Scan geht wie beim LidarC1 an den VPS-Localizer (`:8080/localize`), Übernahme
+  nur bei conf=HOCH und inlier ≥ 0,6. Der Rohscan steht im VPS-Debug-Fenster
+  (`EPF1 scan bin:mm ...`).
+- Kommandos an #23: `cmdCalibrate` 18 = Scan, `cmdClearPose` 19, `cmdRichtung` 1 =
+  Pan auf info/10 Grad, `cmdAdjustAngle` 3 = neue Pan-0 in Ticks (gespeichert).
+- Seriell 115200: `c` Scan, `d` TOF lesen, `p` Servos, `a <grad>`, `0`, `z <ticks>`, `f/F`.
+
+```bash
+arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc EPF1/EPF1_6_3_0
+arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc --port COMx EPF1/EPF1_6_3_0
+```
+
+Geräte mit alter Firmware (`deviceCount` 23) verwerfen Nachrichten von #23. Das schadet
+nicht, solange sie von EPF1 nichts brauchen. Neu geflasht sind Manager und VPS.
+
+## Offen
+
+1. Pan-0 am realen Turm anpassen (`cmdAdjustAngle` / seriell `z`).
+2. Endlagen Pan/Tilt messen und in `EPF1Config.h` eintragen.
+3. Reicht der TOFSense-F-Scan (ein Strahl, 1°) für eine sichere Pose?
+4. Aufgabe im Netz nach der Pose (Laser/Licht nachführen, Lidar-Detektion).
