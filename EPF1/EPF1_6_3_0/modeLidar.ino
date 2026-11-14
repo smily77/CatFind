@@ -176,7 +176,20 @@ void doScan() {
   if (ok) say("VPS-Pose x=" + String(vx) + " y=" + String(vy) + " h=" + String(vh, 1) +
               " mir=" + String(vm) + " conf=" + conf + " inlier=" + String(vin, 2));
   else    say("VPS-Lokalisierung fehlgeschlagen");
-  resolvePose(ok, vx, vy, vh, vm, conf, vin, hadNVSpose, LOC_MIN_INLIER);
+  // Eine vorhandene Pose (z.B. von Hand gesetzt) wird NICHT ueberschrieben: das
+  // Quality-Gate hat draussen wie drinnen falsche HOCH-Posen durchgelassen. Der Scan
+  // meldet dann nur die Abweichung. Neu lokalisieren = zuerst "Pose loeschen".
+  if (myPose.validWorldPose) {
+    if (ok) {
+      float dh = fmodf(vh - myPose.heading * 360.0f / 4096.0f + 540.0f, 360.0f) - 180.0f;
+      say("Pose behalten; Scan-Vorschlag weicht ab um " +
+          String(hypotf(vx - myPose.worldX, vy - myPose.worldY) / 1000.0f, 2) + " m / " +
+          String(dh, 1) + " Grad (mir " + String(vm) + " statt " + String(myPose.mirror) + ")");
+    }
+    setPix(idleColor());
+    return;
+  }
+  resolvePose(ok, vx, vy, vh, vm, conf, vin, false, LOC_MIN_INLIER);
   if (myPose.validWorldPose) hadNVSpose = true;
   say(String("Pose ") + (myPose.validWorldPose ? "gueltig" : "UNGUELTIG") +
       " (x=" + String(myPose.worldX) + " y=" + String(myPose.worldY) + ")");
