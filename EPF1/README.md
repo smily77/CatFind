@@ -14,6 +14,9 @@ Firmware hat dafür **Betriebsarten** (`EPF1_MODE_...` in `EPF1Config.h`, Code j
   AUS = aus, EIN = dauernd ein, **AUTO = Katze anleuchten**: jede `catObserved` eines anderen
   Sensors schaltet 60 s ein; mit Welt-Koordinaten und gültiger EPF1-Pose dreht der Turm
   in Richtung der Katze (Nachführung alle ≥ 0,3 s, Totband 2°). Danach aus und zurück auf 0.
+- **Servo-Mitte = Pan-0:** beim Start (Pan-0 ≠ 2048) und bei „NULL HIER“ setzt die Firmware den
+  Positions-Offset des ST3020 (EEPROM 0x1F, Ist = Roh − Offset, modulo 4096) so, dass die 0 bei 2048
+  liegt -> Fenster ±170° symmetrisch um die 0. 2026-11-14: Offset ab Werk 1959, jetzt −782.
 - Standort Hecke: **Pan nur ±85°** um die 0 (`MODE_PAN_LIMIT_DEG`, gilt für alle Pan-Befehle).
 - Seriell `i` = IR-Status. Meldungen „IR-Strahler …“ / „IR zielt auf Katze …“ im Debug-Fenster
   (gehen dort gelegentlich verloren, direkt auf 239.0.0.57:8300 sind sie vollständig).

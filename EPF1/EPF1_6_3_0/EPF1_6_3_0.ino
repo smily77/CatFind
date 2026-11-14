@@ -126,13 +126,68 @@ static void stellPoll() {
   stellReply(stellUdp.remoteIP(), stellUdp.remotePort());
 }
 
-// Aktuelle Ist-Stellung wird die neue 0 (gespeichert). Die Pose-Ausrichtung haengt an
-// der 0 -> eine vorhandene Pose stimmt danach nicht mehr und wird verworfen.
+// --- Servo-Mitte auf die Ist-Stellung legen (STS-Offset im Servo-EEPROM) -------------
+// Das Pan-Fenster (PAN_PHYS_MIN/MAX, 2048 +/-170 Grad) liegt in Servo-Ticks. Lag die 0
+// weit neben 2048 (z.B. 3403), reichte das Fenster einseitig nur bis +50,9 Grad. Der
+// ST3020 hat einen Positions-Offset (Register 0x1F, Bit 11 = Vorzeichen, Ist = Roh - Offset):
+// damit meldet er die aktuelle Stellung als 2048, die 0 sitzt mittig im Fenster.
+#define STS_ADDR_OFS  0x1F
+#define STS_ADDR_LOCK 0x37
+static void storeOrigin() { Preferences p; p.begin("epf1", false); p.putUShort("panOrg", panOrigin); p.end(); }
+static bool stsReadOfs(int16_t& o) {
+  uint8_t b[2] = {0, 0};
+  if (!servoBus.readData(panServoID, STS_ADDR_OFS, 2, b)) return false;
+  uint16_t r = (uint16_t)b[0] | ((uint16_t)b[1] << 8);
+  o = (r & 0x800) ? -(int16_t)(r & 0x7FF) : (int16_t)(r & 0x7FF);
+  return true;
+}
+static bool stsWriteOfs(int16_t o) {
+  uint16_t r = o < 0 ? (uint16_t)(((-o) & 0x7FF) | 0x800) : (uint16_t)(o & 0x7FF);
+  uint8_t lk = 0, b[2] = {(uint8_t)(r & 0xFF), (uint8_t)(r >> 8)};
+  servoBus.writeData(panServoID, STS_ADDR_LOCK, &lk, 1); delay(10);
+  bool ok = servoBus.writeData(panServoID, STS_ADDR_OFS, b, 2); delay(20);
+  lk = 1; servoBus.writeData(panServoID, STS_ADDR_LOCK, &lk, 1); delay(10);
+  return ok;
+}
+// Ist-Stellung wird Servo-Mitte 2048 = Pan-0 (gespeichert). Rueckgabe false = Pan-0 bleibt.
+bool centerServoHere() {
+  uint16_t p = 0; int16_t o = 0;
+  if (!pan.readPresentPosition(p) || !stsReadOfs(o)) { say("Zentrieren: Pan antwortet nicht"); return false; }
+  const int d = (int)p - 2048;
+  if (abs(d) <= 4) {                             // sitzt schon
+    if (panOrigin != 2048) { panOrigin = 2048; storeOrigin(); }
+    return true;
+  }
+  pan.setTorque(false);                          // sonst springt er auf das alte Soll im neuen Bezug
+  bool done = false; uint16_t q = p;
+  for (int s = 1; s >= -1 && !done; s -= 2) {    // Vorzeichen-Konvention am Servo pruefen
+    int n = o + s * d;
+    n = ((n + 2048) % 4096 + 4096) % 4096 - 2048;   // Offset ist modulo 4096 (Servo hat ab Werk z.B. 1959)
+    if (n < -2047) n = -2047;                        // 11 Bit + Vorzeichen
+    stsWriteOfs((int16_t)n); delay(60);
+    if (pan.readPresentPosition(q) && abs((int)q - 2048) <= 8) done = true;
+  }
+  if (!done) { stsWriteOfs(o); delay(60); pan.readPresentPosition(q); }
+  panGoal = q;
+  pan.moveTime(q, 0, 0);                         // Soll = Ist, dann wieder Drehmoment
+  pan.setTorque(true);
+  if (!done) { say("Zentrieren fehlgeschlagen - Offset zurueck auf " + String(o)); return false; }
+  int16_t nO = 0; stsReadOfs(nO);
+  panOrigin = 2048; storeOrigin();
+  say("Servo zentriert: Ist " + String(p) + " -> " + String(q) + " Ticks (Offset " + String(o) + " -> " +
+      String(nO) + "), Pan-0 = 2048, Fenster +/-" + String((int)PAN_LIMIT_DEG) + " Grad");
+  return true;
+}
+
+// Aktuelle Ist-Stellung wird die neue 0 (gespeichert, Servo dort zentriert). Die Pose-
+// Ausrichtung haengt an der 0 -> eine vorhandene Pose stimmt danach nicht mehr und wird verworfen.
 void zeroHere() {
   uint16_t pos = 0;
   if (!pan.readPresentPosition(pos)) { say("NULL HIER: Pan antwortet nicht"); return; }
-  panOrigin = pos; panGoal = pos;
-  Preferences p; p.begin("epf1", false); p.putUShort("panOrg", panOrigin); p.end();
+  if (!centerServoHere()) {                      // Notweg: nur die Pan-0 verschieben
+    panOrigin = pos; panGoal = pos;
+    Preferences p; p.begin("epf1", false); p.putUShort("panOrg", panOrigin); p.end();
+  }
   if (myPose.validWorldPose) {
     clearPose(); myPose.validWorldPose = false; hadNVSpose = false; sendPoseReport();
   }
@@ -274,6 +329,9 @@ void setup() {
   initText2Udp();
   setUpOTA();
   stellUdp.begin(STELL_PORT);
+  // Pan-0 noch nicht Servo-Mitte (alter Stand, z.B. 3403)? Der Turm steht seit goHome auf
+  // der 0 -> dort einmalig zentrieren. Richtung der 0 bleibt, die Pose also auch.
+  if (abs((int)panOrigin - 2048) > 4) centerServoHere();
   initSettings();
   hadNVSpose = loadPose(myPose);
   myPose.validWorldPose = hadNVSpose;
