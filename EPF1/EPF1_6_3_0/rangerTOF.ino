@@ -121,6 +121,7 @@ bool rangerPresent() { return tofLink != TOF_NONE; }
 void rangerPoll()    { if (tofLink == TOF_UART) uartPoll(); }   // UART-Puffer leer halten
 void rangerScanBegin() {}
 void rangerScanEnd()   {}
+bool rangerLaser(bool) { return false; }   // TOFSense: kein schaltbarer Laser
 // mm (0 = keine gueltige); st: 0 gueltig, 1 andere, 0xFFFF keine Messung
 uint16_t rangerMeasure(uint16_t& st) {
   uint16_t s; uint16_t d = tofMeasure(SCAN_SAMPLES, s);

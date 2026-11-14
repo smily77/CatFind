@@ -99,7 +99,7 @@ static void stellReply(IPAddress ip, uint16_t port) {
   stellUdp.endPacket();
 }
 void zeroHere();
-void requestScan();
+void requestScan(int step);
 static void stellPoll() {
   int len = stellUdp.parsePacket();
   if (len <= 0) return;
@@ -112,7 +112,7 @@ static void stellPoll() {
       case ST_PAN:       panTo(c.value, 0, 0); break;            // so schnell wie moeglich
       case ST_ZERO_HERE: zeroHere(); break;
       case ST_GO_ZERO:   panTo(panOrigin, 1500, 400); break;
-      case ST_SCAN:      requestScan(); break;
+      case ST_SCAN:      requestScan(c.value); break;      // value = Schritt in Grad
       default: break;
     }
   }

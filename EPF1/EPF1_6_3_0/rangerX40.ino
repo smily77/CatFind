@@ -42,14 +42,58 @@ void rangerScanBegin() {
   say(String("X40 Laser an: ") + (ok ? "OK" : "'" + x40.lastRawResponse() + "'"));
 }
 void rangerScanEnd() { x40.controlLaser(X40_LASER_OFF); }
+// Laser dauernd an/aus (Zielen/Pruefen von Hand; X40 ist sichtbar)
+bool rangerLaser(bool on) {
+  if (!x40Found) rangerFind();
+  bool ok = x40.controlLaser(on ? X40_LASER_ON : X40_LASER_OFF);
+  say(String("X40 Laser ") + (on ? "AN" : "AUS") + ": " + (ok ? "OK" : "'" + x40.lastRawResponse() + "'"));
+  return ok;
+}
+
+// Eigene Messung statt x40.measure(): der X40 antwortet zweiteilig - erst das Echo "D",
+// ~1 s spaeter ": 6.286m,1923" (Meter, Signalqualitaet SQ). Die Library beendet die
+// Antwort nach 40 ms Pause, also schon nach dem Echo -> jede zweite Messung scheiterte
+// und die naechste bekam den Rest der vorherigen (= Wert vom vorherigen Winkel).
+// Hier: lesen bis eine Meterzahl samt Zeilenende da ist (oder "Er"), sonst Timeout.
+// (struct X40Result steht in hwDef.h - Arduino-Prototypen)
+static X40Result x40Measure() {
+  X40Result r = {false, 0, -1, ""};
+  while (x40Serial.available()) x40Serial.read();
+  x40Serial.write('D');
+  unsigned long t0 = millis(), tLast = 0;
+  bool haveM = false;
+  while (millis() - t0 < X40_MEAS_TIMEOUT_MS) {
+    while (x40Serial.available()) {
+      char c = (char)x40Serial.read();
+      tLast = millis();
+      if (c == 13 || c == 10) { if (haveM || r.raw.indexOf("Er") >= 0) goto done; continue; }
+      if (c >= 32) r.raw += c;
+      if (c == 'm' || c == 'M') haveM = true;
+    }
+    if ((haveM || r.raw.indexOf("Er") >= 0) && tLast && millis() - tLast > 60) break;   // ohne Zeilenende
+    delay(2);
+  }
+done:
+  r.raw.trim();
+  int mpos = r.raw.indexOf('m'); if (mpos < 0) mpos = r.raw.indexOf('M');
+  if (mpos < 0 || r.raw.indexOf("Er") >= 0) return r;
+  int st = mpos;
+  while (st > 0 && (isDigit(r.raw[st - 1]) || r.raw[st - 1] == '.')) st--;
+  if (st == mpos) return r;
+  r.mm = lroundf(r.raw.substring(st, mpos).toFloat() * 1000.0f);
+  int comma = r.raw.indexOf(',', mpos);
+  if (comma > 0) r.sq = r.raw.substring(comma + 1).toInt();
+  r.ok = true;
+  return r;
+}
 
 // mm (0 = keine gueltige); st: 0 gueltig, 1 Geraetefehler/ausser Bereich, 0xFFFF keine Antwort
 uint16_t rangerMeasure(uint16_t& st) {
-  X40Measurement m = x40.measure();
+  X40Result m = x40Measure();
   if (!m.ok) { st = m.raw.length() ? 1 : 0xFFFF; return 0; }
-  if (m.millimeters < X40_MIN_MM || m.millimeters > X40_MAX_MM) { st = 1; return 0; }
+  if (m.mm < X40_MIN_MM || m.mm > X40_MAX_MM) { st = 1; return 0; }
   st = 0;
-  return (uint16_t)m.millimeters;
+  return (uint16_t)m.mm;
 }
 
 void rangerTest() {
@@ -57,8 +101,8 @@ void rangerTest() {
   if (!x40Found) return;
   for (int i = 0; i < 3; i++) {
     unsigned long t0 = millis();
-    X40Measurement m = x40.measure();
-    say("X40 D -> '" + m.raw + "'" + (m.ok ? " = " + String(m.millimeters) + " mm, SQ " + String(m.signalQuality) : String(" (Fehler)")) +
+    X40Result m = x40Measure();
+    say("X40 D -> '" + m.raw + "'" + (m.ok ? " = " + String(m.mm) + " mm, SQ " + String(m.sq) : String(" (Fehler)")) +
         ", " + String(millis() - t0) + " ms");
   }
 }

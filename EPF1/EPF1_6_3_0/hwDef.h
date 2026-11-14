@@ -32,7 +32,8 @@ struct TofFrame { uint32_t sysTime, dist; uint16_t status, strength; uint8_t pre
 #define X40_BAUD            19200
 #define X40_MEAS_TIMEOUT_MS 2500     // eine Messung (D) wartet hoechstens so lange
 #define X40_MIN_MM          100
-#define X40_MAX_MM          40000
+#define X40_MAX_MM          30000        // ~33,5 m kommt bei "kein Ziel"
+struct X40Result { bool ok; int32_t mm; int sq; String raw; };
 #define MODE_NAME   "Laser X40"
 #define RANGER_NAME "X40"
 #endif
@@ -42,6 +43,8 @@ struct TofFrame { uint32_t sysTime, dist; uint16_t status, strength; uint8_t pre
 // Getriebespiel einseitig), je Schritt eine Messung des Entfernungsmessers. Bins ausserhalb (Kabel-Sperrbereich hinten) bleiben 0 = ungueltig.
 #define SCAN_STEP_MS      40        // Fahrzeit je 1-Grad-Schritt
 #define SCAN_SETTLE_MS    60        // danach ausschwingen lassen
+#define SCAN_STEP_DEFAULT  1        // Schrittweite in Grad (Befehl ohne Angabe)
+#define SCAN_STEP_AUTO     5        // Auto-Scan nach dem Boot: Grobscan
 #define SCAN_SAMPLE_TO_MS 400       // so lange hoechstens auf eine neue Messung warten
 #define AUTO_SCAN_DELAY_MS 30000UL  // nach dem Boot so lange warten (Turm aufstellen, weggehen)
 #define VPS_LOC_TIMEOUT_MS 30000
