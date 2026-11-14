@@ -480,6 +480,9 @@ def do_localize():
           % (request.remote_addr, pose["x_mm"], pose["y_mm"], pose["heading_deg"],
              pose["mirror"], pose["confidence"], pose["inlier_ratio"], pose["beams"], nz),
           flush=True)
+    # Rohscan fuer die Nachauswertung (docker logs catfinder-localizer | grep "scan from")
+    print("scan from %s: %s" % (request.remote_addr, ",".join(str(int(v)) for v in scan)),
+          flush=True)
     return jsonify(pose)
 
 
