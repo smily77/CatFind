@@ -1,7 +1,5 @@
-# RasenKarte v1  units=mm  frame=world
-# Rasen-Umriss: innerhalb = relevanter Bereich fuer die Katzendetektion.
-# Quelle Map/RasenKarte.csv (Meter, Welt) -> hier Millimeter, ganzzahlig.
-# x,y  (Welt, Millimeter)
+# RasenKarte v2  crc=0xd449af30  units=mm  frame=world
+0,0
 2,562
 -5,580
 -3,742
@@ -61,12 +59,15 @@
 8289,3290
 8131,3095
 8255,2797
-8239,2561
-8485,2597
-8233,2180
-8262,2039
-8239,1859
-9033,2078
-8590,1488
-9052,1587
-8294,1186
+8471,2506
+8492,2321
+8480,1940
+8301,1670
+8343,1529
+8308,1206
+8320,1063
+8294,911
+8296,773
+8360,516
+8298,240
+8300,0
