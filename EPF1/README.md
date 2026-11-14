@@ -1,49 +1,38 @@
 # EPF1 – Drehturm-Plattform fürs CatFinder-Netz
 
-**Stand 2026-11-14: Bus-Firmware `EPF1_6_3_0` geschrieben (Geräte-ID 23, DHCP), noch nicht auf dem Turm.**
+**Stand 2026-11-14: Bus-Firmware `EPF1_6_3_0` (Gerät #23, DHCP) auf dem Turm, Betriebsart Lidar läuft drinnen.**
 
 EPF1 ist ein neues Gerät im CatFinder-Netz: ein **Drehturm** (Pan + Tilt), auf dem
-verschiedene Elemente montiert werden können, z. B. Lidar, Lichter oder Laser.
+verschiedene Elemente montiert werden können, z. B. Lidar, Lichter oder Laser. Die
+Firmware hat dafür **Betriebsarten** (`EPF1_MODE_...` in `EPF1Config.h`, Code je in
+`EPF1_6_3_0/mode<Name>.ino`). Erste Betriebsart: **Lidar** (TOFSense-F).
 
-- **Mechanik und Servos** sind die gleichen wie beim Schwenkkopf von MapDiscovery
-  (`../MapDiscovery/`, `TurnBaseConfig.h`). Beim EPF1 ist aber **auch der Tilt ein
-  ST-Servo** (`#define TILT_SERVO_ST`).
-- Die Umschaltung `TILT_SERVO_ST` / `TILT_SERVO_SC` bleibt erhalten. So kann der
-  MapDiscovery-Kopf mit SC15-Tilt später als **EPF1b** laufen. Origin und
-  Umrechnung wechseln automatisch mit (`EPF1Config.h`).
-- **Elektronik** in der Bauart des LaserMarkers: ESP32-C3 Super Mini, gleiche Pins
-  wie `../LaserMarker/LaserMarker6_3/hwDef.h`. Neu ist, dass die UART-Pins 20/4 als
-  Half-Duplex-Servo-Bus dienen.
+- **Mechanik und Elektronik** = „Turn Base Compact“ von MapDiscovery
+  (`../MapDiscovery/PanTiltHead_WM`, `TurnBaseConfig.h`): **Seeed XIAO ESP32-S3**.
+  Beim EPF1 ist der Tilt ein ST-Servo (`#define TILT_SERVO_ST`), die Umschaltung
+  `TILT_SERVO_ST` / `TILT_SERVO_SC` bleibt für den MapDiscovery-Kopf (**EPF1b**).
+- Schema: `Schema_EPF1.pdf` (gedreht gescannt).
 
-Schema: `Schema_EPF1.pdf`. Der Scan ist **gespiegelt** (Schrift spiegelverkehrt).
-
-## Pinbelegung (ESP32-C3 Super Mini)
+## Pinbelegung (XIAO ESP32-S3, aus dem Schema)
 
 | GPIO | Funktion | Bemerkung |
 |---|---|---|
-| 20 | Servo-Bus TX | über **1 kΩ** auf die Datenleitung (Kabel GE) |
-| 4 | Servo-Bus RX | direkt auf die Datenleitung |
-| 3 | TTL-Laser-Modul (IN) | HIGH = an (wie LaserMarker `mainLaser`) |
-| 21 | BS170-Gate → Laserdiode an 5 V | HIGH = an (`subLaser`). GPIO21 ist U0TXD: das ROM-Bootlog lässt die Diode beim Booten kurz flackern |
-| 7 | AUX-Stecker (gegen GND) | HIGH = an |
-| 10 | WS2812, 5 mm (IN/VCC/GND/OUT) | NEO_RGB wie LaserMarker |
-| 0 / 1 | I2C SDA / SCL | Kabel BR / GR, für Erweiterungen am Turm |
-| 5V / G | Versorgung | Kabel RT (+5 V) / BL (GND) |
-| 2, 8, 9 | frei | Strapping-Pins, nicht beschalten |
+| 1 (D0) | Servo-Bus TX | über **1 kΩ** auf die Servo-Datenleitung |
+| 2 (D1) | Servo-Bus RX | direkt auf die Datenleitung |
+| 7 / 8 (D8/D9) | Slave-Port / Turmkabel „SIS“ | UART oder I2C je nach Aufsatz. TOFSense-F: I2C, SDA 7, SCL 8 (2026-11-14 erkannt) |
+| 5 / 6 (D4/D5) | I2C-AUX-Stecker | SDA/SCL-Zuordnung noch prüfen |
+| 4 (D3) | WS2812 (5 mm) | aus dem Schema gelesen, noch nicht bestätigt |
 
-## Kabel (laut Schema_EPF1)
+## Turmkabel (laut Schema)
 
 | Farbe | Signal |
 |---|---|
-| BL | GND |
+| GR | +12 V |
+| BR | Servo-Datenleitung |
+| OR | SIS (SCL) |
+| GE | SIS (SDA) |
 | RT | +5 V |
-| BR | SDA |
-| GR | SCL |
-| GE | Servo-Datenleitung |
-| OR | +12 V (Servo-Speisung, auf der C3-Platine nicht benutzt) |
-
-Die Farben gelten auch für den MapDiscovery-Turm. Die abweichenden Farben auf Seite 5
-des MapDiscovery-Schemas sind die internen Adern, nicht das Turmkabel.
+| BL | GND |
 
 ## Servos
 
@@ -65,16 +54,16 @@ des MapDiscovery-Schemas sind die internen Adern, nicht das Turmkabel.
 
 | Datei | Zweck |
 |---|---|
-| `EPF1Config.h` | Pins, Servo-IDs, Origins, Tilt-Typ-Schalter. Gemeinsam für Test und Firmware |
-| `EPF1_HwTest/` | Inbetriebnahme ohne WLAN: Servos, Laser, AUX, Pixel, I2C über den USB-Monitor |
-| `EPF1_6_3_0/` | Bus-Firmware (Gerät #23): Turm auf 0, TOFSense-F, Rundumscan → VPS `/localize` → Welt-Pose |
+| `EPF1Config.h` | Pins, Servo-IDs, Origins, Tilt-Typ, Betriebsart. Gemeinsam für Test und Firmware |
+| `EPF1_HwTest/` | Inbetriebnahme ohne WLAN: Servos, Servo-IDs, Pixel, I2C über den USB-Monitor |
+| `EPF1_6_3_0/` | Bus-Firmware (Gerät #23): Kern + `modeLidar.ino` (TOFSense-F, Rundumscan → VPS `/localize`) |
 | `Schema_EPF1.pdf` | Schaltplan (gespiegelter Scan) |
 
 ## Erste Inbetriebnahme
 
 ```bash
-arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc EPF1/EPF1_HwTest
-arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc --port COMx EPF1/EPF1_HwTest
+arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3 EPF1/EPF1_HwTest
+arduino-cli upload  --fqbn esp32:esp32:XIAO_ESP32S3 --port COMx EPF1/EPF1_HwTest
 ```
 
 Monitor auf 115200 Baud. Beim Start fährt der Test **nichts** an. Er pingt nur
@@ -92,21 +81,27 @@ Reihenfolge:
 - **Gerät #23 `EPF1`**, Typ `Turret`, DHCP, `deviceCount` 24. Der LaserMarker (#15)
   bleibt ein eigenes Gerät und wird vom Turm nur gespeist.
 - Beim Start fährt der Turm **auf 0** (Pan-0 aus NVS, Default 2048 Ticks; Tilt 0).
-- **TOFSense-F an I2C** (Modul vorher per NAssistant auf IIC stellen), gesucht wird
-  0x08..0x17. Frame ab Register 0x20: system_time, dis (mm), dis_status,
-  signal_strength. Gültig = Status 0, Stärke > 0, 100..15000 mm.
+- **TOFSense-F** am Slave-Port, beim Start automatisch gesucht: UART 921600 (beide
+  Richtungen), dann I2C 0x08..0x17 (beide Richtungen). Dieses Modul: I2C 0x08.
+  Gültig = **Status 1** (empirisch: alle Raummessungen 0,5–2,7 m hatten Status 1),
+  Stärke > 0, 100..15000 mm.
 - **Pose:** 30 s nach dem Boot (und per Aktion „Kalibrieren“) Rundumscan Pan
-  −170..+170° in 1°-Schritten, je Schritt Median aus 2 neuen Messungen, Bin = Ist-Winkel.
+  −170..+170° in 1°-Schritten (~40 s), je Schritt Median aus 3 neuen Messungen, Bin = Ist-Winkel.
   Der Scan geht wie beim LidarC1 an den VPS-Localizer (`:8080/localize`), Übernahme
   nur bei conf=HOCH und inlier ≥ 0,6. Der Rohscan steht im VPS-Debug-Fenster
   (`EPF1 scan bin:mm ...`).
 - Kommandos an #23: `cmdCalibrate` 18 = Scan, `cmdClearPose` 19, `cmdRichtung` 1 =
   Pan auf info/10 Grad, `cmdAdjustAngle` 3 = neue Pan-0 in Ticks (gespeichert).
-- Seriell 115200: `c` Scan, `d` TOF lesen, `p` Servos, `a <grad>`, `0`, `z <ticks>`, `f/F`.
+- Seriell 115200: `c` Scan, `d` TOF lesen, `s` TOF suchen, `p` Servos, `b` Servo-IDs,
+  `a <grad>`, `t <grad>`, `0`, `z <ticks>`, `f/F`.
+- **Achtung Quality-Gate:** Drinnen hat der Localizer zwei Wohnzimmer-Scans mit
+  conf=HOCH und inlier 0,65 bewertet, die Firmware hat diese falschen Posen übernommen.
+  Die Gartenkarte ist offenbar zu gutmütig für kurze Scans. Ergebnis draussen gegen
+  den bekannten Standort prüfen.
 
 ```bash
-arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc EPF1/EPF1_6_3_0
-arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc --port COMx EPF1/EPF1_6_3_0
+arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3 EPF1/EPF1_6_3_0
+arduino-cli upload  --fqbn esp32:esp32:XIAO_ESP32S3 --port COMx EPF1/EPF1_6_3_0
 ```
 
 Geräte mit alter Firmware (`deviceCount` 23) verwerfen Nachrichten von #23. Das schadet
@@ -114,7 +109,8 @@ nicht, solange sie von EPF1 nichts brauchen. Neu geflasht sind Manager und VPS.
 
 ## Offen
 
-1. Pan-0 am realen Turm anpassen (`cmdAdjustAngle` / seriell `z`).
-2. Endlagen Pan/Tilt messen und in `EPF1Config.h` eintragen.
-3. Reicht der TOFSense-F-Scan (ein Strahl, 1°) für eine sichere Pose?
-4. Aufgabe im Netz nach der Pose (Laser/Licht nachführen, Lidar-Detektion).
+1. Tilt-Servo: am Bus antwortet nur ID 2 (Pan), kein Servo mit ID 4.
+2. Pan-0 am realen Turm anpassen (`cmdAdjustAngle` / seriell `z`).
+3. Endlagen Pan/Tilt messen und in `EPF1Config.h` eintragen.
+4. Reicht der TOFSense-F-Scan (ein Strahl, 1°) für eine sichere Pose?
+5. Aufgabe im Netz nach der Pose (Laser/Licht nachführen, Lidar-Detektion).

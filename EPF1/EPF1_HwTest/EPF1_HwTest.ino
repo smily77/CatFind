@@ -1,19 +1,18 @@
 // EPF1 Hardware-Test (ohne WLAN/Bus) - erste Inbetriebnahme am USB-Monitor, 115200 Baud
 //
-// Prueft Servo-Bus (Pan + Tilt), beide Laser, AUX, Pixel und I2C einzeln.
+// Prueft Servo-Bus (Pan + Tilt), Pixel und I2C (Slave-Port GPIO7/8, AUX GPIO5/6) einzeln.
 // Befehle (eine Zeile, Enter):
 //   ?          Hilfe
 //   p          Ping + Ist-Position/Temperatur beider Servos
+//   b          Servo-IDs 0..20 suchen (ST- und SC-Protokoll)
 //   a <grad>   Pan auf Winkel (-170..170)       t <grad>  Tilt auf Winkel (-30..30)
 //   0          beide auf Origin
 //   f / F      Drehmoment aus / ein (Turm von Hand drehen)
-//   L / l      Haupt-Laser (TTL) ein / aus      S / s     Laserdiode (BS170) ein / aus
-//   X / x      AUX ein / aus
-//   w r g b o  Pixel weiss / rot / gruen / blau / aus
-//   i          I2C-Scan (SDA GPIO0, SCL GPIO1)
+//   w r g n o  Pixel weiss / rot / gruen / blau / aus
+//   i          I2C-Scan Slave-Port (beide Richtungen) und AUX
 //
-// Board: ESP32C3 Dev Module, USB CDC On Boot = Enabled
-//   arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc EPF1/EPF1_HwTest
+// Board: Seeed XIAO ESP32-S3
+//   arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3 EPF1/EPF1_HwTest
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -30,7 +29,7 @@ FeetechSC15   tilt(bus, tiltServoID);
 #else
 FeetechST3020 tilt(bus, tiltServoID);
 #endif
-Adafruit_NeoPixel pixel(1, pixelPin, NEO_RGB + NEO_KHZ800);   // wie LaserMarker6_3
+Adafruit_NeoPixel pixel(1, pixelPin, NEO_RGB + NEO_KHZ800);
 
 static uint16_t panDegToTicks(float deg) {
   deg = constrain(deg, -PAN_LIMIT_DEG, PAN_LIMIT_DEG);
@@ -59,17 +58,28 @@ static void report(const char* name, FeetechDevice& s, bool isPan) {
   Serial.println();
 }
 
-static void i2cScan() {
+static void i2cScanOn(int sda, int scl, const char* name) {
+  Wire.end();
+  Wire.begin(sda, scl, 100000);
   int n = 0;
   for (uint8_t a = 1; a < 127; a++) {
     Wire.beginTransmission(a);
-    if (Wire.endTransmission() == 0) { Serial.printf("  I2C 0x%02X\n", a); n++; }
+    if (Wire.endTransmission() == 0) { Serial.printf("  0x%02X", a); n++; }
   }
-  Serial.printf("I2C: %d Geraet(e)\n", n);
+  Serial.printf("  -> %s (SDA %d, SCL %d): %d Geraet(e)\n", name, sda, scl, n);
+}
+
+static void busScan() {
+  for (uint8_t id = 0; id < 21; id++) {
+    FeetechST3020 st(bus, id); FeetechSC15 sc(bus, id);
+    if (st.ping()) Serial.printf("  ID %u: ST\n", id);
+    else if (sc.ping()) Serial.printf("  ID %u: SC\n", id);
+  }
+  Serial.println("Bus-Suche fertig");
 }
 
 static void help() {
-  Serial.println(F("p | a <grad> | t <grad> | 0 | f/F | L/l | S/s | X/x | w r g b o | i | ?"));
+  Serial.println(F("p | b | a <grad> | t <grad> | 0 | f/F | w r g n o | i | ?"));
 #if defined(TILT_SERVO_SC)
   Serial.println(F("Tilt: SC-Servo (TILT_SERVO_SC)"));
 #else
@@ -78,14 +88,10 @@ static void help() {
 }
 
 void setup() {
-  pinMode(mainLaserPin, OUTPUT); digitalWrite(mainLaserPin, LOW);
-  pinMode(subLaserPin, OUTPUT);  digitalWrite(subLaserPin, LOW);
-  pinMode(auxPin, OUTPUT);       digitalWrite(auxPin, LOW);
   pixel.begin(); setPixel(0);
   Serial.begin(115200);
   delay(1500);                                   // USB-CDC anmelden lassen
   Serial.println(F("=== EPF1 Hardware-Test ==="));
-  Wire.begin(pinSDA, pinSCL, 100000);
   bus.beginPins(servoBusSpeed, SERVO_RX_PIN, SERVO_TX_PIN);
   delay(100);
 
@@ -117,6 +123,7 @@ void loop() {
   float arg = line.length() > 1 ? line.substring(1).toFloat() : 0;
   switch (c) {
     case 'p': report("Pan ", pan, true); report("Tilt", tilt, false); break;
+    case 'b': busScan(); break;
     case 'a': pan.moveTime(panDegToTicks(arg), 800, 600);
               Serial.printf("Pan -> %.1f Grad\n", arg); break;
     case 't': tilt.moveTime(tiltDegToTicks(arg), 800, 600);
@@ -125,18 +132,16 @@ void loop() {
               Serial.println("Origin"); break;
     case 'f': pan.setTorque(false); tilt.setTorque(false); Serial.println("Drehmoment AUS"); break;
     case 'F': pan.setTorque(true);  tilt.setTorque(true);  Serial.println("Drehmoment EIN"); break;
-    case 'L': digitalWrite(mainLaserPin, HIGH); Serial.println("Haupt-Laser EIN"); break;
-    case 'l': digitalWrite(mainLaserPin, LOW);  Serial.println("Haupt-Laser AUS"); break;
-    case 'S': digitalWrite(subLaserPin, HIGH);  Serial.println("Laserdiode EIN"); break;
-    case 's': digitalWrite(subLaserPin, LOW);   Serial.println("Laserdiode AUS"); break;
-    case 'X': digitalWrite(auxPin, HIGH);       Serial.println("AUX EIN"); break;
-    case 'x': digitalWrite(auxPin, LOW);        Serial.println("AUX AUS"); break;
     case 'w': setPixel(0xFFFFFF); break;
     case 'r': setPixel(0xFF0000); break;
     case 'g': setPixel(0x00FF00); break;
-    case 'b': setPixel(0x0000FF); break;
+    case 'n': setPixel(0x0000FF); break;
     case 'o': setPixel(0); break;
-    case 'i': i2cScan(); break;
+    case 'i':
+      i2cScanOn(SLAVE_PIN_A, SLAVE_PIN_B, "Slave-Port");
+      i2cScanOn(SLAVE_PIN_B, SLAVE_PIN_A, "Slave-Port vertauscht");
+      i2cScanOn(AUX_PIN_SDA, AUX_PIN_SCL, "I2C-AUX");
+      break;
     default:  help();
   }
 }
