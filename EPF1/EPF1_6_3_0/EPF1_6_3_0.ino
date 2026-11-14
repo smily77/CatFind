@@ -6,7 +6,8 @@
 //  - Beim Start faehrt der Turm auf 0 (Pan-0 aus NVS, Default 2048; Tilt 0)
 //  - Welt-Pose (NVS, poseReport, manuelle Pose 24-27 generisch in xComProc)
 //  Betriebsart (was auf dem Turm sitzt) in EPF1Config.h, Code in mode<Name>.ino:
-//    EPF1_MODE_LIDAR -> modeLidar.ino (TOFSense-F, Rundumscan -> VPS /localize)
+//    EPF1_MODE_LIDAR / _X40 -> modeScan.ino (Rundumscan -> VPS /localize)
+//    EPF1_MODE_IR           -> modeIR.ino (IR-Strahler AUS/EIN/AUTO, AUTO = zur Katze drehen)
 //  Ein Aufsatz wie der LaserMarker (#15) ist ein eigenes Geraet und wird nur gespeist.
 //
 //  Kommandos (commandMsg an #23), Kern:
@@ -62,7 +63,13 @@ void setPix(uint32_t rgb) {
 }
 uint32_t idleColor() { return myPose.validWorldPose ? 0x001000 : 0x100000; }
 
-uint16_t clampPan(int32_t ticks) { return (uint16_t)constrain(ticks, PAN_PHYS_MIN, PAN_PHYS_MAX); }
+uint16_t clampPan(int32_t ticks) {
+#ifdef MODE_PAN_LIMIT_DEG                 // Betriebsart begrenzt zusaetzlich um die 0 (z.B. IR in der Hecke)
+  const int32_t lim = (int32_t)(MODE_PAN_LIMIT_DEG * PAN_TICKS_PER_DEG);
+  ticks = constrain(ticks, (int32_t)panOrigin - lim, (int32_t)panOrigin + lim);
+#endif
+  return (uint16_t)constrain(ticks, PAN_PHYS_MIN, PAN_PHYS_MAX);
+}
 uint16_t panDegToTicks(float deg) { return clampPan(lroundf(panOrigin + deg * PAN_TICKS_PER_DEG)); }
 float panTicksToDeg(uint16_t t) { return ((int32_t)t - (int32_t)panOrigin) / PAN_TICKS_PER_DEG; }
 uint16_t tiltDegToTicks(float deg) {
@@ -278,7 +285,7 @@ void setup() {
 void loop() {
   service();
   if (ucDataReceived) { xMsg um = lastUcMsg; ucDataReceived = false; if (!handleCommonMsg(um)) handleDeviceCmd(um); }
-  if (mcDataReceived) { xMsg cm = lastMcMsg; mcDataReceived = false; if (!handleCommonMsg(cm)) handleDeviceCmd(cm); }
+  if (mcDataReceived) { xMsg cm = lastMcMsg; mcDataReceived = false; if (!handleCommonMsg(cm)) { modeObservation(cm); handleDeviceCmd(cm); } }
   handleSerial();
   modeLoop();
 

@@ -6,7 +6,7 @@
 #define hostName     "EPF1"
 #define periodeForHB 10000          // ms zwischen zwei Heartbeats
 
-#if defined(EPF1_MODE_LIDAR) && defined(EPF1_MODE_X40)
+#if (defined(EPF1_MODE_LIDAR) + defined(EPF1_MODE_X40) + defined(EPF1_MODE_IR)) > 1
 #error "Nur eine Betriebsart (EPF1_MODE_...) aktiv lassen"
 #endif
 
@@ -50,13 +50,30 @@ struct X40Result { bool ok; int32_t mm; int sq; String raw; };
 #define VPS_LOC_TIMEOUT_MS 30000
 #define LOC_MIN_INLIER     0.60f    // Quality-Gate wie LidarC1
 #define MODE_ACTIONS ((1u<<actCalibrate)|(1u<<actClearPose))
+#define MODE_STG     0u
+#elif defined(EPF1_MODE_IR)
+// --- Betriebsart IR: IR-Strahler, Schaltleitung IR_PIN (GPIO7), HIGH = ein -----------
+// Schalter wie Dome-C1 (stgIrLight + stgIrAuto, persistiert, Default AUTO):
+//   AUS  -> Strahler aus | EIN -> Strahler dauernd ein
+//   AUTO -> bei catObserved (irgendein Sensor) ein, IR_HOLD_MS lang; mit Welt-Pose dreht der
+//           Turm in Richtung der Katze. Danach aus und zurueck auf 0.
+#define MODE_NAME          "IR"
+#define IR_HOLD_MS         60000UL
+#define IR_AIM_MIN_MS      300      // hoechstens so oft neu ausrichten
+#define IR_AIM_MOVE_MS     400      // Fahrzeit je Nachfuehrung
+#define IR_AIM_DEADBAND_DEG 2.0f    // kleinere Aenderungen nicht anfahren
+// Standort in der Hecke (2026-11-14): Pan nur +/-85 Grad um die 0. Gilt fuer ALLE Pan-
+// Bewegungen in dieser Betriebsart (clampPan im Kern), solange der Strahler dort steht.
+#define MODE_PAN_LIMIT_DEG 85.0f
+#define MODE_ACTIONS       ((1u<<actClearPose))
+#define MODE_STG           ((1u<<stgIrLight)|(1u<<stgIrAuto))
 #else
 #error "Keine Betriebsart in EPF1Config.h gewaehlt (EPF1_MODE_...)"
 #endif
 
 // --- Einstellungen & Steuerung ------------------------------------------------------
-#define STG_SUPPORTED ((1u<<stgHbLed))
-#define STG_DEFAULT   ((1u<<stgHbLed))
-#define STG_PERSIST   ((1u<<stgHbLed))
+#define STG_SUPPORTED ((1u<<stgHbLed)|MODE_STG)
+#define STG_DEFAULT   ((1u<<stgHbLed)|MODE_STG)
+#define STG_PERSIST   ((1u<<stgHbLed)|MODE_STG)
 #define STG_ACTIONS   MODE_ACTIONS
 #define HB_BLINK_MS   150

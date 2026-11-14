@@ -1,11 +1,22 @@
 # EPF1 – Drehturm-Plattform fürs CatFinder-Netz
 
-**Stand 2026-11-14: Bus-Firmware `EPF1_6_3_0` (Gerät #23, DHCP) auf dem Turm, Betriebsart Lidar läuft drinnen.**
+**Stand 2026-11-14 abends: Bus-Firmware `EPF1_6_3_0` (Gerät #23, DHCP) in der Hecke, Betriebsart IR (Strahler), Schalter AUTO.**
 
 EPF1 ist ein neues Gerät im CatFinder-Netz: ein **Drehturm** (Pan + Tilt), auf dem
 verschiedene Elemente montiert werden können, z. B. Lidar, Lichter oder Laser. Die
 Firmware hat dafür **Betriebsarten** (`EPF1_MODE_...` in `EPF1Config.h`, Code je in
-`EPF1_6_3_0/mode<Name>.ino`). Erste Betriebsart: **Lidar** (TOFSense-F).
+`EPF1_6_3_0/mode<Name>.ino`). Betriebsarten: **Lidar** (TOFSense-F), **X40** (Laser-Entfernungsmesser), **IR** (Strahler).
+
+### Betriebsart IR (`EPF1_MODE_IR`, `modeIR.ino`)
+
+- Schaltleitung = **SDA des Slave-Ports (GPIO7, Turmkabel GE)**: HIGH = Strahler ein, LOW = aus.
+- Schalter wie Dome-C1 (`stgIrLight` + `stgIrAuto`, persistiert, VPS/Display: AUS / EIN / AUTO):
+  AUS = aus, EIN = dauernd ein, **AUTO = Katze anleuchten**: jede `catObserved` eines anderen
+  Sensors schaltet 60 s ein; mit Welt-Koordinaten und gültiger EPF1-Pose dreht der Turm
+  in Richtung der Katze (Nachführung alle ≥ 0,3 s, Totband 2°). Danach aus und zurück auf 0.
+- Standort Hecke: **Pan nur ±85°** um die 0 (`MODE_PAN_LIMIT_DEG`, gilt für alle Pan-Befehle).
+- Seriell `i` = IR-Status. Meldungen „IR-Strahler …“ / „IR zielt auf Katze …“ im Debug-Fenster
+  (gehen dort gelegentlich verloren, direkt auf 239.0.0.57:8300 sind sie vollständig).
 
 - **Mechanik und Elektronik** = „Turn Base Compact“ von MapDiscovery
   (`../MapDiscovery/PanTiltHead_WM`, `TurnBaseConfig.h`): **Seeed XIAO ESP32-S3**.

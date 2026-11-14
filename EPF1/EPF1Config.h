@@ -14,8 +14,11 @@
 // EPF1_6_3_0/mode<Name>.ino; der Kern (Bus, Servos, Pose, Kommandos) ist gemeinsam.
 //   EPF1_MODE_LIDAR -> TOFSense-F am Slave-Port: Rundumscan -> Welt-Pose (VPS /localize)
 //   EPF1_MODE_X40   -> X40-Laser-Entfernungsmesser (40 m, UART) am Slave-Port, sonst gleich
+//   EPF1_MODE_IR    -> IR-Strahler, geschaltet ueber die SDA-Leitung des Slave-Ports (GPIO7):
+//                      Schalter AUS/EIN/AUTO wie Dome-C1, AUTO = zur Katze drehen + ein
 //#define EPF1_MODE_LIDAR
-#define EPF1_MODE_X40
+//#define EPF1_MODE_X40
+#define EPF1_MODE_IR
 
 // ── Tilt-Servo-Typ ────────────────────────────────────────────────────────────
 // Genau einen aktiv lassen:
@@ -81,6 +84,8 @@ struct __attribute__((packed)) StellState {
 // Im Schema als SCL/SDA beschriftet -> UART ODER I2C, je nach Aufsatz.
 #define SLAVE_PIN_A     7             // GPIO7 / D8: UART-RX (Sensor-TX)  bzw. I2C
 #define SLAVE_PIN_B     8             // GPIO8 / D9: UART-TX (Sensor-RX)  bzw. I2C
+// IR-Strahler: Schaltleitung = I2C-SDA des Slave-Ports (GPIO7, Turmkabel GE), HIGH = ein
+#define IR_PIN          SLAVE_PIN_A
 
 // ── I2C-AUX-Stecker (GPIO5/6) ─────────────────────────────────────────────────
 #define AUX_PIN_SDA     5             // GPIO5 / D4  (Zuordnung SDA/SCL aus dem Schema, pruefen)

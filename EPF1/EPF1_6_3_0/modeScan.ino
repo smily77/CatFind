@@ -116,6 +116,8 @@ bool modeCommand(const cmdPayload& c) {
   return false;
 }
 
+void modeObservation(const xMsg&) {}
+
 const char* modeHelp() { return "c <schritt> Scan | d Messen | s Entfernungsmesser suchen | L/l Laser an/aus"; }
 
 bool modeSerial(char c, float arg) {
