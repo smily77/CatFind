@@ -6,6 +6,10 @@
 #define hostName     "EPF1"
 #define periodeForHB 10000          // ms zwischen zwei Heartbeats
 
+#if defined(EPF1_MODE_LIDAR) && defined(EPF1_MODE_X40)
+#error "Nur eine Betriebsart (EPF1_MODE_...) aktiv lassen"
+#endif
+
 #if defined(EPF1_MODE_LIDAR)
 // --- Betriebsart Lidar: TOFSense-F (Nooploop) am Slave-Port ------------------------
 // Erkennung beim Start: zuerst UART (Werkseinstellung 921600, aktive Ausgabe,
@@ -19,18 +23,29 @@
 // hier statt im .ino: die Arduino-Prototypen stehen sonst vor dem Struct
 struct TofFrame { uint32_t sysTime, dist; uint16_t status, strength; uint8_t precision; };
 
-// Rundumscan: Pan in 1-Grad-Schritten von -SCAN_LIMIT bis +SCAN_LIMIT (immer von
-// derselben Seite -> Getriebespiel einseitig), je Schritt Median aus SCAN_SAMPLES
-// neuen Messungen. Bins ausserhalb (Kabel-Sperrbereich hinten) bleiben 0 = ungueltig.
-#define SCAN_LIMIT_DEG   170
+#define SCAN_SAMPLES   3            // neue TOF-Messungen je Schritt (Median)
+#define MODE_NAME   "Lidar"
+#define RANGER_NAME "TOFSense"
+#elif defined(EPF1_MODE_X40)
+// --- Betriebsart X40: Laser-Entfernungsmesser X-40 / Hi-AT am Slave-Port --------------
+// UART 19200 8N1, ASCII-Befehle S/O/D/C (Library X40LaserDistanceMeter). Versorgung 2..3,3 V!
+#define X40_BAUD            19200
+#define X40_MEAS_TIMEOUT_MS 2500     // eine Messung (D) wartet hoechstens so lange
+#define X40_MIN_MM          100
+#define X40_MAX_MM          40000
+#define MODE_NAME   "Laser X40"
+#define RANGER_NAME "X40"
+#endif
+
+#if defined(EPF1_MODE_LIDAR) || defined(EPF1_MODE_X40)
+// Rundumscan: ganzes Pan-Fenster in 1-Grad-Schritten (immer von derselben Seite ->
+// Getriebespiel einseitig), je Schritt eine Messung des Entfernungsmessers. Bins ausserhalb (Kabel-Sperrbereich hinten) bleiben 0 = ungueltig.
 #define SCAN_STEP_MS      40        // Fahrzeit je 1-Grad-Schritt
 #define SCAN_SETTLE_MS    60        // danach ausschwingen lassen
-#define SCAN_SAMPLES       3        // neue TOF-Messungen je Schritt
 #define SCAN_SAMPLE_TO_MS 400       // so lange hoechstens auf eine neue Messung warten
 #define AUTO_SCAN_DELAY_MS 30000UL  // nach dem Boot so lange warten (Turm aufstellen, weggehen)
 #define VPS_LOC_TIMEOUT_MS 30000
 #define LOC_MIN_INLIER     0.60f    // Quality-Gate wie LidarC1
-#define MODE_NAME "Lidar"
 #define MODE_ACTIONS ((1u<<actCalibrate)|(1u<<actClearPose))
 #else
 #error "Keine Betriebsart in EPF1Config.h gewaehlt (EPF1_MODE_...)"

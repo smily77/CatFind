@@ -13,7 +13,9 @@
 // Genau eine aktiv lassen. Jede Betriebsart steckt in einer eigenen Datei
 // EPF1_6_3_0/mode<Name>.ino; der Kern (Bus, Servos, Pose, Kommandos) ist gemeinsam.
 //   EPF1_MODE_LIDAR -> TOFSense-F am Slave-Port: Rundumscan -> Welt-Pose (VPS /localize)
-#define EPF1_MODE_LIDAR
+//   EPF1_MODE_X40   -> X40-Laser-Entfernungsmesser (40 m, UART) am Slave-Port, sonst gleich
+//#define EPF1_MODE_LIDAR
+#define EPF1_MODE_X40
 
 // ── Tilt-Servo-Typ ────────────────────────────────────────────────────────────
 // Genau einen aktiv lassen:
