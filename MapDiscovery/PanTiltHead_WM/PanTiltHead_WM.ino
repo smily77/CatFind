@@ -1,5 +1,6 @@
 /*
- * PanTiltHead_WM — XIAO ESP32-S3 (oder ESP32 classic) + Feetech Servos + SEN0366
+ * PanTiltHead_WM — XIAO ESP32-S3 (oder ESP32 classic) + Feetech Servos
+ *                  + Entfernungsmesser SEN0366 ODER X40 (automatisch erkannt)
  *                  + Laser-Marker (CatFind LaserMarker 6_3)
  *
  * Empfangseinheit des Pan/Tilt-Systems. Verbindet sich mit dem Haus-WLAN,
@@ -21,7 +22,9 @@
  *   FQBN   : esp32:esp32:XIAO_ESP32S3
  *   Pan    : Feetech ST-Servo ST3020 – Drehung (Yaw),  ID=2, Origin=2048
  *   Tilt   : Feetech SC-Servo SC15   – Neigung (Pitch), ID=4, Origin=680
- *   Laser  : DFRobot SEN0366 / GJD-01, UART 9600 Baud
+ *   Laser  : DFRobot SEN0366 / GJD-01 (UART 9600) oder X-40 / Hi-AT (UART 19200).
+ *            LaserRangefinderAuto erkennt beim Start, welcher dran ist, und
+ *            setzt die Baudrate selbst (Serial-Port NICHT selbst begin()-en).
  *
  * Verdrahtung Servo-Bus (Half-Duplex UART):
  *   TX --[1kΩ]--+-- SERVO BUS DATA
@@ -48,9 +51,12 @@
  *     funktionieren besser als vollständiges Abwarten.
  *   - Winkelumrechnung: Pan 4096 ticks/360° (Origin 2048), Tilt 1024 ticks/180°
  *     (Origin 680). Beide Ursprünge in TurnBaseConfig.h definiert.
- *   - SEN0366-Laser: singleMeasurement() blockiert bis zu 1000 ms (Timeout).
- *     Nur aufrufen wenn doMeasure==1, nicht im normalen Servo-Positions-Loop.
- *     Rückgabe in Metern (float), Umrechnung auf mm im Controller.
+ *   - Entfernungsmesser: singleMeasurement() blockiert (SEN0366 0,7-3 s,
+ *     X40 ~2 s, Timeout 4 s). Nur aufrufen wenn doMeasure==1, nicht im
+ *     normalen Servo-Positions-Loop. Rückgabe in Metern (float), Umrechnung
+ *     auf mm im Controller.
+ *   - controlLaser() wartet auf die Antwort des Sensors -> nur bei Zustands-
+ *     änderung senden (laserState), nicht bei jedem Steuerpaket.
  *   - UDP-Architektur: Head lauscht auf Port 4210 (Befehle), antwortet direkt
  *     an die Sender-IP des Controllers auf Port 4211. Kein Pairing nötig –
  *     die Controller-IP wird aus dem empfangenen UDP-Paket gelesen.
@@ -59,8 +65,10 @@
  *     Arduino/libraries/MyLGFXConfigs/.
  *   - TurnBaseConfig.h wählt Servo- und Sensor-Pins automatisch per
  *     CONFIG_IDF_TARGET_ESP32S3 / CONFIG_IDF_TARGET_ESP32.
- *   - Bibliotheken: SerialServo (smily77/SerialServo), LaserRangefinder_SEN0366
- *     (smily77/Laser_Rangefinder_SEN0366_GJD-01), WiFi (ESP32-Kern)
+ *   - Bibliotheken: SerialServo (smily77/SerialServo), X40LaserDistanceMeter
+ *     (smily77/Laser_RangeFinder_X40, Klasse LaserRangefinderAuto), dazu
+ *     LaserRangefinder_SEN0366 (smily77/Laser_Rangefinder_SEN0366_GJD-01),
+ *     WiFi (ESP32-Kern)
  */
 
 #include <Arduino.h>
@@ -70,7 +78,7 @@
 #include <FeetechBus.h>
 #include <FeetechST3020.h>
 #include <FeetechSC15.h>
-#include <LaserRangefinder_SEN0366.h>
+#include <LaserRangefinderAuto.h>   // X40 oder SEN0366, erkennt selbst
 
 #include "../TurnBaseConfig.h"
 
@@ -155,9 +163,19 @@ FeetechSC15   tilt(bus, tiltServoID);
 FeetechST3020 tilt(bus, tiltServoID);
 #endif
 
-// ── Laser-Sensor ─────────────────────────────────────────────────────────────
+// ── Laser-Sensor (X40 oder SEN0366) ──────────────────────────────────────────
+// UART1 gehört dem Servo-Bus, der Entfernungsmesser bekommt UART2.
 
-LaserRangefinder_SEN0366 laser(&Serial2);
+HardwareSerial       laserSerial(2);
+LaserRangefinderAuto laser(&laserSerial);
+
+static bool laserState = false;   // zuletzt gesetzter Laser-Zustand
+
+// Laser schalten und Zustand merken (controlLaser wartet auf die Sensorantwort)
+static void laserApply(bool on) {
+    if (laser.isConnected()) laser.controlLaser(on ? SEN0366_LASER_ON : SEN0366_LASER_OFF);
+    laserState = on;
+}
 
 // ── Hilfsfunktionen: Winkel → Servo-Ticks ────────────────────────────────────
 
@@ -240,10 +258,15 @@ void setup() {
     delay(2000);
     Serial.println("Origin erreicht.");
 
-    // Laser-Sensor initialisieren
-    Serial2.begin(SEN0366_BAUD_RATE, SERIAL_8N1, sensorRxD, sensorTxD);
-    laser.begin();
-    laser.controlLaser(SEN0366_LASER_OFF);
+    // Entfernungsmesser erkennen (setzt Baudrate selbst: X40 19200, SEN0366 9600)
+    if (laser.begin(sensorRxD, sensorTxD)) {
+        Serial.printf("Entfernungsmesser: %s (RX=%d TX=%d)\n",
+                      laser.sensorName(), laser.rxPin(), laser.txPin());
+    } else {
+        Serial.println("WARNUNG: kein Entfernungsmesser erkannt (X40/SEN0366) - "
+                       "neuer Versuch bei der ersten Messung.");
+    }
+    laserApply(false);
     Serial.println("Laser initialisiert (aus).");
 
     // WLAN verbinden
@@ -286,8 +309,8 @@ void loop() {
     udp.read((uint8_t *)&cmd, sizeof(cmd));
     IPAddress senderIP = udp.remoteIP();
 
-    // Laser steuern
-    laser.controlLaser(cmd.laserOn ? SEN0366_LASER_ON : SEN0366_LASER_OFF);
+    // Laser steuern (nur bei Zustandsänderung)
+    if ((bool)cmd.laserOn != laserState) laserApply((bool)cmd.laserOn);
 
     // Laser-Marker steuern (nur bei Zustandsänderung; Kommandos sind idempotent)
     if ((bool)cmd.markerOn != markerState) {
@@ -323,17 +346,22 @@ void loop() {
     // Ergebnis-Nachricht
     ResultMsg result;
     result.panActualDeg = panActualDeg;
-    result.laserState   = cmd.laserOn;
+    result.laserState   = laserState ? 1 : 0;
     result.valid        = 0;
     result.distanceM    = 0.0f;
     result.markerState  = markerState ? 1 : 0;
 
     if (cmd.doMeasure) {
+        // Sensor beim Start nicht gefunden (oder getauscht)? Erneut erkennen.
+        if (!laser.isConnected() && laser.redetect()) {
+            Serial.printf("Entfernungsmesser erkannt: %s\n", laser.sensorName());
+        }
         float dist = 0.0f;
         bool  ok   = false;
         for (int attempt = 1; attempt <= 3 && !ok; attempt++) {
-            ok = laser.singleMeasurement(dist);
-            Serial.printf("Messversuch %d: %s\n", attempt, ok ? "OK" : "fehlgeschlagen");
+            ok = laser.isConnected() && laser.singleMeasurement(dist);
+            Serial.printf("Messversuch %d (%s): %s\n", attempt, laser.sensorName(),
+                          ok ? "OK" : "fehlgeschlagen");
             if (!ok && attempt < 3) delay(100);
         }
         if (ok) {
@@ -343,10 +371,10 @@ void loop() {
         } else {
             Serial.println("Messung nach 3 Versuchen fehlgeschlagen.");
         }
-        // singleMeasurement() schaltet den Laser des SEN0366 selbst ab.
-        // Befohlenen Zustand wiederherstellen, damit der Laser bei laserOn=1
-        // zum Weiterzielen an bleibt (sonst geht er nach jeder Messung aus).
-        laser.controlLaser(cmd.laserOn ? SEN0366_LASER_ON : SEN0366_LASER_OFF);
+        // singleMeasurement() schaltet den Laser des SEN0366 selbst ab (beim
+        // X40 je nach Gerät ebenfalls). Befohlenen Zustand wiederherstellen,
+        // damit der Laser bei laserOn=1 zum Weiterzielen an bleibt.
+        laserApply((bool)cmd.laserOn);
     }
 
     // Ergebnis an Controller zurücksenden (Port 4211)
