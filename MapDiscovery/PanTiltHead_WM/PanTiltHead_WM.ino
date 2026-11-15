@@ -362,6 +362,12 @@ void loop() {
             ok = laser.isConnected() && laser.singleMeasurement(dist);
             Serial.printf("Messversuch %d (%s): %s\n", attempt, laser.sensorName(),
                           ok ? "OK" : "fehlgeschlagen");
+            if (!ok && laser.sensorType() == RANGEFINDER_X40) {
+                String raw = laser.x40().lastRawResponse();
+                raw.replace("\r", "\\r"); raw.replace("\n", "\\n");
+                Serial.printf("  X40 Status %d, Antwort '%s'\n",
+                              (int)laser.x40().lastStatus(), raw.c_str());
+            }
             if (!ok && attempt < 3) delay(100);
         }
         if (ok) {
