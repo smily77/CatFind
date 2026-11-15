@@ -14,7 +14,7 @@ Aufgabe "VPS-Modellierung der Katzenerkennung"):
     Deshalb gibt es KEINEN Austritts-Bonus/-Malus und keinen Sprung-Malus (die
     setzten den fertigen Track voraus). So zeigt der Analyse-Tab exakt, was der
     CatIdentifier entscheiden würde, und das gemeinsame Modell lässt sich daran
-    justieren. Die Ruhefenster-Sperre (quiet_t0/t1) bleibt bewusst NUR auf dem
+    justieren. Die NoShot-Zeit-Sperre (= Bilder-Sperrzeiten) bleibt bewusst NUR auf dem
     Gerät — das VPS analysiert auch die Mäherzeit, damit man sie tunen kann.
 
   - Sensor-Gewichte je GERÄTETYP (HLK-Radar hoch, Lidar niedrig), die
@@ -87,16 +87,9 @@ DEFAULT_PARAMS = {
     # Weg-Obergrenze: RoboMäher/Personen laufen in EINEM Track hunderte Meter
     # zusammenhängend ab — eine Katze nicht. Längerer Pfad => keine Katze. 0 = aus.
     "max_path_mm": 40000,
-    # --- NoShot-Zeit (Mäher-Ruhefenster): lokale Minuten seit Mitternacht.
-    # Im Fenster feuert der CatIdentifier NIE (Modell pausiert) — ein Fehlschuss
-    # auf den Mäher wäre teuer (Regensensor -> er stellt die Arbeit ein), eine
-    # im Fenster verpasste Katze nicht (Katzen meiden den laufenden Mäher ohnehin).
-    # t0 == t1 = deaktiviert; t0 > t1 läuft über Mitternacht. Wird NUR vom
-    # CatIdentifier (Echtzeit) als Feuer-Sperre angewendet — die VPS-Analyse rechnet
-    # bewusst auch die Mäherzeit durch, damit man im Analyse-Tab sieht, was das (sonst
-    # identische) Modell dort erkennen würde, und die Katze/Mäher-Trennung tunen kann.
-    "quiet_t0_min": 900,            # 15:00 lokale Zeit (Mäherstart)
-    "quiet_t1_min": 990,            # 16:30 (Mäher lädt spätestens dann wieder)
+    # --- NoShot-Zeit: seit 2026-11-15 KEIN Modell-Parameter mehr. Die Pausen sind die
+    # Bilder-Sperrzeiten (Tab Bilder, meta photo_block, beliebig viele oder keine);
+    # /aparams.csv haengt sie als quiet_n / quietK_t0_min / quietK_t1_min an.
     # --- Mäher-Erkennung (CatIdent mowGuard.ino, 2026-11-14): maeht er, pausiert die
     # Katzenerkennung (mow_pause=1). "Maeht" braucht einen positiven Grund: Abfahrt aus
     # dem Dock (KIVision mowerState) oder viel Weg aus langen Spuren / Kamera sieht ihn

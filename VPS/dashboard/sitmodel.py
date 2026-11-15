@@ -20,7 +20,7 @@ Ablauf je Meldung (sender, x, y, t) - identisch in sitModel.ino:
      Korridor), Streuung <= sit_sd_mm, Rate >= sit_min_rate, keine Sperrstelle.
   6. Ausgeloeste Plaetze: Nachfuehrung (targetTracked) hoechstens alle
      track_period_s, bis track_max_s nach dem Ausloesen.
-Maeherzeit (quiet_t0/t1 aus den Modell-Parametern) und die No-Shot-Karte filtern
+NoShot-Zeit (= Bilder-Sperrzeiten, meta photo_block) und die No-Shot-Karte filtern
 VOR dem Modell, wie im CatIdent.
 
 Bewusst nur Listen/Ganzzahlen, kein numpy: 1:1 nach C portierbar.

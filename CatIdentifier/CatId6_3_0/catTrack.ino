@@ -43,7 +43,7 @@ void ctSetDefaults() {
   CTP.cont_confirm = 1; CTP.cont_gap_s = 15.0f; CTP.cont_dist_mm = 5000;
   CTP.cont_v_min_mm_s = 150; CTP.cont_v_max_mm_s = 3000; CTP.cont_near_mm = 800;
   CTP.cont_angle_deg = 60;
-  CTP.quiet_t0_min = 900; CTP.quiet_t1_min = 990;   // NoShot-Zeit 15:00-16:30 lokal
+  CTP.quiet_n = 0;                   // NoShot-Zeit: keine, bis der VPS Bilder-Sperrzeiten liefert
   CTP.mow_pause = 1; CTP.mow_p0_mm = 5000; CTP.mow_path_mm = 25000;
   CTP.mow_window_s = 120; CTP.mow_depart_s = 180; CTP.mow_hold_s = 600;
   CTP.mow_day_t0_min = 420; CTP.mow_day_t1_min = 1260;   // 07:00-21:00 lokal
@@ -101,8 +101,14 @@ static bool ctApplyParam(const String& k, float v) {
   else if (k == "cont_v_max_mm_s")     CTP.cont_v_max_mm_s = v;
   else if (k == "cont_near_mm")        CTP.cont_near_mm = v;
   else if (k == "cont_angle_deg")      CTP.cont_angle_deg = v;
-  else if (k == "quiet_t0_min")        CTP.quiet_t0_min = (int)v;
-  else if (k == "quiet_t1_min")        CTP.quiet_t1_min = (int)v;
+  else if (k == "quiet_n")             CTP.quiet_n = constrain((int)v, 0, CT_MAX_QUIET);
+  else if (k.startsWith("quiet") && k.endsWith("_min") && k.length() == 13 &&
+           isDigit(k[5]) && k[5] - '0' < CT_MAX_QUIET) {   // quietK_t0_min / quietK_t1_min
+    int i = k[5] - '0';
+    if (k.substring(6) == "_t0_min") CTP.quiet_t0_min[i] = (int)v;
+    else if (k.substring(6) == "_t1_min") CTP.quiet_t1_min[i] = (int)v;
+    else return false;
+  }
   else if (k == "mow_pause")           CTP.mow_pause = (int)v;
   else if (k == "mow_p0_mm")           CTP.mow_p0_mm = v;
   else if (k == "mow_path_mm")         CTP.mow_path_mm = v;
@@ -164,11 +170,16 @@ bool ctFetchParams() {
 }
 
 String ctQuietStr() {
-  if (CTP.quiet_t0_min == CTP.quiet_t1_min) return "aus";
-  char b[16];
-  snprintf(b, sizeof b, "%02d:%02d-%02d:%02d", CTP.quiet_t0_min / 60, CTP.quiet_t0_min % 60,
-           CTP.quiet_t1_min / 60, CTP.quiet_t1_min % 60);
-  return String(b);
+  String s;
+  for (int i = 0; i < CTP.quiet_n; i++) {
+    if (CTP.quiet_t0_min[i] == CTP.quiet_t1_min[i]) continue;
+    char b[16];
+    snprintf(b, sizeof b, "%02d:%02d-%02d:%02d", CTP.quiet_t0_min[i] / 60, CTP.quiet_t0_min[i] % 60,
+             CTP.quiet_t1_min[i] / 60, CTP.quiet_t1_min[i] % 60);
+    if (s.length()) s += ",";
+    s += b;
+  }
+  return s.length() ? s : String("aus");
 }
 
 String ctParamSummary() {
@@ -177,27 +188,29 @@ String ctParamSummary() {
          " ruhe=" + ctQuietStr() + " " + mowSummary();
 }
 
-// NoShot-Zeit (Maeher-Ruhefenster, quiet_t0_min..quiet_t1_min in lokalen Minuten seit
-// Mitternacht, konfiguriert ueber dieselben VPS-Parameter wie der Rest des Modells):
-// im Fenster wird das Modell nicht gefuettert und nie catDetected gesendet - Katze und
-// Maeher sind sich im Track zu aehnlich, und ein Fehlschuss auf den Maeher waere teuer
-// (sein Regensensor liesse ihn die Arbeit einstellen); eine im Fenster verpasste Katze
-// ist es nicht (Katzen meiden den laufenden Maeher ohnehin). t0 == t1 = deaktiviert,
-// t0 > t1 laeuft ueber Mitternacht. Uhr nie gestellt (NTP seit Boot nicht erreichbar)
-// -> fail-open, sonst waere das Geraet bis zum ersten NTP-Erfolg komplett blind.
+// NoShot-Zeit (Modellpause): seit 2026-11-15 = die Bilder-Sperrzeiten des VPS (Tab
+// Bilder), bis zu CT_MAX_QUIET Fenster in lokalen Minuten seit Mitternacht, kommen mit
+// /aparams.csv (quiet_n, quietK_t0_min, quietK_t1_min) und liegen im LittleFS-Cache,
+// gelten also auch ohne VPS weiter. Keine Fenster = keine Pause.
+// Im Fenster wird das Modell nicht gefuettert und nie catDetected gesendet.
+// t0 == t1 = Fenster ignoriert, t0 > t1 laeuft ueber Mitternacht. Uhr nie gestellt
+// (NTP seit Boot nicht erreichbar) -> fail-open, sonst waere das Geraet blind.
 bool ctInQuietWindow() {
-  if (CTP.quiet_t0_min == CTP.quiet_t1_min) return false;
+  if (CTP.quiet_n <= 0) return false;
   static time_t cachedSec = 0; static bool cachedIn = false;   // localtime_r max. 1x/s
   time_t now = time(nullptr);
   if (now == cachedSec) return cachedIn;
   cachedSec = now;
   struct tm lt;
   localtime_r(&now, &lt);
-  if (lt.tm_year + 1900 < 2020) { cachedIn = false; return false; }  // Uhr laeuft noch nicht
+  cachedIn = false;
+  if (lt.tm_year + 1900 < 2020) return false;                   // Uhr laeuft noch nicht
   int m = lt.tm_hour * 60 + lt.tm_min;
-  cachedIn = (CTP.quiet_t0_min < CTP.quiet_t1_min)
-               ? (m >= CTP.quiet_t0_min && m < CTP.quiet_t1_min)
-               : (m >= CTP.quiet_t0_min || m < CTP.quiet_t1_min);
+  for (int i = 0; i < CTP.quiet_n && !cachedIn; i++) {
+    int a = CTP.quiet_t0_min[i], b = CTP.quiet_t1_min[i];
+    if (a == b) continue;
+    cachedIn = (a < b) ? (m >= a && m < b) : (m >= a || m < b);
+  }
   return cachedIn;
 }
 

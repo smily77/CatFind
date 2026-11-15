@@ -5,6 +5,8 @@
 
 // Modell-Parameter: identische Namen/Bedeutung wie DEFAULT_PARAMS in catmodel.py
 // (ms-Werte werden hier in Sekunden gefuehrt).
+#define CT_MAX_QUIET 4               // NoShot-Fenster (VPS QUIET_MAX)
+
 struct CatParams {
   float gate_speed_mm_s, gate_base_mm;
   float track_gap_s, stitch_gap_s, stitch_dist_mm;
@@ -23,7 +25,8 @@ struct CatParams {
   float eye_dist_mm, eye_time_s; int score_eyes;
   int   cont_confirm;                // 1 = Fortsetzung erbt die Bestaetigung (catmodel.continuations)
   float cont_gap_s, cont_dist_mm, cont_v_min_mm_s, cont_v_max_mm_s, cont_near_mm, cont_angle_deg;
-  int   quiet_t0_min, quiet_t1_min;   // NoShot-Zeit (Maeher-Ruhefenster), lokale Minuten
+  int   quiet_n;                      // NoShot-Zeit = Bilder-Sperrzeiten des VPS (0 = keine)
+  int   quiet_t0_min[CT_MAX_QUIET], quiet_t1_min[CT_MAX_QUIET];   // lokale Minuten
   int   mow_pause;                    // 1 = Katzenerkennung pausiert, solange der Maeher maeht (mowGuard.ino)
   float mow_p0_mm, mow_path_mm, mow_window_s, mow_depart_s, mow_hold_s;
   int   mow_day_t0_min, mow_day_t1_min; // nur in diesem Tagesfenster kann er maehen

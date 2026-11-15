@@ -2341,7 +2341,7 @@ def incident_push_test():
 # VPS-Nachbau (sitmodel.py) des CatIdent-Moduls sitModel.ino, Konzept im
 # GesamtKonzept (Abschnitt "Zielmodell Sitzende Katze"). Laeuft fortlaufend ueber
 # die Rohmeldungen (events), mit denselben Vorfiltern wie im CatIdent: nur HLK-
-# Radare, nur innerhalb der No-Shot-Karte, nicht in der NoShot-Zeit (quiet_t0/t1).
+# Radare, nur innerhalb der No-Shot-Karte, nicht in der NoShot-Zeit (= Bilder-Sperrzeiten).
 # Ergebnis: Tabelle sit_events (Ausloesungen + laengere Sitzplaetze mit Grund).
 # Parameter, Sperrstellen und Korridor liegen in meta (sit_params, sit_blocks,
 # corridor) und gehen als /sitparams.csv bzw. /sit_corridor.csv an den CatIdent.
@@ -2400,18 +2400,9 @@ def _corridor():
 
 
 def _sit_sig():
-    p = catmodel.merged_params(load_params())
     return hashlib.md5(json.dumps([_sit_params(), _sit_blocks(), _corridor()["cells"],
-                                   p["quiet_t0_min"], p["quiet_t1_min"]],
+                                   _photo_windows()],
                                   sort_keys=True).encode()).hexdigest()
-
-
-def _quiet(t, p):
-    a, b = int(p["quiet_t0_min"]), int(p["quiet_t1_min"])
-    if a == b:
-        return False
-    m = _local_minute_of_day(t)
-    return (a <= m < b) if a < b else (m >= a or m < b)
 
 
 def _sit_save(kind, info):
@@ -2467,7 +2458,7 @@ def _sit_step():
                               "ORDER BY t LIMIT ?", (cur, hi, SIT_CHUNK)).fetchall()
         if not rows:
             return False
-        p = catmodel.merged_params(load_params())
+        wins = _photo_windows()          # NoShot-Zeit = Bilder-Sperrzeiten
         devices = load_devices()
         hlk = {int(k) for k, d in devices.items() if (d or {}).get("type") == "HLK"}
         rings = map_mirror_rings("noshot")
@@ -2476,7 +2467,7 @@ def _sit_step():
                 continue
             if rings and not any(catmodel.point_in_poly(x, y, r) for r in rings):
                 continue
-            if _quiet(t, p):
+            if _photo_blocked_window(t, wins):
                 continue
             for kind, info in model.feed(t, snd, x, y):
                 if kind in ("fire", "end"):
@@ -2941,6 +2932,24 @@ def _photo_blocked_window(epoch, windows=None):
     return None
 
 
+QUIET_MAX = 4                     # so viele Fenster kennt der CatIdent (CT_MAX_QUIET)
+CATIDENT_ID = 18
+CMD_RELOAD_PARAMS = 22            # xComDef cmdReloadParams
+
+
+def _quiet_windows():
+    """Bilder-Sperrzeiten als [(t0_min, t1_min)] fuer den CatIdent (leere ausgelassen)."""
+    out = []
+    for w in _photo_windows():
+        try:
+            a, b = _hhmm_to_min(w["start"]), _hhmm_to_min(w["end"])
+        except Exception:                                    # noqa: BLE001
+            continue
+        if a != b:
+            out.append((a, b))
+    return out[:QUIET_MAX]
+
+
 @app.get("/photo_block")
 def photo_block_get():
     # Aktuelle Sperrzeiten + lokale Uhrzeit + ob gerade gesperrt (für die UI).
@@ -2974,8 +2983,12 @@ def photo_block_set():
     with _db_lock:
         _meta_set("photo_block", json.dumps(out))
         _db.commit()
+    with _cmd_lock:                      # CatIdent uebernimmt sie als NoShot-Zeit
+        _cmd_queue.append((CATIDENT_ID, CMD_RELOAD_PARAMS, 0))
     _sysmsg("Bilder-Sperrzeiten aktualisiert: " +
-            (", ".join("%s-%s" % (w["start"], w["end"]) for w in out) or "keine"))
+            (", ".join("%s-%s" % (w["start"], w["end"]) for w in out) or "keine") +
+            " - CatIdent laedt sie als NoShot-Zeit (Modellpause)" +
+            ("" if len(out) <= QUIET_MAX else ", davon nur die ersten %d" % QUIET_MAX))
     return jsonify(ok=True, windows=out)
 
 
@@ -3136,6 +3149,11 @@ def aparams_csv():
             lines += ["%s.%s=%g" % (k, kk, vv) for kk, vv in sorted(v.items())]
         else:
             lines.append("%s=%g" % (k, v))
+    # NoShot-Zeit des CatIdent (Modell pausiert) = die Bilder-Sperrzeiten (Tab Bilder)
+    q = _quiet_windows()
+    lines.append("quiet_n=%d" % len(q))
+    for i, (a, b) in enumerate(q):
+        lines += ["quiet%d_t0_min=%d" % (i, a), "quiet%d_t1_min=%d" % (i, b)]
     return Response("\n".join(lines) + "\n", mimetype="text/plain; charset=utf-8")
 
 
