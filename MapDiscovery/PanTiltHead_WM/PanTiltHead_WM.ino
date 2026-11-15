@@ -330,6 +330,20 @@ void loop() {
         pan.moveTime(panTicks, 300, 600);
     }
 
+    // Vor einer Messung warten, bis der Pan-Servo am Ziel steht (max. 2 s).
+    // Sonst misst der Entfernungsmesser während der Fahrt und der gemeldete
+    // Ist-Winkel ist noch der alte (X40 misst in ~0,5 s, also schneller als
+    // der SEN0366 - dort fiel das weniger auf).
+    if (cmd.doMeasure) {
+        uint32_t tw = millis();
+        uint16_t pt;
+        while (millis() - tw < 2000) {
+            if (pan.readPresentPosition(pt) && abs((int)pt - (int)panTicks) <= 6) break;  // ~0,5°
+            delay(20);
+        }
+        delay(150);   // ausschwingen
+    }
+
     // Ist-Pan-Winkel aus Servo-Feedback lesen (auch wenn nicht gemessen wird).
     // Fallback auf den Sollwinkel, falls die Bus-Abfrage fehlschlägt.
     float    panActualDeg = cmd.panDeg;
