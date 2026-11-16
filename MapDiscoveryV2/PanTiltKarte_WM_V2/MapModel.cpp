@@ -113,5 +113,26 @@ void MapModel::clearPoints() {
     _undoValid = false;
 }
 
+bool MapModel::expectedDist(float panDeg, float maxGapDeg, float &dist) const {
+    int lo = -1, hi = -1, same = -1;
+    for (int i = 0; i < _n; i++) {
+        float d = _pts[i].panDeg - panDeg;
+        if (fabsf(d) < DUP_PAN_DEG) { same = i; continue; }
+        if (fabsf(d) > maxGapDeg) continue;
+        if (d < 0) lo = i;                    // sortiert: letzter links = nächster
+        else if (hi < 0) hi = i;              // erster rechts = nächster
+    }
+    auto r = [&](int i) { return hypotf(_pts[i].x - _hx, _pts[i].y - _hy); };
+    if (same >= 0) {
+        dist = r(same);                       // Punkt am selben Pan: bester Vergleich
+    } else if (lo >= 0 && hi >= 0) {
+        float t = (panDeg - _pts[lo].panDeg) / (_pts[hi].panDeg - _pts[lo].panDeg);
+        dist = r(lo) + t * (r(hi) - r(lo));
+    } else if (lo >= 0) dist = r(lo);
+    else if (hi >= 0)   dist = r(hi);
+    else return false;
+    return true;
+}
+
 float MapModel::minPan() const { return _n ? _pts[0].panDeg : 0.0f; }
 float MapModel::maxPan() const { return _n ? _pts[_n - 1].panDeg : 0.0f; }

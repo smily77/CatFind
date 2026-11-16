@@ -50,6 +50,12 @@ public:
     float minPan() const;
     float maxPan() const;
 
+    // Erwartete waagrechte Distanz vom Kopf unter panDeg, aus den nächsten
+    // Punkten links/rechts innerhalb maxGapDeg (linear nach Pan interpoliert;
+    // liegt ein Punkt am selben Pan ±DUP_PAN_DEG, gilt dessen Distanz).
+    // false, wenn kein Nachbar in Reichweite.
+    bool  expectedDist(float panDeg, float maxGapDeg, float &dist) const;
+
     static const float DUP_PAN_DEG;
 
 private:

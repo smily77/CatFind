@@ -4,6 +4,9 @@ Kopf steht an bekannter Stelle (HEAD_X, HEAD_Y) mit Nullrichtung HEAD_PHI.
 Messbar sind: zwei Pfosten O=(0,0) und A=(A_X,0) und die Gartengrenze
 GARDEN (offene Linie). Strahl ohne Treffer -> Messung FAILED.
 
+Ausreisser auf Bestellung: sim.outliers = [34.11, ...] (naechste Messungen)
+oder sim.outlier_every = n (jede n-te Messung).
+
 Realistisch nachgebildet: Pan in Servo-Ticks gerundet (4096/360), Schraeg-
 distanz = waagrecht / cos(Tilt), Antwortverzoegerung, Paketverlust in beide
 Richtungen (DROP), Wiederholungen derselben seq werden nicht neu gemessen.
@@ -76,6 +79,9 @@ class Sim:
         self.measures = 0
         self.rx = self.dropped = 0
         self.stop = False
+        self.outliers = []        # naechste Messungen liefern diese Werte (Schraegdistanz) statt der Wahrheit
+        self.outlier_every = 0    # jede n-te Messung ein zufaelliger Ausreisser (0 = aus)
+        self.outlier_count = 0
 
     def start(self):
         threading.Thread(target=self.run, daemon=True).start()
@@ -93,6 +99,12 @@ class Sim:
 
     def measure(self, pan, tilt):
         pan_act = round(pan * TICKS) / TICKS
+        if self.outliers:
+            self.outlier_count += 1
+            return mdv2.ST_DONE, self.outliers.pop(0), pan_act
+        if self.outlier_every and self.measures % self.outlier_every == 0:
+            self.outlier_count += 1
+            return mdv2.ST_DONE, random.choice((0.4, 12.0, 34.11, 21.5)), pan_act
         a = math.radians(HEAD_PHI_DEG - pan_act)
         h = ray_hit(HEAD_X, HEAD_Y, math.cos(a), math.sin(a))
         if h is None:

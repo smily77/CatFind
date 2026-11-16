@@ -37,11 +37,14 @@
 
 #include "App.h"
 #include "HeadLink.h"
+#include "Plausi.h"
 
 App app;
 static HeadLink headLink;
 static UNIT_8ENCODER enc;
 static Preferences prefs;
+static Plausi plausi;          // Nachmessen bei unplausiblen Werten
+static int    scanRechecked = 0;
 
 static int32_t encPrev[8];
 static bool    needRedraw = false;
@@ -61,7 +64,8 @@ static void status(uint16_t col, const char *fmt, ...) {
 }
 
 // ── Messung starten ─────────────────────────────────────────────────────────
-static bool beginMeasure(MeasKind kind, bool approach) {
+static bool beginMeasure(MeasKind kind, bool approach, bool recheck = false) {
+    if (!recheck) plausi.reset();
     headLink.setState(app.panDeg, app.tiltDeg, app.laserOn, app.markerOn);
     if (!headLink.startMeasure(approach)) return false;
     app.measKind = kind;
@@ -86,6 +90,7 @@ static void startAutoScan() {
     }
     app.scanCur   = app.scanMin;
     app.scanAdded = 0;
+    scanRechecked = 0;
     app.laserOn   = true;
     app.state     = S_AUTO_SCAN;
     scanNext(true);
@@ -95,7 +100,10 @@ static void scanAdvance() {
     app.scanCur += scanStep();
     if (app.scanCur > app.scanMax + scanStep() * 0.25f) {
         app.state = S_MAP;
-        status(TFT_GREEN, "Auto-Scan fertig! %d Punkte hinzugefuegt.", app.scanAdded);
+        if (scanRechecked)
+            status(TFT_GREEN, "Auto-Scan fertig! %d Punkte, %d nachgemessen.", app.scanAdded, scanRechecked);
+        else
+            status(TFT_GREEN, "Auto-Scan fertig! %d Punkte hinzugefuegt.", app.scanAdded);
     } else {
         scanNext(false);
     }
@@ -121,19 +129,45 @@ static void onMeasureResult(const MeasureResult &r) {
     }
     float horiz = r.distanceM * cosf(r.tiltActDeg * (float)(M_PI / 180.0));
 
-    if (kind == MK_SCAN) {
-        if (app.state != S_AUTO_SCAN) return;          // Scan wurde gestoppt
-        if (ok) {
-            if (app.map.add(r.panActDeg, horiz) == MapModel::ADD_FULL) {
-                app.state = S_MAP;
-                status(TFT_RED, "Karte voll (%d Punkte) - Scan beendet.", MapModel::MAX_PTS);
+    // Grenzpunkte (PUNKT MESSEN, Auto-Scan): Plausibilität prüfen, ggf. nachmessen
+    if (kind == MK_SCAN || kind == MK_POINT) {
+        if (kind == MK_SCAN && app.state != S_AUTO_SCAN) return;   // Scan wurde gestoppt
+        // Fehlmessung beim Nachmessen = Versuch ohne Wert; beim ersten Versuch -> Meldung wie bisher
+        Plausi::Verdict v = plausi.feed(app.map, ok, r.panActDeg, horiz);
+
+        if (v == Plausi::V_REMEASURE) {
+            if (plausi.hasExpected())
+                status(TFT_ORANGE, "Unplausibel %.2fm (erwartet %.2f) - messe nach...",
+                       plausi.lastValue(), plausi.expected());
+            else
+                status(TFT_ORANGE, "Unplausibel %.2fm - messe nach...", plausi.lastValue());
+            beginMeasure(kind, false, true);
+            return;
+        }
+
+        bool rechecked = plausi.tries() > 1;
+        if (v == Plausi::V_ACCEPT) {
+            if (app.map.add(plausi.pan(), plausi.horiz()) == MapModel::ADD_FULL) {
+                if (kind == MK_SCAN) app.state = S_MAP;
+                status(TFT_RED, "Karte voll (%d Punkte)!", MapModel::MAX_PTS);
                 return;
             }
-            app.scanAdded++;
+            float x, y;
+            app.map.toWorld(plausi.pan(), plausi.horiz(), x, y);
+            const char *note = plausi.unsure() ? " (unsicher)" : rechecked ? " (nachgemessen)" : "";
+            if (kind == MK_SCAN) {
+                app.scanAdded++;
+                if (rechecked) scanRechecked++;
+                if (rechecked) status(plausi.unsure() ? TFT_ORANGE : TFT_YELLOW,
+                                      "Pan %.1f: %.2fm%s", plausi.pan(), plausi.horiz(), note);
+            } else {
+                status(plausi.unsure() ? TFT_ORANGE : TFT_GREEN,
+                       "Pt %d:  X=%.2fm  Y=%.2fm%s", app.map.count(), x, y, note);
+            }
         } else {
             failStatus(r);
         }
-        scanAdvance();
+        if (kind == MK_SCAN) scanAdvance();
         return;
     }
 
@@ -154,14 +188,6 @@ static void onMeasureResult(const MeasureResult &r) {
             status(TFT_GREEN, "Kalibriert! Kopf=(%.2f/%.2f)m phi=%.1f",
                    app.map.headX(), app.map.headY(), app.map.headPhi() * 180.0f / (float)M_PI);
             break;
-        case MK_POINT: {
-            MapModel::AddResult a = app.map.add(r.panActDeg, horiz);
-            if (a == MapModel::ADD_FULL) { status(TFT_RED, "Karte voll (%d Punkte)!", MapModel::MAX_PTS); break; }
-            float x, y;
-            app.map.toWorld(r.panActDeg, horiz, x, y);
-            status(TFT_GREEN, "Pt %d:  X=%.2fm  Y=%.2fm", app.map.count(), x, y);
-            break;
-        }
         case MK_CHECK:
             status(TFT_CYAN, "Check: d=%.3fm  pan_ist=%.2f", r.distanceM, r.panActDeg);
             break;
@@ -170,15 +196,26 @@ static void onMeasureResult(const MeasureResult &r) {
 }
 
 // ── SD-Karte (SPI, NICHT SDMMC: SDMMC teilt sich die Peripherie mit dem WLAN) ─
+static bool mountSD() {
+    static bool spiStarted = false;
+    if (!spiStarted) { SPI.begin(43, 39, 44, 42); spiStarted = true; }
+    for (int i = 0; i < 3; i++) {               // Karte braucht nach Neustart manchmal mehrere Anläufe
+        if (SD.begin(42, SPI, 4000000)) return true;
+        SD.end();
+        delay(200);
+    }
+    return false;
+}
+
 static void initSD() {
-    SPI.begin(43, 39, 44, 42);
-    app.sdOk = SD.begin(42, SPI, 4000000);
+    app.sdOk = mountSD();
     if (app.sdOk) status(TFT_GREEN, "SD-Karte OK.");
     else          status(TFT_RED, "SD-Karte nicht erkannt - Speichern deaktiviert.");
 }
 
 static void saveMap() {
     const MapModel &m = app.map;
+    if (!app.sdOk) app.sdOk = mountSD();        // evtl. erst jetzt eingesteckt / bereit
     if (!app.sdOk)     { status(TFT_RED, "SD-Karte nicht bereit!"); return; }
     if (m.count() < 3) { status(TFT_ORANGE, "Mind. 3 Punkte benoetigt!"); return; }
 

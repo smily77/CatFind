@@ -19,6 +19,17 @@ gleich wie in V1. Neu geschrieben ist die Software darunter.
   nimmt die Karte den Sollwert.
 - **Auto-Scan-Schrittweite wählbar:** Der Knopf rechts neben AUTO SCAN schaltet
   0,5 → 1 → 2 → 5° um. Die Wahl bleibt über einen Neustart erhalten (Standard 2°).
+- **Nachmessen bei unplausiblen Werten** (PUNKT MESSEN und Auto-Scan, nicht
+  Kalibrierung und Anfahrt prüfen). Ein Wert gilt als unplausibel, wenn er mehr
+  als 0,5 m bzw. 30 % von der erwarteten Distanz abweicht oder über 50 m liegt.
+  Die Erwartung kommt vom vorhandenen Punkt am selben Pan, sonst von den
+  Nachbarn innerhalb ±30°. Ist einer unplausibel, wird nachgemessen:
+  Bestätigt die zweite Messung die erste (±5 cm bzw. 2 %), ist es eine echte
+  Stelle, etwa eine Ecke, und wird übernommen. Ist die zweite plausibel, gilt
+  sie. Sonst folgt eine dritte, und die zwei passenden Werte zählen. Passen keine
+  zwei zusammen, wird der Wert genommen, der der Erwartung am nächsten liegt,
+  und als „(unsicher)“ gemeldet. Die Statuszeile zeigt „(nachgemessen)“, am
+  Scan-Ende steht „N Punkte, K nachgemessen“. Logik in `PanTiltKarte_WM_V2/Plausi.cpp`.
 
 **Darunter**
 - **Protokoll mit Auftragsnummern:** Jede Antwort gehört eindeutig zu einem
@@ -90,7 +101,7 @@ und Dauer aus, zum Beispiel
 | Datei | Zweck |
 |---|---|
 | `headtest.py [IP]` | prüft einen echten Head über UDP: Antworten, Messung, Wiederholung, Anfahrt, SET während Messung, Laser/Marker, Wiederholgenauigkeit |
-| `headsim.py` | simulierter Head mit erfundenem Garten (bekannte Kopf-Pose, Pfosten O/A, Gartengrenze, Servo-Rundung, Tilt, 20 % Paketverlust) |
+| `headsim.py` | simulierter Head mit erfundenem Garten (bekannte Kopf-Pose, Pfosten O/A, Gartengrenze, Servo-Rundung, Tilt, 20 % Paketverlust, Ausreisser auf Bestellung) |
 | `karte_e2e.py COM19 [PC-IP] --reset` | Ende-zu-Ende-Test der echten Karte gegen den Simulator, gesteuert über den seriellen Testzugang |
 | `karte.py` | serieller Testzugang zur Karte (wird von `karte_e2e.py` benutzt) |
 | `serlog.ps1 COM18 20` | serielle Ausgabe mitlesen, ohne das Board zurückzusetzen |
@@ -108,6 +119,9 @@ erscheint zusätzlich als `STATUS: ...`.
   1 mm und 0,03° genau, Punkte mit Tilt -5° auf 1,5 mm genau auf der Grenze.
   Der Rest ist die Servo-Rundung.
 - Tab5 mit dem echten Head (X40): Kalibrierung, Punkte und Auto-Scan laufen.
+- Nachmessen (Simulator): einzelner Ausreisser korrigiert, bestätigte Abweichung
+  übernommen, drei verschiedene Werte als „unsicher“ gemeldet, Scan mit jeder
+  4. Messung als Ausreisser: alle Punkte auf 1,5 mm richtig.
 - **Noch offen:** Test mit SEN0366 und Feldtest mit echten Referenzpunkten.
 
 ## Bekannte Eigenheiten
@@ -117,6 +131,9 @@ erscheint zusätzlich als `STATUS: ...`.
   kommen vom Sensor selbst.
 - **Tilt-Servo (SC15):** Bei Soll 0° steht er auf etwa ±1,9° (Totband). Für die
   Distanz ist das vernachlässigbar (0,5 mm pro Meter).
+- **Tab5-SD:** Am 2026-11-16 nach drei erfolgreichen Speichervorgängen plötzlich
+  nicht mehr erkannt, auch nicht nach einem harten Reset (Karte prüfen). Der Start
+  versucht es jetzt dreimal, KARTE SPEICHERN versucht es noch einmal.
 - **Tab5:** SD-Karte über SPI, nicht SDMMC (teilt sich die Peripherie mit dem
   WLAN). Beim Kaltstart kann der Unit 8Encoder im Bootloader hängen, das Byte
   `0x77` an 0x54 holt ihn zurück.

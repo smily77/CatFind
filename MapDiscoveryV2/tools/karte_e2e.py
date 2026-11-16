@@ -91,11 +91,43 @@ k.cmd("pan 10")
 press_until(k, "act", r"Pt \d+")
 check("gleicher Pan ersetzt statt verdoppelt", len(k.dump()["points"]) == n_after)
 
+# ── Plausibilitaet: ein Ausreisser -> nachgemessen, richtiger Wert ──
+k.cmd("pan 25")
+sim.outliers = [34.11]
+st = press_until(k, "act", r"Pt \d+|ungueltig|antwortet")
+d = k.dump()
+p25 = [pt for pt in d["points"] if abs(pt[0] - 25) < 0.2]
+ok = st and "nachgemessen" in st and p25 and H.dist_to_garden(p25[0][1], p25[0][2]) < 0.01
+check("Ausreisser nachgemessen", ok, st or "")
+k.cmd("btn undo"); k.pump(0.3)
+
+# ── zweimal derselbe abweichende Wert -> echte Stelle, uebernommen ──
+sim.outliers = [2.0, 2.0]
+st = press_until(k, "act", r"Pt \d+|ungueltig|antwortet")
+d = k.dump()
+p25 = [pt for pt in d["points"] if abs(pt[0] - 25) < 0.2]
+r25 = math.hypot(p25[0][1] - H.HEAD_X, p25[0][2] - H.HEAD_Y) if p25 else 0
+check("bestaetigte Abweichung uebernommen", st and "nachgemessen" in st and abs(r25 - 2.0 * math.cos(math.radians(TILT))) < 0.01,
+      f"{st}  r={r25:.3f}")
+k.cmd("btn undo"); k.pump(0.3)
+
+# ── drei verschiedene Ausreisser -> unsicher ──
+sim.outliers = [34.11, 12.0, 0.4]
+st = press_until(k, "act", r"Pt \d+|ungueltig|antwortet")
+check("drei Ausreisser -> unsicher", st and "unsicher" in st, st or "")
+k.cmd("btn undo"); k.pump(0.3)
+n_after = len(k.dump()["points"])
+
 # ── Schrittweite + Auto-Scan ──
 st = press_until(k, "step", "Scan-Schritt", 3)        # 2 -> 5
 check("Schrittweite umgeschaltet", st and "5.0" in st, st or "")
 t0 = time.time()
+sim.outlier_every = 4                                 # jede 4. Messung ein Ausreisser
+oc0 = sim.outlier_count
 st = press_until(k, "scan", "Auto-Scan fertig|voll|gestoppt", 180)
+sim.outlier_every = 0
+print(f"   {sim.outlier_count - oc0} Ausreisser im Scan eingestreut")
+check("Scan meldet Nachmessungen", st and "nachgemessen" in st, st or "")
 d = k.dump()
 pans = [p for p, _, _ in d["points"]]
 check("Auto-Scan fertig", st is not None, f"{st}  {time.time()-t0:.1f} s")
