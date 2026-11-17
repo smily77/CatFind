@@ -95,6 +95,17 @@
   .covItem.off { opacity:.5; cursor:default; }
   #covMsg { color:#9ab; line-height:1.35; margin:8px 0; min-height:1em; }
   #vis { height:100%; display:flex; min-height:0; }
+  /* Tab Klima (climate.js) */
+  #clim { height:100%; overflow:auto; padding:8px 12px; position:relative; }
+  #climBar { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:8px; font-size:13px; }
+  #climBar input, #climBar select { background:#1c1c22; color:#ddd; border:1px solid #3a3a44; border-radius:5px; padding:4px 6px; color-scheme:dark; }
+  #climStats { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px; }
+  .climStat { background:#17171d; border:1px solid #2a2a33; border-radius:6px; padding:6px 10px; min-width:130px; }
+  .climStat b { display:block; font:500 18px ui-monospace,monospace; color:#eee; }
+  .climStat span { color:#889; font-size:11px; }
+  .climChart { position:relative; height:280px; margin-bottom:10px; background:#141419; border:1px solid #26262d; border-radius:6px; }
+  .climChart canvas { cursor:crosshair; }
+  #climTip { position:absolute; pointer-events:none; background:#000d; border:1px solid #444; border-radius:5px; padding:4px 7px; font:12px ui-monospace,monospace; color:#eee; white-space:nowrap; display:none; z-index:5; }
   /* Tab Zielmodell (target.js) */
   #tgt { height:100%; display:flex; min-height:0; }
   #tgtLeft { flex:1; display:flex; flex-direction:column; min-width:0; }
@@ -216,6 +227,7 @@
   <button class="tab" data-v="pics">Bilder</button>
   <button class="tab" data-v="vis">Besucher</button>
   <button class="tab" data-v="tgt">Zielmodell</button>
+  <button class="tab" data-v="clim">Klima</button>
   <button class="tab" data-v="ctrl">Steuerung</button>
   <button id="reset">Karten zurücksetzen</button>
 </header>
@@ -312,6 +324,35 @@
         <button class="tab" id="tgtParamDef">Standardwerte</button>
         <div class="manHelp">Nach dem Übernehmen rechnet der Nachbau alles ab 16.10. neu (wenige Sekunden). Der CatIdent holt die Werte beim Neustart oder mit der Aktion „Parameter laden“ (Steuerung).</div>
       </div>
+    </div>
+    <div id="clim" style="display:none">
+      <div id="climBar">
+        <label for="climPer">Periode</label>
+        <select id="climPer">
+          <option value="3">3 h</option><option value="6">6 h</option><option value="12">12 h</option>
+          <option value="24" selected>1 Tag</option><option value="72">3 Tage</option>
+          <option value="168">1 Woche</option><option value="720">30 Tage</option>
+          <option value="2160">90 Tage</option><option value="8760">1 Jahr</option>
+        </select>
+        <button class="tab" id="climPrev" title="eine Periode zurück">◀</button>
+        <label for="climEnd">Ende</label>
+        <input type="datetime-local" id="climEnd">
+        <button class="tab" id="climNext" title="eine Periode vor">▶</button>
+        <button class="tab" id="climNow">jetzt</button>
+        <label for="climStep">Mittelung</label>
+        <select id="climStep">
+          <option value="auto" selected>automatisch</option><option value="0">keine (Rohwerte)</option>
+          <option value="300">5 min</option><option value="900">15 min</option>
+          <option value="3600">1 h</option><option value="21600">6 h</option><option value="86400">1 Tag</option>
+        </select>
+        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="climBand" checked> Min/Max-Band</label>
+        <span class="hint" id="climInfo"></span>
+      </div>
+      <div id="climStats"></div>
+      <div class="climChart"><canvas id="climT"></canvas></div>
+      <div class="climChart"><canvas id="climP"></canvas></div>
+      <div id="climTip"></div>
+      <div class="hint">Ziehen = Zeitraum wählen und hineinzoomen · Doppelklick = Zoom zurück · ◀ ▶ = eine Periode verschieben · Ende „jetzt“ aktualisiert jede Minute.</div>
     </div>
     <div id="vis" style="display:none">
       <div id="visLeft">
@@ -493,8 +534,9 @@ const CMD_REBOOT=30;   // Fernwartung: Geraet neu starten (jedes Geraet, ueber M
 function setView(v,b){
   view=v;
   document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active", x===b));
-  const isList=v==="list", isCtrl=v==="ctrl", isAna=v==="ana", isPics=v==="pics", isManual=v==="manual", isCov=v==="cov", isVis=v==="vis", isTgt=v==="tgt",
-        isMap=!isList&&!isCtrl&&!isAna&&!isPics&&!isManual&&!isCov&&!isVis&&!isTgt;
+  const isList=v==="list", isCtrl=v==="ctrl", isAna=v==="ana", isPics=v==="pics", isManual=v==="manual", isCov=v==="cov", isVis=v==="vis", isTgt=v==="tgt", isClim=v==="clim",
+        isMap=!isList&&!isCtrl&&!isAna&&!isPics&&!isManual&&!isCov&&!isVis&&!isTgt&&!isClim;
+  document.getElementById("clim").style.display   = isClim?"block":"none";
   document.getElementById("list").style.display   = isList?"block":"none";
   document.getElementById("ctrl").style.display   = isCtrl?"block":"none";
   document.getElementById("ana").style.display    = isAna?"flex":"none";
@@ -513,6 +555,7 @@ function setView(v,b){
   if(isCov) covShow();
   if(isVis) visShow();
   if(isTgt) tgtShow();
+  if(typeof climShow==="function"){ if(isClim) climShow(); else climHide(); }
   if(isPics) loadPics();
 }
 
@@ -928,5 +971,6 @@ async function tick(){
 <script src="static/coverage.js"></script>
 <script src="static/visitor.js"></script>
 <script src="static/target.js"></script>
+<script src="static/climate.js"></script>
 </body>
 </html>

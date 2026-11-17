@@ -30,6 +30,7 @@ Endpunkte:
   POST /command         Webinterface -> Kommando-Queue {"target":id,"cmd":c,"info":i}
   GET  /commands        Manager holt anstehende Kommandos ab (CSV "target,cmd,info"), leert die Queue
   GET  /env             Umweltwerte (envReport, heute Dome-C1/BMP180): aktuell + Verlauf
+                        (?hours=&t1=&step= fuer Tab Klima: Fenster bis t1, Mittel je step s)
                         (?sender=21&hours=24); POST /env_request fragt alle sofort ab
   GET  /actlog?t0&t1    Aktor-Kette: catDetected / Feuersperren / Schuesse (actor_log)
   POST /mower           Rasenmaeher: Dock-Zustand (KIVision) / maeht (Cat Identifier)
@@ -1280,27 +1281,47 @@ def actlog():
 def env_history():
     # Verlauf je Sender (Default: alle Sender mit Umweltsensor, letzte 24 h) plus
     # Min/Max/Tendenz - fuer die Anzeige im Steuerungs-Tab.
-    hours = min(max(request.args.get("hours", 24, type=float), 0.1), 24 * 365)
+    # Tab "Klima": t1 (Ende, Default jetzt) + hours = beliebiges Fenster; step > 0
+    # mittelt je step Sekunden (Mittel + Min/Max je Schritt, tmin/tmax/pmin/pmax).
+    hours = min(max(request.args.get("hours", 24, type=float), 0.1), 24 * 400)
     sender = request.args.get("sender", type=int)
-    t0 = time.time() - hours * 3600
-    q = "SELECT sender,t,temp,press FROM env WHERE t>=?"
-    args = [t0]
+    t1 = request.args.get("t1", time.time(), type=float)
+    t0 = t1 - hours * 3600
+    step = max(request.args.get("step", 0, type=float), 0)
+    if step:
+        q = ("SELECT sender,AVG(t),AVG(temp),AVG(press),MIN(temp),MAX(temp),"
+             "MIN(press),MAX(press) FROM env WHERE t>=? AND t<=?")
+    else:
+        q = "SELECT sender,t,temp,press,temp,temp,press,press FROM env WHERE t>=? AND t<=?"
+    args = [t0, t1]
     if sender is not None:
         q += " AND sender=?"
         args.append(sender)
+    if step:
+        q += " GROUP BY sender, CAST(t/? AS INT)"
+        args.append(step)
     with _reading() as db:
-        rows = db.execute(q + " ORDER BY t", args).fetchall()
+        rows = db.execute(q + " ORDER BY 2", args).fetchall()
     out = {}
-    for sid, t, temp, press in rows:
-        o = out.setdefault(str(sid), {"name": dev_name(int(sid)), "t": [], "temp": [], "press": []})
-        o["t"].append(round(t, 1)); o["temp"].append(temp); o["press"].append(press)
+    for sid, t, temp, press, tmin, tmax, pmin, pmax in rows:
+        if temp is None or press is None:
+            continue
+        o = out.setdefault(str(sid), {"name": dev_name(int(sid)), "t": [], "temp": [], "press": [],
+                                      "tmin": [], "tmax": [], "pmin": [], "pmax": []})
+        o["t"].append(round(t, 1)); o["temp"].append(round(temp, 2)); o["press"].append(round(press, 2))
+        if step:
+            o["tmin"].append(tmin); o["tmax"].append(tmax)
+            o["pmin"].append(pmin); o["pmax"].append(pmax)
     for o in out.values():
-        o["tempMin"], o["tempMax"] = min(o["temp"]), max(o["temp"])
-        o["pressMin"], o["pressMax"] = min(o["press"]), max(o["press"])
+        if not step:
+            for k in ("tmin", "tmax", "pmin", "pmax"):
+                o.pop(k)
+        o["tempMin"], o["tempMax"] = min(o.get("tmin") or o["temp"]), max(o.get("tmax") or o["temp"])
+        o["pressMin"], o["pressMax"] = min(o.get("pmin") or o["press"]), max(o.get("pmax") or o["press"])
         # Drucktendenz der letzten 3 h (Wetter-Faustregel: > +-1 hPa/3 h = Wetterwechsel)
         k = next((i for i, t in enumerate(o["t"]) if t >= o["t"][-1] - 3 * 3600), 0)
         o["pressTrend3h"] = round(o["press"][-1] - o["press"][k], 1)
-    return jsonify(hours=hours, env=out)
+    return jsonify(hours=hours, t0=t0, t1=t1, step=step, env=out)
 
 
 @app.get("/commands")
