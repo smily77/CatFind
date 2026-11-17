@@ -1283,7 +1283,7 @@ def env_history():
     # Min/Max/Tendenz - fuer die Anzeige im Steuerungs-Tab.
     # Tab "Klima": t1 (Ende, Default jetzt) + hours = beliebiges Fenster; step > 0
     # mittelt je step Sekunden (Mittel + Min/Max je Schritt, tmin/tmax/pmin/pmax).
-    hours = min(max(request.args.get("hours", 24, type=float), 0.1), 24 * 400)
+    hours = min(max(request.args.get("hours", 24, type=float), 0.1), 24 * 800)
     sender = request.args.get("sender", type=int)
     t1 = request.args.get("t1", time.time(), type=float)
     t0 = t1 - hours * 3600

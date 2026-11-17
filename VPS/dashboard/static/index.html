@@ -104,7 +104,7 @@
   .climStat b { display:block; font:500 18px ui-monospace,monospace; color:#eee; }
   .climStat span { color:#889; font-size:11px; }
   .climChart { position:relative; height:280px; margin-bottom:10px; background:#141419; border:1px solid #26262d; border-radius:6px; }
-  .climChart canvas { cursor:crosshair; }
+  .climChart canvas { cursor:grab; }
   #climTip { position:absolute; pointer-events:none; background:#000d; border:1px solid #444; border-radius:5px; padding:4px 7px; font:12px ui-monospace,monospace; color:#eee; white-space:nowrap; display:none; z-index:5; }
   /* Tab Zielmodell (target.js) */
   #tgt { height:100%; display:flex; min-height:0; }
@@ -352,7 +352,7 @@
       <div class="climChart"><canvas id="climT"></canvas></div>
       <div class="climChart"><canvas id="climP"></canvas></div>
       <div id="climTip"></div>
-      <div class="hint">Ziehen = Zeitraum wählen und hineinzoomen · Doppelklick = Zoom zurück · ◀ ▶ = eine Periode verschieben · Ende „jetzt“ aktualisiert jede Minute.</div>
+      <div class="hint">Mausrad = Periode auf/zu (um die Stelle unter dem Mauszeiger) · Klicken und ziehen = Zeitfenster verschieben · ◀ ▶ = eine ganze Periode · Ende „jetzt“ aktualisiert jede Minute.</div>
     </div>
     <div id="vis" style="display:none">
       <div id="visLeft">
