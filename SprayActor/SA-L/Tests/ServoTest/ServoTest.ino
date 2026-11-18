@@ -2,9 +2,14 @@
  * ServoTest - SA-L Test 2 (CYD + Encoder + Servo)
  *
  * Wie EncoderZeiger, der Winkel steuert zusaetzlich den Pan-Servo an SERVO_PIN.
- * Puls = SERVO_MID_US + Winkel * US_PER_DEG (Annahme 300-Grad-Servo:
- * 500..2500 us = 300 Grad -> 6,67 us/Grad). Zuerst nur +/-90 Grad (900..2100 us),
- * das vertraegt jeder Servo; erweitern, wenn der Drehbereich geklaert ist.
+ * Puls = 1500 us + Winkel * us/Grad. 500..2500 us entsprechen je nach Servotyp
+ * 180 Grad (11,1 us/Grad, +/-90) oder 300 Grad (6,67 us/Grad, +/-150).
+ * Encoderknopf schaltet zwischen den beiden Annahmen um (Start: 180).
+ * Stimmt die Annahme, stehen +90 und -90 auf der Anzeige wirklich 180 Grad
+ * auseinander.
+ *
+ * Knopf am PCF wird gelernt: das erste Bit (ausser A/B), das auf Low geht.
+ * Deshalb nach dem Start zuerst drehen, dann druecken.
  *
  * Servo separat mit 5 V speisen, GND mit dem Display verbinden.
  *
@@ -24,13 +29,15 @@ LGFX display;
 LGFX_Sprite dial(&display);
 
 // ── Einstellungen ────────────────────────────────────────────────────────────
-#define ANG_MIN    -90
-#define ANG_MAX     90
 #define SERVO_PIN    7     // extTxD am Gen24Inch-Housing
 #define SERVO_MID_US 1500
-#define US_PER_DEG   (2000.0f / 300.0f)
 
-static uint32_t servoUs(int ang) { return SERVO_MID_US + lroundf(ang * US_PER_DEG); }
+static int servoTravel = 180;                 // angenommener Drehbereich, Knopf schaltet
+static int ANG_MIN = -90, ANG_MAX = 90;
+static float usPerDeg() { return 2000.0f / servoTravel; }
+static void setTravel(int t) { servoTravel = t; ANG_MAX = t / 2; ANG_MIN = -ANG_MAX; }
+
+static uint32_t servoUs(int ang) { return SERVO_MID_US + lroundf(ang * usPerDeg()); }
 static void servoWrite(int ang) {
   // 50 Hz, 14 Bit: 20000 us = 16384 Schritte
   ledcWrite(SERVO_PIN, (uint32_t)((uint64_t)servoUs(ang) * 16384 / 20000));
@@ -48,6 +55,8 @@ static int bitA = -1, bitB = -1;            // PCF-Bits, werden gelernt
 static volatile uint8_t lastRaw = 0xFF;     // PCF-Rohwert fuer die Anzeige
 static volatile int detents = 0;            // gezaehlte Rasten (vorzeichenbehaftet)
 static volatile uint32_t encErrors = 0;
+static int bitBtn = -1;                     // PCF-Bit des Knopfs, wird gelernt
+static volatile int presses = 0;            // gezaehlte Knopfdruecke
 
 static bool pcfRead(uint8_t &v) {
   if (Wire.requestFrom(pcfAddr, (uint8_t)1) != 1) { encErrors++; return false; }
@@ -86,6 +95,23 @@ static void encoderTask(void *) {
       }
       a = (v >> bitA) & 1;
       b = (v >> bitB) & 1;
+      // Knopf lernen: erstes anderes Bit, das auf Low geht
+      if (bitBtn < 0) {
+        uint8_t low = ~v & startRaw & ~((1 << bitA) | (1 << bitB));
+        for (int i = 0; i < 8; i++)
+          if (low & (1 << i)) { bitBtn = i; Serial.printf("PCF: Knopf P%d\n", i); break; }
+      }
+      // Knopf entprellen (30 ms stabil), Druck = Wechsel auf Low
+      if (bitBtn >= 0) {
+        static bool stable = false, lastRawBtn = false;
+        static uint32_t since = 0;
+        bool down = !((v >> bitBtn) & 1);
+        if (down != lastRawBtn) { lastRawBtn = down; since = millis(); }
+        else if (down != stable && millis() - since > 30) {
+          stable = down;
+          if (down) presses++;
+        }
+      }
     }
     oldAB = (oldAB << 2) | (a << 1) | b;
     encval += enc_states[oldAB & 0x0f];
@@ -141,7 +167,7 @@ static void drawDial() {
   dial.setTextColor(TFT_WHITE);
   dial.setFont(&fonts::Font4);
   dial.drawString(buf, c, c + R / 2);
-  snprintf(buf, sizeof(buf), "%lu us", (unsigned long)servoUs(angle));
+  snprintf(buf, sizeof(buf), "%lu us  (%d\xB0-Servo)", (unsigned long)servoUs(angle), servoTravel);
   dial.setFont(&fonts::Font2);
   dial.setTextColor(TFT_LIGHTGREY);
   dial.drawString(buf, c, c + R / 2 + 22);
@@ -199,7 +225,16 @@ void setup() {
 }
 
 void loop() {
-  static int lastDet = 0;
+  static int lastDet = 0, lastPress = 0;
+  if (presses != lastPress) {           // Knopf: 180 <-> 300 umschalten
+    lastPress = presses;
+    setTravel(servoTravel == 180 ? 300 : 180);
+    angle = constrain(angle, ANG_MIN, ANG_MAX);
+    servoWrite(angle);
+    Serial.printf("Annahme %d-Grad-Servo, Winkel %+d  %lu us\n", servoTravel, angle,
+                  (unsigned long)servoUs(angle));
+    drawDial();
+  }
   static uint32_t lastStepMs = 0, lastHdrMs = 0;
   int det = detents;
   if (det != lastDet) {
