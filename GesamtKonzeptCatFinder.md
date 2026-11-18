@@ -1085,6 +1085,18 @@ SA-L ist ein PowerActor: Alle Sicherheitsmechanismen von PA2 gelten auch für ih
   wird mechanisch auf die Distanz zur Zielzone eingestellt.
 - **Standort:** Die Kotplätze liegen 6,6–7,2 m vom Dome-C1. Wegen der Reichweite von
   7–8 m muss der SA-L deutlich näher an der Zielzone stehen.
+- **Mechanik (Vorschlag 2026-11-18):** Der Servo sitzt unten fest im Gehäuse, der Sprayer
+  auf dem Servohorn. Begründung: Das Servokabel bleibt in Ruhe, bewegen müssen sich nur das
+  Kit-Kabel und der kurze Schlauch (wie bei der umgekehrten Lösung auch). Es dreht weniger
+  Masse, der Servo hält ruhiger, und Servo, Elektronik und Netzteil sitzen zusammen im
+  festen Teil. Zu beachten:
+  - **Seitenlast:** Das Kit sitzt kaum mittig über der Achse, das Wasser im Kit wiegt mit.
+    Beim leichten Kit 02 reicht voraussichtlich das Servolager. Wackelt es, kommt ein
+    Drehteller-Lager zwischen Gehäuse und Kit-Halter, der Servo dreht dann nur noch.
+  - **Tropfwasser:** Ein Tropfschirm am drehenden Teil ragt über die Gehäuseöffnung und hält
+    Wasser vom Servo fern.
+  - **Schlauch:** nahe an der Drehachse aus dem Gehäuse führen, damit er sich beim Schwenken
+    kaum mitbiegt.
 
 ### Speisung: alles mit 5 V
 Ein 5-V-Netzteil versorgt alle Teile.
