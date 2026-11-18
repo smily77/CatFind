@@ -1029,7 +1029,39 @@ Pose-Algorithmus des LD06, Kalibrierung der Winkelabweichungen) wird in
 Folgeschritten festgelegt.
 
 
-## Aufgabe: Next-Gen-Aktor mit Akkubetrieb (Entwurf)
+## SprayActor (SA): nächste Aktor-Generation, Nomenklatur (Stand 2026-11-18)
+
+Die nächste Aktor-Generation heisst **SprayActor (SA)**. Allen Varianten gemeinsam ist:
+Sie brauchen keinen Wasserschlauch und spritzen mit einem Sprüh-Kit. Damit sind sie klar
+von den Schlauch-Aktoren PA1_1 und PA2 getrennt. Geplant wird an allen Varianten, welche
+davon gebaut werden, ist noch offen.
+
+| Name | Bedeutung | Speisung | Pose | PCB |
+|---|---|---|---|---|
+| **SA-L** | Lite | Netzteil | mit Hilfe von Hand | nicht nötig |
+| **SA-M** | Mid | offen | offen | offen |
+| **SA-A** | Autonom | Akku | findet sie selbst | ja, eigene Platine |
+
+- **Weitere Varianten** erhalten einen neuen Buchstaben. Die bestehenden Namen bleiben.
+  Die Buchstaben stehen für die Stufe, nicht für eine Eigenschaft, damit der Name auch
+  dann stimmt, wenn SA-M erst später festgelegt wird.
+- **Gebaute Geräte** werden nummeriert: SA-L1, SA-L2, SA-A1 … Unter diesem Namen
+  erscheinen sie auf dem Bus und im VPS.
+- **Platinen** haben eine eigene Revision, z. B. „SA-A-PCB Rev 1“. Eine neue Platine ist
+  keine neue Variante.
+- **SA-Basis:** die Funkbrücke zwischen Bus und den Varianten mit Funk (bisher „Basis“,
+  im Text weiterhin kurz Basis). Eine SA-Basis versorgt bis zu zwei Aktoren.
+- **Firmware:** je Variante eine eigene Firmware. SA-L und SA-A unterscheiden sich zu stark
+  (Netz gegen Akku mit Schlaf und Funk, Pose von Hand gegen eigene Pose), als dass sich
+  eine gemeinsame Firmware lohnt. Gemeinsame Teile wie Bus-Anbindung und Sprüh-Kit-
+  Ansteuerung können als Bibliothek geteilt werden.
+- **PCB:** Vor allem die Akku-Varianten brauchen eine eigene Platine. Das dauert länger
+  und wird deshalb früh eingeplant.
+
+Der folgende Abschnitt beschreibt den bisherigen Entwurf, er ist die Variante **SA-A**.
+
+
+## Aufgabe: SA-A, SprayActor mit Akku und eigener Pose (Entwurf)
 
 **Status 2026-11-05: Entwurf, noch nicht zur Umsetzung freigegeben.** Dieser Abschnitt
 hält den Stand der Überlegungen fest und wird weiter ausgearbeitet. Alle Stromwerte sind
@@ -1040,11 +1072,11 @@ gemessen. Die Einsatzzahlen stammen dagegen aus dem `actor_log`.
 Die heutigen Aktoren hängen per WLAN am Bus und halten mit Akku nur wenige Stunden.
 Die nächste Generation soll mit einem Akku **Wochen** durchhalten. Dafür schläft der
 Aktor, lauscht mit sehr wenig Strom auf Funk und ist nach dem Wecken sofort einsatzbereit.
-Der Aktor besteht aus zwei Teilen: Die **Basis** hängt am Netzteil und am Bus, der
+Der Aktor besteht aus zwei Teilen: Die **SA-Basis** hängt am Netzteil und am Bus, der
 **Actor** läuft mit Akku. Beide haben einen ESP32 und sind über 868 MHz verbunden.
 
 ```text
-Radare → CatIdent → WLAN-Multicast → Basis (Netzteil: ESP32 + RFM95)
+Radare → CatIdent → WLAN-Multicast → SA-Basis (Netzteil: ESP32 + RFM95)
                                          │ 868 MHz FSK, beidseitig
                                          ▼
                  Actor: RFM95 lauscht → weckt ESP32 → schaltet Servo/Laser/Sprüh-Kit
@@ -1087,8 +1119,8 @@ Der RFM95-Wert ist gerechnet: 3 ms Empfang bei etwa 12 mA alle 100 ms, dazwische
 1,5 µA. Die 3 ms sind angenommen und bestimmen das Ergebnis. Der CC1101-Wert ist aus
 Forenmessungen hochgerechnet (40 µA bei 1 s Takt).
 
-### Basis
-Die Basis ist ein Radar nach dem Vorbild des Dome-C1 mit zusätzlichem RFM95. Sie erfüllt
+### SA-Basis
+Die SA-Basis ist ein Radar nach dem Vorbild des Dome-C1 mit zusätzlichem RFM95. Sie erfüllt
 also zwei Aufgaben: Sie beobachtet wie jedes Radar und verbindet den Bus mit den Actors.
 
 - **Board:** XIAO ESP32-S3 statt M5Stamp Pico (8 MB statt 4 MB Flash). Der CatIdent läuft
@@ -1321,7 +1353,7 @@ Abstand. So lange bliebe der Aktor nicht wach, die Grenze dient nur dem Zählen.
   kann die Betriebsdauer stärker begrenzen als der Akku.
 - Frost: Tank, Pumpe und Leitungen im Winter.
 - Antenne des XIAO ESP32-S3 prüfen: Sie überzeugt schon beim CatIdent nicht.
-- Basis: Standort, Reichweite, Darstellung auf dem Bus (HB, Gerätenummer).
+- SA-Basis: Standort, Reichweite, Darstellung auf dem Bus (HB, Gerätenummer).
   Eine neue Nummer bedeutet heute `deviceCount` und Neuflashen aller Geräte.
 - Paketformat und Signaturverfahren festlegen.
 - Turm-Lidar: LP40B oder ein anderer Sensor, Ersatz für die Gegenprüfung durch den LD06,
