@@ -1061,6 +1061,85 @@ davon gebaut werden, ist noch offen.
 Der folgende Abschnitt beschreibt den bisherigen Entwurf, er ist die Variante **SA-A**.
 
 
+## Aufgabe: SA-L, SprayActor Lite (Entwurf, Stand 2026-11-18)
+
+**Status: Entwurf, noch nicht zur Umsetzung freigegeben.** Der SA-L soll möglichst einfach
+sein. Er hängt am Netzteil, ist fest montiert, und für die Pose helfen wir von Hand.
+SA-L ist ein PowerActor: Alle Sicherheitsmechanismen von PA2 gelten auch für ihn.
+
+### Aufbau
+- **Servo:** ein Servo für den Schwenk (Pan), kein Tilt. Favorit DSpower H008-300 (Blue),
+  Alternative S020B-300 (Red). Die Geschwindigkeit entscheidet wenig, weil die Bestätigung
+  durch den CatIdent ohnehin länger dauert. Wichtiger sind Genauigkeit, Spiel und
+  Drehbereich. Ob „-300" für 300° Drehbereich steht, ist noch zu prüfen. Das Moment der
+  20-kg-Klasse wird bei weitem nicht gebraucht.
+- **Sprüh-Kit:** Bambu Lab Electric Water Spray Kit 02 (ZC005), laut Shop 7–8 m Reichweite,
+  8 Schuss/s, 3,7 V, 0,9 A. Es sitzt auf dem Servo.
+- **Ziel-Laser:** kleiner 5-V-Laser, fest und parallel zur Düse montiert.
+- **Wasser:** Der Tank steht fest, ein kurzer flexibler Schlauch führt zum Kit.
+- **Prozessor:** Favorit M5Stack Stamp Pico, weil die Busanbindung darauf bei den Radaren
+  erprobt ist. Ein ESP32-C3 ginge ebenso.
+- **Statusanzeige:** nur das RGB-LED auf dem Stamp Pico (z. B. scharf, gesichert, Pose
+  fehlt), kein zusätzliches LED.
+- **Neigung:** Ohne Tilt trifft der Strahl in einer festen Entfernung. Der Neigungswinkel
+  wird mechanisch auf die Distanz zur Zielzone eingestellt.
+- **Standort:** Die Kotplätze liegen 6,6–7,2 m vom Dome-C1. Wegen der Reichweite von
+  7–8 m muss der SA-L deutlich näher an der Zielzone stehen.
+
+### Speisung: alles mit 5 V
+Ein 5-V-Netzteil versorgt alle Teile.
+
+- **Stamp Pico:** über 5 V, er hat einen Spannungsregler an Bord.
+- **Servo:** Vorgesehen sind 6–7,4 V. Bei 5 V wird er langsamer und schwächer, das Moment
+  reicht trotzdem. Ob er bei 5 V sauber hält und nicht zittert, wird ausprobiert.
+- **Kit:** Der 3,7-V-Motor läuft an 5 V schneller, zieht mehr Strom (eher über 1 A) und
+  hält weniger lang. Für kurze Stösse ist das vertretbar. Schonendere Option: eine Diode
+  in Reihe (rund 4,3 V).
+- **Einbrüche vermeiden:** Beim Anfahren zieht der Servo kurz 2–3 A. Damit der ESP nicht
+  neu startet: Netzteil mit mindestens 3 A, Elko von etwa 1000 µF direkt am Servo, Servo
+  und ESP mit getrennten Leitungen ab dem Netzteil.
+
+### Ansteuerung
+Die GPIOs des ESP32 vertragen keine 5 V, auch nicht im Open-Drain-Betrieb. Laser und Kit
+werden deshalb mit je einem Transistor gegen Masse geschaltet.
+
+| Verbraucher | Schalter | Bemerkung |
+|---|---|---|
+| Servo | direkt vom GPIO | 3,3-V-Signal reicht |
+| Laser (5 V, ca. 20–30 mA) | BC547 mit 1 kΩ an der Basis, oder 2N7002 | |
+| Kit (5 V, über 1 A) | Logic-Level-MOSFET, z. B. AO3400 oder IRLZ44N | Freilaufdiode über dem Motor |
+
+Belegt sind damit 3 GPIOs.
+
+### Pose
+1. **Position:** Die MapDiscovery(V2) wird auf das CatFinder-Koordinatensystem kalibriert
+   und misst den Standort des fest montierten SA-L aus.
+2. **Richtung:** Laser ein, mit Sprayer und Laser einen bekannten Punkt anpeilen, z. B. ein
+   Radar oder einen mit der MapDiscovery ausgemessenen Punkt. Aus der Servostellung und der
+   bekannten Richtung zum Punkt ergibt sich die Ausrichtung.
+3. **Zweiter Peilpunkt:** Ein zweiter Punkt, möglichst weit vom ersten entfernt, liefert
+   zusätzlich den Massstab des Servos (Grad pro µs). Bei billigen Servos weicht er oft um
+   einige Prozent ab, auf 7 m macht das viel aus.
+4. **Laser und Strahl:** einmal prüfen, ob der Wasserstrahl dort landet, wo der Laser
+   hinzeigt.
+
+Die Pose wird über den bestehenden VPS-Tab „Manuelle Pose" (cmds 24–27) eingetragen. Zum
+Anpeilen braucht es zusätzlich „Servo schrittweise drehen + Laser ein", über eine kleine
+Weboberfläche auf dem Gerät oder über Kommandos.
+
+### Sicherheit
+Wie bei PA2: Feuersperre (`fireInhibit`, Personensperre), Button scharf/sichern,
+No-shot-Karte, kein Schuss bei Busausfall.
+
+### Offene Punkte
+- Servo: Bedeutung von „-300" klären, Verhalten bei 5 V testen.
+- Kit an 5 V: Strom messen, mit oder ohne Reihendiode.
+- Standort und fester Neigungswinkel für die Zielzone.
+- Bus: eigene Gerätenummer heisst heute `deviceCount` erhöhen und alle Geräte neu flashen.
+- Gehäuse und Regenschutz: Kit und Elektronik sind nicht wasserdicht.
+- Prozessor: Stamp Pico oder ESP32-C3 endgültig wählen.
+
+
 ## Aufgabe: SA-A, SprayActor mit Akku und eigener Pose (Entwurf)
 
 **Status 2026-11-05: Entwurf, noch nicht zur Umsetzung freigegeben.** Dieser Abschnitt
